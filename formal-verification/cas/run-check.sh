@@ -19,6 +19,7 @@ scripts=(
   proposal_lib/proposal_lifecycle.gp
   governor/escalation.gp
   timelock/scheduling_ordering.gp
+  reward_token_registry/registration_lifecycle.gp
 )
 
 if [[ ${#scripts[@]} -eq 0 ]]; then
