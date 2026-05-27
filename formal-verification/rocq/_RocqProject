@@ -42,4 +42,14 @@ simulations/SelectorRegistry.v
 proofs/SelectorRegistry.v
 proofs/SelectorRegistry_xcheck.v
 
+# --- StakingVault: exchange rate ---
+simulations/StakingVaultExchange.v
+proofs/StakingVaultExchange.v
+proofs/StakingVaultExchange_xcheck.v
+
+# --- StakingVault: multi-token rewards ---
+simulations/StakingVaultRewards.v
+proofs/StakingVaultRewards.v
+proofs/StakingVaultRewards_xcheck.v
+
 Audit.v
