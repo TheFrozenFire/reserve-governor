@@ -40,18 +40,32 @@ EOF
 fi
 
 # Mode selection: explicit env var > auto-detect.
+# Native mode runs solc directly; docker mode runs the amd64 ELF in a
+# coqorg/coq container under linux/amd64 (slow on non-Linux hosts via QEMU).
+# Native mode picks the first existing binary from:
+#   $ROCQ_TREE/build/solc/solc.<uname-flavour>   (platform-specific)
+#   $ROCQ_TREE/build/solc/solc                   (default)
+# This lets a single ROCQ_TREE hold both the amd64 ELF (for docker mode)
+# and an arm64 macOS build (for native mode on Apple Silicon).
 mode="${SOLC_ROCQ_MODE:-}"
 if [[ -z "$mode" ]]; then
   if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
+    mode=native
+  elif [[ "$(uname -s)" == "Darwin" && -x "$ROCQ_TREE/build/solc/solc.macos-patched" ]]; then
     mode=native
   else
     mode=docker
   fi
 fi
 
+native_solc="$ROCQ_TREE/build/solc/solc"
+if [[ "$(uname -s)" == "Darwin" && -x "$ROCQ_TREE/build/solc/solc.macos-patched" ]]; then
+  native_solc="$ROCQ_TREE/build/solc/solc.macos-patched"
+fi
+
 case "$mode" in
   native)
-    exec "$ROCQ_TREE/build/solc/solc" \
+    exec "$native_solc" \
       --base-path "$REPO_TREE" \
       --include-path "$REPO_TREE/node_modules" \
       --allow-paths "$REPO_TREE" \
