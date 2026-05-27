@@ -46,6 +46,9 @@ proofs/UnstakingManager.v
 proofs/UnstakingManager_validity.v
 proofs/UnstakingManager_xcheck.v
 
+# --- UnstakingManager: conservation ---
+proofs/UnstakingManager_conservation.v
+
 # --- OptimisticSelectorRegistry ---
 simulations/SelectorRegistry.v
 proofs/SelectorRegistry.v
