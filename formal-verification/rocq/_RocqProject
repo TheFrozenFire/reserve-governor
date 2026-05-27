@@ -81,6 +81,9 @@ proofs/Governor.v
 proofs/Governor_validity.v
 proofs/Governor_xcheck.v
 
+# --- Governor: no de-escalation post-sentinel ---
+proofs/Governor_no_de_escalation.v
+
 # --- TimelockControllerOptimistic ---
 simulations/Timelock.v
 proofs/Timelock.v
