@@ -114,6 +114,12 @@ proofs/Guardian.v
 proofs/Guardian_validity.v
 proofs/Guardian_xcheck.v
 
+# --- VersionRegistry ---
+simulations/VersionRegistry.v
+proofs/VersionRegistry.v
+proofs/VersionRegistry_validity.v
+proofs/VersionRegistry_xcheck.v
+
 # --- Integration: withdraw lockup conservation ---
 proofs/Integration_withdraw_lockup.v
 
@@ -125,5 +131,8 @@ proofs/Integration_governor_timelock.v
 
 # --- Integration: no throttle bypass ---
 proofs/Integration_no_throttle_bypass.v
+
+# --- Integration: upgrade authorization (VersionRegistry + StakingVault) ---
+proofs/Integration_upgrade_authorization.v
 
 Audit.v
