@@ -99,6 +99,9 @@ proofs/Timelock.v
 proofs/Timelock_validity.v
 proofs/Timelock_xcheck.v
 
+# --- Timelock: single shot ---
+proofs/Timelock_single_shot.v
+
 # --- RewardTokenRegistry ---
 simulations/RewardTokenRegistry.v
 proofs/RewardTokenRegistry.v
