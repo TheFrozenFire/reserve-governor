@@ -31,4 +31,10 @@ proofs/ProposerThrottle.v
 proofs/ProposerThrottle_validity.v
 proofs/ProposerThrottle_xcheck.v
 
+# --- UnstakingManager ---
+simulations/UnstakingManager.v
+proofs/UnstakingManager.v
+proofs/UnstakingManager_validity.v
+proofs/UnstakingManager_xcheck.v
+
 Audit.v
