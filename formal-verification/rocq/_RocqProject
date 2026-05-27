@@ -52,6 +52,11 @@ simulations/StakingVaultRewards.v
 proofs/StakingVaultRewards.v
 proofs/StakingVaultRewards_xcheck.v
 
+# --- StakingVault: dual delegation ---
+simulations/StakingVaultDelegation.v
+proofs/StakingVaultDelegation.v
+proofs/StakingVaultDelegation_xcheck.v
+
 # --- ReserveOptimisticGovernor ---
 simulations/Governor.v
 proofs/Governor.v

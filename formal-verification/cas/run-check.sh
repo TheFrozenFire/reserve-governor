@@ -15,8 +15,8 @@ scripts=(
   selector_registry/membership_consistency.gp
   staking_vault/exchange_rate.gp
   staking_vault/multi_token_rewards.gp
+  staking_vault/dual_delegation_independence.gp
   governor/escalation.gp
-  # staking_vault/dual_delegation_independence.gp
   # timelock/scheduling_ordering.gp
 )
 
