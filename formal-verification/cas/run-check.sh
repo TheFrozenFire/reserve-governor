@@ -18,7 +18,7 @@ scripts=(
   staking_vault/dual_delegation_independence.gp
   proposal_lib/proposal_lifecycle.gp
   governor/escalation.gp
-  # timelock/scheduling_ordering.gp
+  timelock/scheduling_ordering.gp
 )
 
 if [[ ${#scripts[@]} -eq 0 ]]; then

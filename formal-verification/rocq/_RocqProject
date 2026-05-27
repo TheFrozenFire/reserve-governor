@@ -69,4 +69,10 @@ proofs/Governor.v
 proofs/Governor_validity.v
 proofs/Governor_xcheck.v
 
+# --- TimelockControllerOptimistic ---
+simulations/Timelock.v
+proofs/Timelock.v
+proofs/Timelock_validity.v
+proofs/Timelock_xcheck.v
+
 Audit.v
