@@ -123,4 +123,7 @@ proofs/Integration_optimistic_propose.v
 # --- Integration: governor + timelock ---
 proofs/Integration_governor_timelock.v
 
+# --- Integration: no throttle bypass ---
+proofs/Integration_no_throttle_bypass.v
+
 Audit.v
