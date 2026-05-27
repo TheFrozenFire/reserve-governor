@@ -24,4 +24,11 @@ generated/Smoke.v
 #   proofs/<Domain>_uint256_bounds.v
 #
 # Plus cross-cutting Audit.v at the end.
+
+# --- ProposerThrottle ---
+simulations/ProposerThrottle.v
+proofs/ProposerThrottle.v
+proofs/ProposerThrottle_validity.v
+proofs/ProposerThrottle_xcheck.v
+
 Audit.v

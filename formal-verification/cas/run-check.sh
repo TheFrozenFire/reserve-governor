@@ -10,9 +10,9 @@ cd "$(dirname "$0")"
 # As CAS witness scripts land, add them to this list. The path is
 # relative to this directory (cas/).
 scripts=(
+  proposer_throttle/charge_evolution.gp
   # staking/exchange_rate_monotonicity.gp
   # staking/dual_delegation_independence.gp
-  # governance/proposer_throttle.gp
   # governance/optimistic_veto_threshold.gp
   # timelock/scheduling_ordering.gp
 )
