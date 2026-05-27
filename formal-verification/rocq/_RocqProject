@@ -78,4 +78,7 @@ proofs/Timelock_xcheck.v
 # --- Integration: withdraw lockup conservation ---
 proofs/Integration_withdraw_lockup.v
 
+# --- Integration: optimistic propose ---
+proofs/Integration_optimistic_propose.v
+
 Audit.v
