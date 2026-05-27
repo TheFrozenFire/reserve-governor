@@ -58,6 +58,7 @@ proofs/SelectorRegistry_xcheck.v
 simulations/StakingVaultExchange.v
 proofs/StakingVaultExchange.v
 proofs/StakingVaultExchange_xcheck.v
+proofs/StakingVaultExchange_validity.v
 
 # --- StakingVault: multi-token rewards ---
 simulations/StakingVaultRewards.v
