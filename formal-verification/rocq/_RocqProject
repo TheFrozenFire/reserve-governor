@@ -65,6 +65,7 @@ proofs/StakingVaultExchange_validity.v
 simulations/StakingVaultRewards.v
 proofs/StakingVaultRewards.v
 proofs/StakingVaultRewards_xcheck.v
+proofs/StakingVaultRewards_conservation.v
 
 # --- StakingVault: dual delegation ---
 simulations/StakingVaultDelegation.v
