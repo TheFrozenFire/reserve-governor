@@ -53,6 +53,7 @@ proofs/UnstakingManager_conservation.v
 simulations/SelectorRegistry.v
 proofs/SelectorRegistry.v
 proofs/SelectorRegistry_xcheck.v
+proofs/SelectorRegistry_validity.v
 
 # --- StakingVault: exchange rate ---
 simulations/StakingVaultExchange.v

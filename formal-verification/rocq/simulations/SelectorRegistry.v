@@ -162,11 +162,22 @@ Definition cross_invariant (s : State.t) : Prop :=
     <-> (length (allowed_for s.(State.allowedSelectors) target) > 0)%nat.
 
 (** Storage-level validity: targets list duplicate-free, every
-    per-target selector list duplicate-free, and pruning has been
-    applied (no empty allowed-entries). *)
+    per-target selector list duplicate-free, the key list of the
+    allowed-selectors map is duplicate-free, and pruning has been
+    applied (no empty allowed-entries).
+
+    The [keys_nd] field is required to keep [cross_invariant]
+    preserved by [removeSelector]: without it, two map entries for
+    the same target could carry independent selector lists, and
+    pruning the first to empty would surface the second on lookup,
+    breaking the bicondition [target in targets <-> non-empty
+    allowed list]. *)
 Module Valid.
   Definition no_dup_targets (s : State.t) : Prop :=
     NoDup s.(State.targets).
+
+  Definition no_dup_keys (s : State.t) : Prop :=
+    NoDup (map fst s.(State.allowedSelectors)).
 
   Definition no_dup_selectors (s : State.t) : Prop :=
     Forall (fun ts => NoDup (snd ts)) s.(State.allowedSelectors).
@@ -176,6 +187,7 @@ Module Valid.
 
   Record state (s : State.t) : Prop := {
     targets_nd  : no_dup_targets s;
+    keys_nd     : no_dup_keys s;
     sels_nd     : no_dup_selectors s;
     is_pruned   : pruned s;
     cross_inv   : cross_invariant s;
