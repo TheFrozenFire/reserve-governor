@@ -98,22 +98,37 @@ bash formal-verification/scripts/rocq-build generated/Smoke.v
 The full build runs the smoke target by default (it's listed in
 `rocq/_RocqProject`).
 
-### Cost model warning
+### Cost model and known limitations
 
-Compiling `--ir-rocq` on real contracts with deep OZ imports
-(`Governor`, `AccessControl`, `ERC4626`) under amd64 QEMU emulation
-takes minutes to hours — solc has to fully parse and lower the
-import tree before emitting Rocq IR. The bottleneck is QEMU
-emulation of the amd64 solc binary, not the Rocq tooling. Practical
-options:
+`solc-rocq` runs natively on linux/x86_64 hosts (auto-detected;
+override with `SOLC_ROCQ_MODE=docker` to force the container path).
+On macOS / arm64 it falls back to a `coqorg/coq` container with
+`--platform=linux/amd64`, which is functional but ~1000× slower
+than native because the amd64 solc binary runs under QEMU
+emulation. As reference points on a Ryzen-class native amd64 host:
 
-- Hand-write simulations in `rocq/simulations/` (the protocol repo's
-  primary pattern); `--ir-rocq` cross-checks become a separate parked
-  workstream.
-- Run `solc-rocq` on a native amd64 host or on the upstream
-  Docker-amd64 setup with VirtualBox / a Linux server.
-- Cache generated IR under `rocq/generated/` and check it into git
-  so the slow step doesn't run in CI every time.
+- `Smoke.sol` (12 lines, no imports): ~11 ms.
+- `Guardian.sol` (124 lines + `AccessControlEnumerable` import):
+  ~250 ms, 23 k-line Rocq IR.
+- Heavy OZ-integrated contracts (`StakingVault`,
+  `ReserveOptimisticGovernor`, `TimelockControllerOptimistic`,
+  `ProposalLib`): fast (sub-second) but the rocq-of-solidity fork's
+  Rocq printer throws `std::length_error` on them. Regular `--ir`
+  (Yul) and `--bin` (bytecode) succeed on the same inputs — so the
+  front-end is fine; the Rocq codegen pass has a known bug on these
+  shapes.
+
+Even for contracts that emit Rocq IR successfully, the generated
+file appends a top-level `Definition codes` per included unit, so
+`coqc` rejects multi-import files with `codes already exists`. The
+fix would be to either dedupe `codes` definitions or compile each
+unit into its own module — both upstream-fork fixes.
+
+The practical implication mirrors the protocol repo's experience:
+**hand-written simulations in `rocq/simulations/` are the primary
+verification path**, and `--ir-rocq` cross-checks are an
+opportunistic parked workstream — useful when they work, but not
+blocking.
 
 ## Build-script env vars
 

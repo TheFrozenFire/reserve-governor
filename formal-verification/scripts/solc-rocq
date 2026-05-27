@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
-# solc-rocq — wrapper that invokes the rocq-of-solidity solc fork
-# inside a coqorg/coq Docker container (the binary is amd64 ELF).
+# solc-rocq — wrapper that invokes the rocq-of-solidity solc fork.
+#
+# On native linux/x86_64 hosts the script invokes the solc binary
+# directly (fast). On other hosts (macOS, linux/arm64) it falls back
+# to running the same binary inside a coqorg/coq Docker container
+# with --platform=linux/amd64 (slow under QEMU, but portable).
+#
+# Force one path or the other via SOLC_ROCQ_MODE=native|docker.
 #
 # Usage:
 #   ./solc-rocq <flags> <input.sol>
-#
-# Mounts:
-#   - rocq-of-solidity tree at /work (so /work/build/solc/solc is available)
-#   - governor repo tree at /repo (so input paths from
-#     formal-verification/contracts/ work)
-#
-# Working directory inside the container is /repo so relative imports
-# resolve.
 #
 # Override locations via env vars if your layout differs:
 #   ROCQ_TREE       Path to a built rocq-of-solidity checkout.
 #                   Default: $HOME/git/reserve/_tools/rocq-of-solidity
 #   REPO_TREE       Path to this repository (the one containing
 #                   formal-verification/). Default: self-locate from script.
-#   DOCKER_CONTEXT  Docker context to use. Default: current default context.
+#   DOCKER_CONTEXT  Docker context to use. Default: current default.
+#   SOLC_ROCQ_MODE  'native' or 'docker'. Default: auto-detect from uname.
 
 set -euo pipefail
 
@@ -36,25 +35,47 @@ the upstream. The project is a fork of the Solidity compiler; follow
 its build instructions:
 
   https://github.com/formal-land/rocq-of-solidity#-quick-start
-
-The amd64 ELF binary is invoked via Docker on non-Linux hosts.
 EOF
   exit 2
 fi
 
-DOCKER=(docker)
-if [[ -n "${DOCKER_CONTEXT:-}" ]]; then
-  DOCKER+=(--context "$DOCKER_CONTEXT")
+# Mode selection: explicit env var > auto-detect.
+mode="${SOLC_ROCQ_MODE:-}"
+if [[ -z "$mode" ]]; then
+  if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
+    mode=native
+  else
+    mode=docker
+  fi
 fi
 
-"${DOCKER[@]}" run --rm \
-  -v "$ROCQ_TREE":/work \
-  -v "$REPO_TREE":/repo \
-  -w /repo \
-  --platform=linux/amd64 \
-  coqorg/coq:8.20-ocaml-4.14-flambda \
-  /work/build/solc/solc \
-    --base-path /repo \
-    --include-path /repo/node_modules \
-    --allow-paths /repo \
-    "$@"
+case "$mode" in
+  native)
+    exec "$ROCQ_TREE/build/solc/solc" \
+      --base-path "$REPO_TREE" \
+      --include-path "$REPO_TREE/node_modules" \
+      --allow-paths "$REPO_TREE" \
+      "$@"
+    ;;
+  docker)
+    DOCKER=(docker)
+    if [[ -n "${DOCKER_CONTEXT:-}" ]]; then
+      DOCKER+=(--context "$DOCKER_CONTEXT")
+    fi
+    "${DOCKER[@]}" run --rm \
+      -v "$ROCQ_TREE":/work \
+      -v "$REPO_TREE":/repo \
+      -w /repo \
+      --platform=linux/amd64 \
+      coqorg/coq:8.20-ocaml-4.14-flambda \
+      /work/build/solc/solc \
+        --base-path /repo \
+        --include-path /repo/node_modules \
+        --allow-paths /repo \
+        "$@"
+    ;;
+  *)
+    echo "error: unrecognised SOLC_ROCQ_MODE=$mode (expected 'native' or 'docker')" >&2
+    exit 3
+    ;;
+esac
