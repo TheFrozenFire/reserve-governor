@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Build the Reserve Governor formal-verification Rocq tree natively
+# (no Docker). Compiles simulations, proofs, and cross-checks against
+# the native rocq-of-solidity library.
+#
+# Prerequisites: see ../README.md for platform install instructions
+# (macOS / Debian / Arch / NixOS). In short:
+#   - Coq 8.20.1, coq-hammer-tactics, coq-coqutil, coq-record-update
+#   - A compiled rocq-of-solidity checkout
+#
+# Override locations / opam switch via env vars if your layout differs:
+#   ROCQ_TREE       Path to a built rocq-of-solidity checkout.
+#                   Default: $HOME/git/reserve/_tools/rocq-of-solidity
+#   REPO_TREE       Path to this repository. Default: self-locate from script.
+#   OPAM_SWITCH     Name of the opam switch to load. If unset, the script
+#                   uses whichever switch coqc 8.20.1 happens to be on; if
+#                   coqc is already on PATH (e.g. from the system package
+#                   manager or a CI install), no opam load is performed.
+#
+# Usage: bash scripts/rocq-build [<file.v> ...]
+#   With no args, compiles all .v files listed in rocq/_RocqProject in order.
+
+set -euo pipefail
+
+# Default to a sibling layout under $HOME/git/reserve/, but accept overrides.
+ROCQ_TREE="${ROCQ_TREE:-$HOME/git/reserve/_tools/rocq-of-solidity}"
+# REPO_TREE defaults to two levels up from this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_TREE="${REPO_TREE:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+GOVERNOR_ROCQ="$REPO_TREE/formal-verification/rocq"
+
+# Sanity-check the prereqs and emit actionable errors.
+if [[ ! -d "$ROCQ_TREE/rocq/RocqOfSolidity" ]]; then
+  cat >&2 <<EOF
+error: rocq-of-solidity not found at:
+  $ROCQ_TREE/rocq/RocqOfSolidity
+
+Set ROCQ_TREE to its parent, or clone the upstream:
+  git clone https://github.com/formal-land/rocq-of-solidity "\$ROCQ_TREE"
+EOF
+  exit 2
+fi
+
+if [[ ! -f "$ROCQ_TREE/rocq/RocqOfSolidity/RocqOfSolidity.vo" ]]; then
+  cat >&2 <<EOF
+error: rocq-of-solidity is not built. Run:
+  cd "$ROCQ_TREE/rocq/RocqOfSolidity" && make all
+EOF
+  exit 3
+fi
+
+# Load opam env if requested, or if coqc is not already on PATH.
+# CI workflows typically have coqc on PATH directly and don't need opam.
+if [[ -n "${OPAM_SWITCH:-}" ]]; then
+  if ! command -v opam >/dev/null 2>&1; then
+    echo "error: OPAM_SWITCH=$OPAM_SWITCH set but opam not found on PATH" >&2
+    exit 4
+  fi
+  eval "$(opam env --switch="$OPAM_SWITCH" --set-switch)"
+elif ! command -v coqc >/dev/null 2>&1 && command -v opam >/dev/null 2>&1; then
+  # Fallback: try the default opam env.
+  eval "$(opam env)"
+fi
+
+if ! command -v coqc >/dev/null 2>&1; then
+  cat >&2 <<EOF
+error: coqc not found on PATH.
+See ../README.md for install instructions, or set OPAM_SWITCH=<name>
+to load the appropriate opam switch.
+EOF
+  exit 5
+fi
+
+# Verify Coq version: the proof tree depends on Coq 8.20.x specifically.
+# The .vo files in rocq-of-solidity were compiled with 8.20.1 and have a
+# binary version tag that any other Coq major.minor will reject. Failing
+# fast here gives a clearer error than the kernel's "bad version number".
+COQ_VERSION="$(coqc --version | head -1 | sed -E 's/.*version ([0-9]+\.[0-9]+).*/\1/')"
+if [[ "$COQ_VERSION" != "8.20" ]]; then
+  cat >&2 <<EOF
+error: this proof tree requires Coq 8.20.x; found $COQ_VERSION.
+The pre-built rocq-of-solidity .vo artifacts will reject any other
+Coq version. Set OPAM_SWITCH to a switch with Coq 8.20.1 installed,
+or see ../README.md for install instructions.
+EOF
+  exit 6
+fi
+
+if [[ $# -eq 0 ]]; then
+  files=()
+  while IFS= read -r line; do
+    # Skip blank lines and comments (lines whose first non-space char is '#').
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ \.v$ ]] && files+=("$line")
+  done < "$GOVERNOR_ROCQ/_RocqProject"
+else
+  files=("$@")
+fi
+
+# If the _RocqProject file list is empty, exit early with a clear message
+# rather than silently doing nothing.
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "No .v files listed in _RocqProject (or provided on the command line)."
+  echo "Add simulations/<Foo>.v entries to rocq/_RocqProject to get started."
+  exit 0
+fi
+
+# Per-file timeout. Most files compile in <10s; the slow ones (chain_extras,
+# integration suites) take 30-60s. The 180s default gives generous headroom
+# while making a tactic-explosion hang (the WISDOM.md R001 powu/destruct trap)
+# obvious within 3 minutes instead of pinning coqc indefinitely. Override with
+# RB_TIMEOUT=<seconds> for tighter or looser budgets.
+RB_TIMEOUT="${RB_TIMEOUT:-180}"
+
+# Resolve a `timeout`-equivalent command. GNU coreutils ships `timeout` on
+# Linux and `gtimeout` on macOS (via `brew install coreutils`). We require
+# one of them — running coqc unwrapped means a single stuck file hangs the
+# whole build indefinitely, which has happened often enough to warrant
+# making this a hard requirement of the build script.
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_CMD=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_CMD=gtimeout
+else
+  cat >&2 <<EOF
+error: no \`timeout\` (Linux) or \`gtimeout\` (macOS) on PATH. Without one,
+       a single stuck coqc invocation hangs the build indefinitely.
+
+  macOS:  brew install coreutils
+  Debian: apt-get install coreutils  (usually preinstalled)
+  Arch:   pacman -S coreutils         (usually preinstalled)
+EOF
+  exit 7
+fi
+
+for f in "${files[@]}"; do
+  echo "==> coqc $f"
+  if ! "$TIMEOUT_CMD" --kill-after=5 "$RB_TIMEOUT" \
+       coqc -R "$ROCQ_TREE/rocq/RocqOfSolidity" RocqOfSolidity \
+            -R "$GOVERNOR_ROCQ" ReserveGovernor \
+            -impredicative-set -w -stdlib-vector \
+            "$GOVERNOR_ROCQ/$f"; then
+    rc=$?
+    if [[ $rc -eq 124 ]]; then
+      cat >&2 <<EOF
+
+TIMEOUT: $f did not finish within ${RB_TIMEOUT}s.
+This usually means a tactic explosion (see WISDOM.md R001 — mark FixLib
+operations Opaque before destructs/inductions on terms that contain them).
+Override the budget with RB_TIMEOUT=<seconds> if the file is genuinely slow.
+EOF
+    fi
+    exit $rc
+  fi
+done
+
+echo "All Rocq targets compiled successfully."

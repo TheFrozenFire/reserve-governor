@@ -1,0 +1,20 @@
+-R . ReserveGovernor
+-Q /work/rocq/RocqOfSolidity RocqOfSolidity
+
+-arg -impredicative-set
+-arg -w
+-arg -stdlib-vector
+
+# Simulations and proofs are added here as they land. The standard
+# per-domain tier shape (mirroring the protocol repo):
+#
+#   simulations/<Domain>.v
+#   proofs/<Domain>.v
+#   proofs/<Domain>_xcheck.v
+#   proofs/<Domain>_validity.v
+#   proofs/<Domain>_chain.v
+#   proofs/<Domain>_witnesses.v
+#   proofs/<Domain>_uint256_bounds.v
+#
+# Plus cross-cutting Audit.v at the end.
+Audit.v

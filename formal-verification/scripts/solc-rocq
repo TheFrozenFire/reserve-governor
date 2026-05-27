@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# solc-rocq — wrapper that invokes the rocq-of-solidity solc fork
+# inside a coqorg/coq Docker container (the binary is amd64 ELF).
+#
+# Usage:
+#   ./solc-rocq <flags> <input.sol>
+#
+# Mounts:
+#   - rocq-of-solidity tree at /work (so /work/build/solc/solc is available)
+#   - governor repo tree at /repo (so input paths from
+#     formal-verification/contracts/ work)
+#
+# Working directory inside the container is /repo so relative imports
+# resolve.
+#
+# Override locations via env vars if your layout differs:
+#   ROCQ_TREE       Path to a built rocq-of-solidity checkout.
+#                   Default: $HOME/git/reserve/_tools/rocq-of-solidity
+#   REPO_TREE       Path to this repository (the one containing
+#                   formal-verification/). Default: self-locate from script.
+#   DOCKER_CONTEXT  Docker context to use. Default: current default context.
+
+set -euo pipefail
+
+ROCQ_TREE="${ROCQ_TREE:-$HOME/git/reserve/_tools/rocq-of-solidity}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_TREE="${REPO_TREE:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+if [[ ! -x "$ROCQ_TREE/build/solc/solc" ]]; then
+  cat >&2 <<EOF
+error: rocq-of-solidity solc binary not found at:
+  $ROCQ_TREE/build/solc/solc
+
+Set ROCQ_TREE to point at a built rocq-of-solidity checkout, or build
+the upstream. The project is a fork of the Solidity compiler; follow
+its build instructions:
+
+  https://github.com/formal-land/rocq-of-solidity#-quick-start
+
+The amd64 ELF binary is invoked via Docker on non-Linux hosts.
+EOF
+  exit 2
+fi
+
+DOCKER=(docker)
+if [[ -n "${DOCKER_CONTEXT:-}" ]]; then
+  DOCKER+=(--context "$DOCKER_CONTEXT")
+fi
+
+"${DOCKER[@]}" run --rm \
+  -v "$ROCQ_TREE":/work \
+  -v "$REPO_TREE":/repo \
+  -w /repo \
+  --platform=linux/amd64 \
+  coqorg/coq:8.20-ocaml-4.14-flambda \
+  /work/build/solc/solc \
+    --base-path /repo \
+    --include-path /repo/node_modules \
+    --allow-paths /repo \
+    "$@"

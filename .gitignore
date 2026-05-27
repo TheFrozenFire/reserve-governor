@@ -23,3 +23,13 @@ Playground.*
 
 # Claude
 .claude/*local*
+
+# Rocq build artefacts (formal-verification/)
+*.vo
+*.vok
+*.vos
+*.glob
+*.aux
+.*.aux
+.lia.cache
+.nia.cache
