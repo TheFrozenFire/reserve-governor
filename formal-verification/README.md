@@ -68,13 +68,52 @@ financial math, but the verification machinery is the same.
 - **Coq 8.20.1** (`coq-hammer-tactics`, `coq-coqutil`,
   `coq-record-update`)
 - **rocq-of-solidity** at `$HOME/git/reserve/_tools/rocq-of-solidity`
-  (shared with the protocol repo — single checkout, two consumers)
+  (shared with the protocol repo — single checkout, two consumers).
+  Both the Rocq library and the `solc-rocq` solc fork are pre-built;
+  the governor scripts reuse those artifacts via the `ROCQ_TREE` env
+  var.
 - **PARI/GP** (`gp` on PATH) for the CAS layer
 - **GNU coreutils** for `timeout`/`gtimeout` (already required by the
   protocol repo's build script — same prereq)
+- **colima** (`colima start rocq`) — the `solc-rocq` solc fork is an
+  amd64 ELF binary, run via Docker on `linux/amd64` through Apple
+  Silicon's QEMU emulation. The governor's `solc-rocq` script defaults
+  to the `colima-rocq` Docker context; override via `DOCKER_CONTEXT`.
 
 See the protocol repo's `formal-verification/README.md` for platform
 install instructions; the governor repo uses the same toolchain.
+
+## Smoke test
+
+A minimal end-to-end check of the toolchain lives at
+`contracts/Smoke.sol` → `rocq/generated/Smoke.v`. After Colima is
+running and rocq-of-solidity is built:
+
+```sh
+bash scripts/solc-rocq --ir-rocq formal-verification/contracts/Smoke.sol \
+  > formal-verification/rocq/generated/Smoke.v
+bash formal-verification/scripts/rocq-build generated/Smoke.v
+```
+
+The full build runs the smoke target by default (it's listed in
+`rocq/_RocqProject`).
+
+### Cost model warning
+
+Compiling `--ir-rocq` on real contracts with deep OZ imports
+(`Governor`, `AccessControl`, `ERC4626`) under amd64 QEMU emulation
+takes minutes to hours — solc has to fully parse and lower the
+import tree before emitting Rocq IR. The bottleneck is QEMU
+emulation of the amd64 solc binary, not the Rocq tooling. Practical
+options:
+
+- Hand-write simulations in `rocq/simulations/` (the protocol repo's
+  primary pattern); `--ir-rocq` cross-checks become a separate parked
+  workstream.
+- Run `solc-rocq` on a native amd64 host or on the upstream
+  Docker-amd64 setup with VirtualBox / a Linux server.
+- Cache generated IR under `rocq/generated/` and check it into git
+  so the slow step doesn't run in CI every time.
 
 ## Build-script env vars
 

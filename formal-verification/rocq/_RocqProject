@@ -5,6 +5,13 @@
 -arg -w
 -arg -stdlib-vector
 
+# Generated Yul-translation IR — produced by
+# `bash scripts/solc-rocq --ir-rocq <contract.sol>`, captured under
+# rocq/generated/. The smoke target below verifies the end-to-end
+# toolchain (rocq-of-solidity library + amd64-on-arm64 solc fork) is
+# wired correctly.
+generated/Smoke.v
+
 # Simulations and proofs are added here as they land. The standard
 # per-domain tier shape (mirroring the protocol repo):
 #
