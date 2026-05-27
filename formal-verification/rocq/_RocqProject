@@ -37,4 +37,9 @@ proofs/UnstakingManager.v
 proofs/UnstakingManager_validity.v
 proofs/UnstakingManager_xcheck.v
 
+# --- OptimisticSelectorRegistry ---
+simulations/SelectorRegistry.v
+proofs/SelectorRegistry.v
+proofs/SelectorRegistry_xcheck.v
+
 Audit.v

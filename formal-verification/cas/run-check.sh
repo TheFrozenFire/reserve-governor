@@ -12,6 +12,7 @@ cd "$(dirname "$0")"
 scripts=(
   proposer_throttle/charge_evolution.gp
   unstaking_manager/lock_lifecycle.gp
+  selector_registry/membership_consistency.gp
   # staking/exchange_rate_monotonicity.gp
   # staking/dual_delegation_independence.gp
   # governance/optimistic_veto_threshold.gp
