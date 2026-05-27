@@ -57,6 +57,12 @@ simulations/StakingVaultDelegation.v
 proofs/StakingVaultDelegation.v
 proofs/StakingVaultDelegation_xcheck.v
 
+# --- ProposalLib ---
+simulations/ProposalLib.v
+proofs/ProposalLib.v
+proofs/ProposalLib_validity.v
+proofs/ProposalLib_xcheck.v
+
 # --- ReserveOptimisticGovernor ---
 simulations/Governor.v
 proofs/Governor.v

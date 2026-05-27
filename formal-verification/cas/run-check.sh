@@ -16,6 +16,7 @@ scripts=(
   staking_vault/exchange_rate.gp
   staking_vault/multi_token_rewards.gp
   staking_vault/dual_delegation_independence.gp
+  proposal_lib/proposal_lifecycle.gp
   governor/escalation.gp
   # timelock/scheduling_ordering.gp
 )
