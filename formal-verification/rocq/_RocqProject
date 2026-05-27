@@ -75,4 +75,7 @@ proofs/Timelock.v
 proofs/Timelock_validity.v
 proofs/Timelock_xcheck.v
 
+# --- Integration: withdraw lockup conservation ---
+proofs/Integration_withdraw_lockup.v
+
 Audit.v
