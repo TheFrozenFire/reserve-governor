@@ -63,12 +63,26 @@ if [[ "$(uname -s)" == "Darwin" && -x "$ROCQ_TREE/build/solc/solc.macos-patched"
   native_solc="$ROCQ_TREE/build/solc/solc.macos-patched"
 fi
 
+# Foundry-style remappings.txt: solc accepts each remapping as a bare
+# positional arg of the form prefix=path. Strip blank lines and comments,
+# leave the rest as-is. Paths in remappings.txt are relative to REPO_TREE,
+# which matches solc's interpretation when --base-path is set to REPO_TREE.
+remappings=()
+if [[ -f "$REPO_TREE/remappings.txt" ]]; then
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    remappings+=("$line")
+  done < "$REPO_TREE/remappings.txt"
+fi
+
 case "$mode" in
   native)
     exec "$native_solc" \
       --base-path "$REPO_TREE" \
       --include-path "$REPO_TREE/node_modules" \
       --allow-paths "$REPO_TREE" \
+      ${remappings[@]+"${remappings[@]}"} \
       "$@"
     ;;
   docker)
@@ -86,6 +100,7 @@ case "$mode" in
         --base-path /repo \
         --include-path /repo/node_modules \
         --allow-paths /repo \
+        ${remappings[@]+"${remappings[@]}"} \
         "$@"
     ;;
   *)

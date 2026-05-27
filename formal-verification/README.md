@@ -60,8 +60,10 @@ financial math, but the verification machinery is the same.
 | See the headline theorems | [`rocq/Audit.v`](rocq/Audit.v) |
 | Understand a specific component's math | `rocq/simulations/<Component>.v` (e.g. `StakingVault.v` once added) |
 | Audit the modeling fidelity | [`notes/simulation_fidelity_audit.md`](notes/simulation_fidelity_audit.md) |
+| See `--ir-rocq` compile coverage of every contract | [`notes/ir_rocq_coverage.md`](notes/ir_rocq_coverage.md) |
 | Reproduce the CAS sweeps | `bash cas/run-check.sh` |
 | Build the whole Rocq tree | `bash scripts/rocq-build` |
+| Regenerate `--ir-rocq` coverage matrix | `bash scripts/ir-rocq-coverage` |
 
 ## Toolchain
 
@@ -75,10 +77,11 @@ financial math, but the verification machinery is the same.
 - **PARI/GP** (`gp` on PATH) for the CAS layer
 - **GNU coreutils** for `timeout`/`gtimeout` (already required by the
   protocol repo's build script — same prereq)
-- **colima** (`colima start rocq`) — the `solc-rocq` solc fork is an
-  amd64 ELF binary, run via Docker on `linux/amd64` through Apple
-  Silicon's QEMU emulation. The governor's `solc-rocq` script defaults
-  to the `colima-rocq` Docker context; override via `DOCKER_CONTEXT`.
+- **colima** (`colima start rocq`) — required only when falling back
+  to docker mode (`SOLC_ROCQ_MODE=docker`, or hosts without the patched
+  native binary). The script defaults to the current Docker context;
+  override via `DOCKER_CONTEXT`. On macOS arm64 with the patched
+  native binary in place this fallback is unused.
 
 See the protocol repo's `formal-verification/README.md` for platform
 install instructions; the governor repo uses the same toolchain.
@@ -100,29 +103,39 @@ The full build runs the smoke target by default (it's listed in
 
 ### Cost model and known limitations
 
-`solc-rocq` runs natively on linux/x86_64 hosts (auto-detected;
-override with `SOLC_ROCQ_MODE=docker` to force the container path).
-On macOS / arm64 it falls back to a `coqorg/coq` container with
-`--platform=linux/amd64`, which is functional but ~1000× slower
-than native because the amd64 solc binary runs under QEMU
-emulation. As reference points on a Ryzen-class native amd64 host:
+`solc-rocq` picks the fastest available path:
 
-- `Smoke.sol` (12 lines, no imports): ~11 ms.
-- `Guardian.sol` (124 lines + `AccessControlEnumerable` import):
-  ~250 ms, 23 k-line Rocq IR.
-- Heavy OZ-integrated contracts (`StakingVault`,
-  `ReserveOptimisticGovernor`, `TimelockControllerOptimistic`,
-  `ProposalLib`): fast (sub-second) but the rocq-of-solidity fork's
-  Rocq printer throws `std::length_error` on them. Regular `--ir`
-  (Yul) and `--bin` (bytecode) succeed on the same inputs — so the
-  front-end is fine; the Rocq codegen pass has a known bug on these
-  shapes.
+- linux/x86_64 hosts: native solc, no container.
+- macOS / arm64 hosts: native arm64 solc if
+  `$ROCQ_TREE/build/solc/solc.macos-patched` exists (see the fork at
+  `TheFrozenFire/rocq-of-solidity`, branch
+  `fix/rocq-length-error-and-macos-build`), otherwise the upstream
+  amd64 ELF run inside `coqorg/coq` under `--platform=linux/amd64` (slow:
+  QEMU emulation costs ~1000×).
+- Override with `SOLC_ROCQ_MODE=native|docker`.
 
-Even for contracts that emit Rocq IR successfully, the generated
-file appends a top-level `Definition codes` per included unit, so
-`coqc` rejects multi-import files with `codes already exists`. The
-fix would be to either dedupe `codes` definitions or compile each
-unit into its own module — both upstream-fork fixes.
+Reference points on M-class native arm64 with the patched binary
+(see `notes/ir_rocq_coverage.md` for the full matrix):
+
+- `Smoke.sol`: ~10 ms.
+- `Guardian.sol`: <1 s, 23 k-line Rocq IR.
+- Heavy OZ-integrated contracts (`StakingVault` 107 k,
+  `ReserveOptimisticGovernor`/`OptimisticSelectorRegistry`/`ProposalLib`
+  ~194 k each, `Deployer` 325 k, `TimelockControllerOptimistic` 63 k):
+  all compile cleanly in 1–2 s.
+
+**All 22 governor contracts compile clean** through `--ir-rocq` with
+the patched fork (re-run `scripts/ir-rocq-coverage` to verify). The
+prior `std::length_error` crash on the long-name OZ-integrated set is
+fixed at `Object::toRocq` in the fork.
+
+One known cosmetic issue remains: when a single source file pulls in
+multiple compilation units, the generated Rocq output appends a
+top-level `Definition codes` per unit, so feeding that file straight
+into `coqc` errors with `codes already exists`. This is harmless for
+contract-by-contract IR inspection but blocks naively concatenated
+builds; fix would be to scope each unit into its own module
+(upstream-fork change, still parked).
 
 The practical implication mirrors the protocol repo's experience:
 **hand-written simulations in `rocq/simulations/` are the primary
@@ -140,3 +153,5 @@ The build scripts pick up overrides from the environment:
 | `REPO_TREE` | self-located from script | The governor repo root (the parent of `formal-verification/`). |
 | `OPAM_SWITCH` | unset | If set, `eval $(opam env --switch=$OPAM_SWITCH)` is run before `coqc`. |
 | `RB_TIMEOUT` | `180` | Per-file `coqc` timeout in seconds. |
+| `SOLC_ROCQ_MODE` | auto-detect | Force `native` or `docker`. Default picks native on linux/x86_64, and on macOS arm64 if `solc.macos-patched` exists; otherwise docker. |
+| `DOCKER_CONTEXT` | current default | Which Docker context to use in docker mode. |
