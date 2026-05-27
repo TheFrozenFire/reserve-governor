@@ -25,6 +25,15 @@ generated/Smoke.v
 #
 # Plus cross-cutting Audit.v at the end.
 
+# --- Mocks of external dependencies ---
+# Minimal Gallina models for OpenZeppelin / PRBMath surfaces the
+# governor depends on. Built before any domain so all simulations
+# can reference them. See notes/external_dependencies.md for the
+# audit that motivates each mock.
+mocks/Trace208.v
+mocks/ERC20.v
+mocks/PRBMath.v
+
 # --- ProposerThrottle ---
 simulations/ProposerThrottle.v
 proofs/ProposerThrottle.v

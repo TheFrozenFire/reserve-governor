@@ -597,3 +597,55 @@ When the delegation proof tree reaches `delegateOptimisticBySig`, it needs an `E
 - **Time.timestamp()** — already resolved: pass `now : U256.t` everywhere.
 - **Arbitrary proposal targets** — out of scope by design.
 - **IRoleRegistry** — out of scope governance singleton.
+
+---
+
+## Mocks landed
+
+The three highest-priority external-dependency mocks identified above are now landed under `rocq/mocks/`. Each is wired into `_RocqProject` in a `# --- Mocks of external dependencies ---` block ahead of the per-domain entries, so all simulations and proofs can consume them.
+
+### `rocq/mocks/Trace208.v` — OpenZeppelin `Checkpoints.Trace208`
+
+Sorted list of `(key, value)` checkpoints with `empty`, `push`, `latest`, `upperLookupRecent`. `push` appends on strictly-larger key and updates in place otherwise (in lieu of the OZ "revert on out-of-order" path, which the Governor never triggers since it pushes monotone `Time.timestamp()`).
+
+Proven lemmas:
+- `latest_after_push` — pushing a strictly larger key updates `latest`
+- `upperLookupRecent_returns_0_below_first` — query below first key yields 0 (under sortedness)
+- `latest_eq_upperLookup_at_last_key` — `upperLookupRecent` at the last key returns `latest`
+- `push_preserves_sortedness` — `Module Valid` sortedness invariant is preserved by push
+
+Plus a `Module Examples` exercising `vm_compute` on a three-push trace, an in-place-update trace, and the empty trace.
+
+**Existing proof candidates for adoption:** `proofs/StakingVaultDelegation.v` currently abstracts the optimistic-vote checkpoint store down to a `votes` map (last value only). When the dual-delegation independence theorem extends to past-vote correctness (`getPastOptimisticVotes`), it can replace that abstraction with `Trace208.upperLookupRecent` on a per-delegate `Trace208.t` field.
+
+### `rocq/mocks/ERC20.v` — Balance-map IERC20 / SafeERC20
+
+`Record State := { balances : list (Address * U256.t); totalSupply : U256.t }` with `balanceOf`, `transfer`, `transferFrom` (the latter taking allowance as an explicit argument). Reverts on insufficient balance or insufficient allowance.
+
+Proven lemmas:
+- `transfer_preserves_total_supply` — supply invariant across `transfer`
+- `transfer_decreases_sender_increases_receiver_by_amount` — exact-debit/exact-credit, no fees
+- `transfer_zero_to_self_noop` — zero-amount and self-transfer paths are no-ops
+
+`Module Valid` carries `sum balances = totalSupply` and `all_nonneg balances`, plus `U256.Valid.t totalSupply`. `Module Examples` exercises `vm_compute` on successful and reverting transfers and `transferFrom`s.
+
+**Existing proof candidates for adoption:** `proofs/StakingVaultRewards.v` currently states the claim-faithfulness theorem in terms of an abstract `claimable` argument. With this mock available, the theorem can be sharpened to: "for every reward token, the change in `ERC20.balanceOf(vault)` equals `-totalClaimedDelta`" — the conservation theorem named in the audit's Priority 2.
+
+### `rocq/mocks/PRBMath.v` — `UD60x18.powu` axiomatic interface
+
+`Parameter powu : U256.t -> U256.t -> U256.t` with five axioms:
+- `powu_zero_exp` — `powu base 0 = 10^18` (identity)
+- `powu_zero_base` — `0 < n -> powu 0 n = 0` (zero passthrough)
+- `powu_bounded` — `base <= 10^18 -> powu base n <= 10^18`
+- `powu_monotone_in_exp` — sub-one base, decay shape in elapsed
+- `powu_one_base` — `powu (10^18) n = 10^18` (rewardRatio=0 corner)
+
+Plus two derived corollaries (`powu_nonneg`, `powu_zero_exp_eq_one_d18`) and a `Module Valid.decay_base` predicate capturing `0 < b <= 10^18` (the production invariant on `1e18 - rewardRatio`).
+
+**Axioms considered but rejected as too strong:**
+- *Strict monotonicity* (`n1 < n2 -> powu base n1 > powu base n2`) — false on the rounded D18 implementation: small inputs can produce equal outputs after floor rounding. Sticking with `>=` keeps the axiom faithful.
+- *Multiplicativity* (`powu base (n1 + n2) = powu base n1 * powu base n2 / ONE_D18`) — would be nice but cannot be proved equationally on rounded D18 arithmetic; the rounding error is precisely what the CAS witnesses pin numerically rather than algebraically.
+- *Explicit value at small inputs* (`powu base 1 = base`) — true on the real-number kernel but the D18 floor-rounding could in principle introduce off-by-one (it does not in practice for `base <= ONE_D18`; CAS-validated). Left out to keep the axiom set minimal.
+
+**Existing proof candidates for adoption:** `simulations/StakingVaultExchange.v` (the "exchange rate" surface) currently takes `accumulatedNativeRewards` as an opaque argument. With `PRBMath.powu` available, the `_calculateHandout` formula can be inlined verbatim and the "handout <= balance" invariant proved against `powu_bounded`. Similarly the "handout = 0 at elapsed = 0" lemma against `powu_zero_exp`.
+
