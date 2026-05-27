@@ -20,6 +20,7 @@ scripts=(
   governor/escalation.gp
   timelock/scheduling_ordering.gp
   reward_token_registry/registration_lifecycle.gp
+  guardian/role_gated_cancel.gp
 )
 
 if [[ ${#scripts[@]} -eq 0 ]]; then
