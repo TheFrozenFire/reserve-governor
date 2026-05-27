@@ -81,4 +81,7 @@ proofs/Integration_withdraw_lockup.v
 # --- Integration: optimistic propose ---
 proofs/Integration_optimistic_propose.v
 
+# --- Integration: governor + timelock ---
+proofs/Integration_governor_timelock.v
+
 Audit.v
