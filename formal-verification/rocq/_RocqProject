@@ -52,4 +52,10 @@ simulations/StakingVaultRewards.v
 proofs/StakingVaultRewards.v
 proofs/StakingVaultRewards_xcheck.v
 
+# --- ReserveOptimisticGovernor ---
+simulations/Governor.v
+proofs/Governor.v
+proofs/Governor_validity.v
+proofs/Governor_xcheck.v
+
 Audit.v
