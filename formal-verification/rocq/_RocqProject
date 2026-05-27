@@ -87,6 +87,9 @@ proofs/Governor_xcheck.v
 # --- Governor: no de-escalation post-sentinel ---
 proofs/Governor_no_de_escalation.v
 
+# --- Governor: no double execution ---
+proofs/Governor_no_double_execution.v
+
 # --- TimelockControllerOptimistic ---
 simulations/Timelock.v
 proofs/Timelock.v
