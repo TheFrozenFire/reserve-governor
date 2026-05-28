@@ -33,3 +33,11 @@ Playground.*
 .*.aux
 .lia.cache
 .nia.cache
+
+# Certora per-run output dirs and build cache
+.certora_internal/
+emv-*-certora-*/
+formal-verification/certora/**/emv-*-certora-*/
+formal-verification/certora/**/.certora_internal/
+formal-verification/certora/**/.last_certora_run.log
+formal-verification/certora/**/.certora_metadata.json
