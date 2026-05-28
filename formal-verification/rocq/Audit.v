@@ -184,6 +184,20 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
     the proposal transitions between reads. The model assumes
     serialization the EVM does not provide.
 
+    Displacement status: Certora addresses the TOCTOU shape directly
+    via ghost-backed snapshot summaries in
+    [../../certora/Guardian/Guardian.spec] (G6a / G6b), and the
+    transitioned-proposal regression chain in
+    [../../certora/intent/TransitionedProposalCancel.spec] (S21).
+    Both rules use a single ghost-mapped read per proposalId, so the
+    two reads inside Guardian.cancel observe consistent storage at
+    the bytecode level — the caveat's "serialization the EVM does
+    not provide" assumption is now mechanically discharged for the
+    cancel path. The sister rule
+    [transitionedProposalRequiresSentinelShortCircuit] documents
+    the load-bearing chain (sentinel -> state() short-circuit ->
+    Defeated) and is VIOLATED-as-designed.
+
     Caveat-5 (Yul equivalence is sketched, not mechanized).
     ---------------------------------------------------------------
     Every audit_* claim about Solidity-source behavior is stated
@@ -287,19 +301,47 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
         model; tokens are pure oracles).
       - ERC4626 first-depositor + asset-donation reward capture
         (the half-life rewards stream over a donated balance gap).
+        Empirically REFUTED via
+        [../../../test/ShareInflationAttack.t.sol]:
+        StakingVault inverts the classic attack — the rewards stream
+        distributes a donation pro-rata to existing shareholders, so
+        the donor effectively gifts the donation.
       - Proposer can cancel a Succeeded optimistic proposal,
         burning the throttle slot (DoS / censorship by the original
-        proposer).
+        proposer). Empirically CONFIRMED live via
+        [../../../test/ProposerCancelSucceeded.t.sol] — a documented
+        behavioral asymmetry between optimistic and standard
+        channels, not a bug per se.
       - executeBatchBypass salt-collision DoS if PROPOSER_ROLE
         expands beyond governor.
+        Displacement status: Certora half-displaces this via
+        [../../certora/intent/BypassSaltUniqueness.spec] (S37) which
+        proves the bypass and schedule paths use the byte-identical
+        salt formula at the bytecode level. The remaining half
+        (PROPOSER_ROLE-restriction-to-governor) is an OZ-side
+        invariant + deployment-time check.
       - StakingVault.initialize trusts arbitrary msg.sender as
         deployer (off-canonical-deployment risk).
-      - Guardian.cancel TOCTOU with _tallyUpdated transition
-        (proposer races a vetoer to nudge path toward easy
-        cancel-and-retry).
-    These would need Foundry-level fuzz/invariant tests or
-    Yul-equivalence proofs to surface; the existing Gallina
-    simulations cannot reach them.
+      - Guardian.cancel TOCTOU with _tallyUpdated transition.
+        Displaced — see Caveat-4 displacement note above.
+      - Wrong-supply-denominator at veto-threshold computation
+        (Cantina PR #36 finding). Empirically caught by
+        [../../certora/intent/VetoThresholdReachability.spec] in 4
+        seconds of solver time on the pre-fix branch; structural
+        invariant form in
+        [../../certora/intent/VetoCoalitionReachability.spec]. The
+        broader class — "verification stack faithfully encodes a
+        wrong spec" — is documented in
+        [../../certora/notes/cantina_pr36_postmortem.md] and
+        addressed methodologically by the intent-derived rule
+        approach catalogued in
+        [../../certora/notes/governance_intent_and_shapes.md].
+    These would need Foundry-level fuzz/invariant tests, Certora
+    intent-derived rules, or Yul-equivalence proofs to surface; the
+    existing Gallina simulations cannot reach them on their own. The
+    Foundry tests and Certora intent rules cited above are the work
+    done to date — the remaining items (reentrancy, initialize
+    trust) are deferred.
 *)
 
 

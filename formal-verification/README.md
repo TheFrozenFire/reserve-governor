@@ -1,4 +1,4 @@
-# Dual-track verification: Rocq + CAS for Reserve Governor
+# Triple-track verification: Rocq + CAS + Certora for Reserve Governor
 
 The Reserve Governor implements a hybrid optimistic / standard
 governance flow on top of an OpenZeppelin `Governor` foundation, a
@@ -7,49 +7,69 @@ custom ERC4626 `StakingVault` with dual delegation, a time-locked
 covers both proposal paths.
 
 This directory holds the formal-verification scaffold: a Rocq 8.20.1
-proof tree (`rocq/`), a CAS-witness layer (`cas/`), and per-component
-audit notes (`notes/`).
+proof tree (`rocq/`), a PARI/GP CAS-witness layer (`cas/`), a Certora
+CVL spec tree (`certora/`), and per-component audit notes (`notes/`).
 
-## Why two layers
+## Why three layers
 
-A formal verification effort has two distinct failure modes:
+A formal verification effort has three distinct failure modes, each
+attacked by a different layer:
 
 1. **Logical unsoundness**: the proof has a hole, the lemma chain
-   doesn't actually establish what it claims. Caught by an
-   interactive theorem prover (Rocq, Lean).
+   doesn't actually establish what it claims.
 2. **Modeling error**: the proof is impeccable, but the abstract
    model the proof reasons about doesn't faithfully capture what the
-   production code does. Caught by running both models on calibrated
-   inputs and checking they agree.
+   production code does.
+3. **Source-vs-bytecode divergence**: the source-level model is
+   faithful, but the compiled bytecode behaves differently due to
+   solc lowering, optimizer interactions, or calldata-edge cases.
 
-These are **orthogonal**. The dual-track pattern brackets the same
-property from two sides:
+The three layers bracket the same property from three sides:
 
-- The **Rocq layer** (`rocq/`) proves *logical soundness*: under the
-  assumptions of the model, the invariant holds for all inputs.
-- The **CAS layer** (`cas/`) validates *faithfulness*: the claimed
-  identities and bounds actually agree with concrete computation
-  across calibrated parameters.
+- The **Rocq layer** (`rocq/`) proves *logical soundness* on a
+  hand-written Gallina simulation: under the assumptions of the
+  model, the invariant holds for all inputs and all reachable
+  traces. Strength: inductive reasoning over sequences of operations,
+  conservation laws, telescoping bounds, no-double-spend across
+  arbitrary call histories. Audit notations are re-exported in
+  `rocq/Audit.v`.
+- The **CAS layer** (`cas/`) validates *modeling faithfulness*: the
+  claimed identities and bounds actually agree with concrete
+  computation across calibrated parameters. Strength: rounding-
+  direction sweeps, fixed-point math witnesses, numerical convergence.
+- The **Certora layer** (`certora/`) confirms *source-vs-bytecode
+  agreement*: the CVL rules verify properties against the TAC IR
+  generated from solc output. Strength: per-method parametric rules,
+  modifier-expansion ordering, calldata edges, TOCTOU patterns,
+  bytecode-level confirmation that source-language theorems survive
+  lowering.
 
-The pattern is borrowed verbatim from the protocol repo's
-`formal-verification/` (see the sister tree under
-`reserve/formal-verification/protocol/formal-verification/`). The
-governance-side properties differ in kind from the protocol-side
-financial math, but the verification machinery is the same.
+These three failure modes are **orthogonal**. A property the team
+needs to trust ought to be verified at every layer it can plausibly
+be expressed at — the **triple-confirmation pattern** (Rocq proves
+it, CAS witnesses it, Certora confirms it bytecode-side) gives the
+highest-confidence guarantee.
+
+The Rocq + CAS pattern is borrowed verbatim from the protocol repo's
+`formal-verification/`. The Certora layer is new with the governor
+work and was added after the Cantina contest surfaced a class of
+*wrong-spec* bug that neither Rocq nor CAS could catch (see
+`certora/notes/cantina_pr36_postmortem.md`).
 
 ## What each layer covers, governor-side
 
-| Domain | Rocq | CAS | Why |
-|---|---|---|---|
-| StakingVault: exchange-rate evolution under deposit/redeem | ✓ | ✓ | ERC4626 arithmetic with rounding; CAS sweeps the rounding-direction boundary, Rocq pins the monotonicity invariant. |
-| StakingVault: dual-delegation checkpoint independence | ✓ | – | OZ `ERC20Votes` checkpoint book over two ledgers (standard + optimistic). Each ledger updates independently on transfer; the joint invariant is a Rocq composition theorem. |
-| StakingVault: multi-token rewards accounting | ✓ | ✓ | Per-token reward index advances against vault share supply; CAS checks the rounding bound on `earned`. |
-| UnstakingManager: time-locked withdrawal queue | ✓ | – | FIFO queue with `availableAt` timestamps. Mirrors the StRSR draft queue but per-account. |
-| ProposalLib: proposer throttle (12h sliding window) | ✓ | ✓ | Throttle math on top of `block.timestamp`. CAS sweeps the rate-limit boundary. |
-| OptimisticSelectorRegistry: `(target, selector)` whitelist | ✓ | – | EnumerableSet-backed set membership. Membership-preservation lemma. |
-| ReserveOptimisticGovernor: fast-vote → slow-vote escalation | ✓ | – | State-machine transition from optimistic proposal under veto to standard proposal under confirmation vote. |
-| TimelockControllerOptimistic: bypass vs scheduleBatch ordering | ✓ | – | Two execution paths through one timelock; the bypass path must preserve the slow path's queue ordering. |
-| Reentrancy / access control | – | – | Out of scope. Production relies on OZ `nonReentrant` and role-gated modifiers. Modeling the call graph would require the Yul-equivalence layer. |
+| Domain | Rocq | CAS | Certora | Why |
+|---|---|---|---|---|
+| StakingVault: exchange-rate evolution under deposit/redeem | ✓ | ✓ | ✓ | ERC4626 arithmetic with rounding; CAS sweeps the rounding boundary, Rocq pins monotonicity, Certora confirms zero-edge mapping bytecode-side. |
+| StakingVault: dual-delegation checkpoint independence | ✓ | – | ✓ | OZ `ERC20Votes` checkpoint book over two ledgers (standard + optimistic). Certora `delegateOptimisticIsCallerScoped` confirms scope at the bytecode. |
+| StakingVault: multi-token rewards accounting | ✓ | ✓ | ✓ | Triple-confirmation (`audit_rewards_index_monotone` + `multi_token_rewards.gp` INV-1 + Certora SV10-SV13). Conservation invariant remains Rocq-only — Certora cannot close it without a harness MockERC20 (see WISDOM C020). |
+| UnstakingManager: time-locked withdrawal queue | ✓ | – | ✓ | Lifecycle U1–U9 in Certora; conservation under arbitrary sequences in Rocq. |
+| ProposalLib: proposer throttle (12h sliding window) | ✓ | ✓ | ✓ | Triple-confirmation (`audit_throttle_consume_storage_delta` + `charge_evolution.gp` INV-2 + Certora ThrottleLib 7 rules + intent ThrottleBound 5 rules). Full 2*capacity bound captured in CVL via inductive decomposition (TB1+TB5+TB2). |
+| OptimisticSelectorRegistry: `(target, selector)` whitelist | ✓ | – | ✓ | EnumerableSet-backed; Certora hits HAVOC pathology on the cross-slot consistency (see WISDOM C004) — symmetric provable directions covered. |
+| ReserveOptimisticGovernor: fast-vote → slow-vote escalation | ✓ | – | ✓ | State machine R1–R16 in Certora; no-de-escalation theorem in Rocq. Channel separation explicitly partitioned in `intent/ChannelSeparation.spec` (CS1–CS4). |
+| TimelockControllerOptimistic: bypass vs scheduleBatch ordering | ✓ | ✓ | ✓ | Triple-confirmation (`audit_timelock_bypass_preserves_slow_path` + `scheduling_ordering.gp` INV-5 + Certora T1–T10 plus boundary precision pair). |
+| Veto-coalition reachability (Cantina-class) | – | – | ✓ | Intent-derived in Certora alone; the scenario rule + structural invariant pair caught the PR #36 wrong-supply-denominator on the pre-fix contract. |
+| Reentrancy / access control | – | – | partial | Auth rules in Certora across all 9 contracts. Direct re-entry modeling not feasible under NONDET token summaries — captured indirectly via CEI rules (UnstakingManager U5+U9). |
 
 (✓ = applies; – = doesn't apply yet, or out of scope)
 
@@ -57,15 +77,22 @@ financial math, but the verification machinery is the same.
 
 | If you want to... | Read |
 |---|---|
-| See the headline theorems | [`rocq/Audit.v`](rocq/Audit.v) |
+| See the Rocq headline theorems | [`rocq/Audit.v`](rocq/Audit.v) |
+| See the Certora coverage matrix | [`certora/README.md`](certora/README.md) |
+| Understand the intent-derived rule methodology | [`certora/notes/cantina_pr36_postmortem.md`](certora/notes/cantina_pr36_postmortem.md) |
+| Browse the governance-shape bug catalog | [`certora/notes/governance_intent_and_shapes.md`](certora/notes/governance_intent_and_shapes.md) |
 | Understand a specific component's math | `rocq/simulations/<Component>.v` (e.g. `StakingVault.v` once added) |
 | Audit the modeling fidelity | [`notes/simulation_fidelity_audit.md`](notes/simulation_fidelity_audit.md) |
 | See `--ir-rocq` compile coverage of every contract | [`notes/ir_rocq_coverage.md`](notes/ir_rocq_coverage.md) |
+| Read the Rocq / Certora footgun catalogs | [`rocq/WISDOM.md`](rocq/WISDOM.md), [`certora/WISDOM.md`](certora/WISDOM.md) |
 | Reproduce the CAS sweeps | `bash cas/run-check.sh` |
 | Build the whole Rocq tree | `bash scripts/rocq-build` |
+| Run a single Certora spec | `source ~/git/reserve/_tools/certora/env.sh && certoraRun.py certora/<Contract>/<Contract>.conf` |
 | Regenerate `--ir-rocq` coverage matrix | `bash scripts/ir-rocq-coverage` |
 
 ## Toolchain
+
+**Rocq + CAS side:**
 
 - **Coq 8.20.1** (`coq-hammer-tactics`, `coq-coqutil`,
   `coq-record-update`)
@@ -83,8 +110,35 @@ financial math, but the verification machinery is the same.
   override via `DOCKER_CONTEXT`. On macOS arm64 with the patched
   native binary in place this fallback is unused.
 
-See the protocol repo's `formal-verification/README.md` for platform
-install instructions; the governor repo uses the same toolchain.
+**Certora side:**
+
+- **Certora Prover (local build)** at
+  `$HOME/git/reserve/formal-verification/CertoraProver`. Built from
+  the open-sourced upstream with a single Gradle wrapper bump
+  (7.2 → 8.5) to run on JDK 21. See `certora/WISDOM.md` C007 for the
+  build-reproducibility notes.
+- **JDK 21** (Homebrew `openjdk@21`)
+- **Z3 4.15.4** (Homebrew `z3`) + **CVC5 1.3.4** (downloaded
+  macOS-arm64-static from `cvc5/cvc5` releases)
+- **LLVM** (Homebrew `llvm`) — for `llvm-symbolizer` and
+  `llvm-dwarfdump` that the Certora native helpers need
+- **Rust 1.81+** (1.93-nightly used here) + `rustfilt`
+- **Graphviz** for TAC-report rendering
+- **solc 0.8.28** matching the contracts' pragma
+
+Toolchain activation:
+```sh
+source ~/git/reserve/_tools/certora/env.sh
+```
+That single source line sets `JAVA_HOME`, the `$CERTORA` env var, the
+PATH for `certoraRun.py`, and activates the Python venv with the
+Certora CLI's Python deps. See `certora/README.md` for the full
+layout.
+
+See the protocol repo's `formal-verification/README.md` for the
+Rocq + CAS install steps; the governor repo uses the same toolchain
+there. The Certora side is governor-specific (the protocol repo
+doesn't currently have a Certora layer).
 
 ## Smoke test
 

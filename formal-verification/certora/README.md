@@ -62,6 +62,43 @@ Plus `spike/Vault.{sol,spec,conf}` — a deliberately-broken-and-fixed
 toy contract that proves the toolchain catches planted bugs (4 VERIFIED
 + 1 intentional VIOLATED).
 
+## Intent-derived rules (`intent/`)
+
+The per-contract specs above are *code-derived* — written by reading
+each contract and asserting properties about what it does. After the
+Cantina contest (PR #36) surfaced a class of bug that all three
+verification layers had missed, a second tranche of **intent-derived**
+rules was added under `intent/`. These rules are sourced from
+user-facing semantics, the threat model, and audit caveats — not from
+code inspection. They can VIOLATE on a correct implementation when
+the spec itself is wrong.
+
+See `notes/cantina_pr36_postmortem.md` for the methodology and
+`notes/governance_intent_and_shapes.md` for the 37-shape bug catalog
+the intent rules are drawn from.
+
+| Spec | Shape | Outcome | Notes |
+|---|---|---|---|
+| `VetoThresholdReachability` | S31 (wrong-population scenario) | VIOLATED on pre-fix | Caught the Cantina PR #36 bug from intent alone in 4s solver time |
+| `VetoCoalitionReachability` | S31 (structural invariant form) | VIOLATED on pre-fix | Same property as above, stronger refactor-resistance |
+| `TransitionedProposalCancel` | S21 (sentinel-value reasoning) | VERIFIED + regression sister | Documents the sentinel → Defeated → G6b load-bearing chain |
+| `ConfirmationPrefixUniqueness` | S35 (proposal-id collision) | VERIFIED | C018 replayed-check harness pattern |
+| `ThrottleBound` | TC1 (Rocq + CAS + Certora) | VERIFIED | Full `2*capacity` bound via TB1+TB5+TB2 induction |
+| `WrongSnapshotTime` | S2 (two-keys-on-one-ghost variant) | VERIFIED | Regression guard |
+| `TimelockPrecision` | S15 (boundary pair) | VERIFIED | Both `==boundary` and `==boundary-1` rules — flips `>` to `>=` violates one |
+| `StateMachineAsymmetry` | S18 + S29 | VERIFIED + healthy-VIOLATED sister | Documents intentional optimistic-vs-pessimistic cancel asymmetry |
+| `CrossDomainAndActorSet` + `.ci` variant | S26 + S27 | VERIFIED | Dual-strength pair: looser for pre-release, path-pruned for CI |
+| `ChannelSeparation` | S33 (channel partition) | VERIFIED | CS3 pins the `isOptimistic <=> vetoThreshold != 0` encoding biconditional |
+| `BypassSaltUniqueness` | S37 (audit caveat displacement) | VERIFIED | Half-displaces `Audit.v` Caveat-11 |
+| `AuthDiscriminator` (GuardianIntent/TimelockIntent/GovernorIntent) | semantic auth | VERIFIED | Stronger forms than the simple "missing role" tests |
+| `RewardConservation` | conservation invariant | did-not-close | Honest documentation of NONDET-balance-of fidelity gap; Rocq closes this |
+
+The methodology is described in detail in
+[`notes/cantina_pr36_postmortem.md`](notes/cantina_pr36_postmortem.md)
+and the catalog in
+[`notes/governance_intent_and_shapes.md`](notes/governance_intent_and_shapes.md).
+Lessons captured as WISDOM C017–C023 ([`WISDOM.md`](WISDOM.md)).
+
 ## What's covered, by surface
 
 - **Role gates** on every privileged setter and admin operation across
