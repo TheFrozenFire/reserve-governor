@@ -1,5 +1,41 @@
 (** End-to-end positive lifecycle: the optimistic-execution flow.
 
+    ============================================================
+    ADVERSARIAL-REVIEW DISCLOSURE (SV1, Caveat-10 in Audit.v)
+    ============================================================
+
+    Read the parallel disclosure in
+    [proofs/EndToEnd_standard_flow.v] for the long form. The
+    short summary for the optimistic flow:
+
+      - The 3-step witness ([propose -> wait -> execute]) sets
+        [vetoThreshold = 1e17] against [pastSupply = 100], for a
+        veto threshold of 10 tokens. Numeric constants picked for
+        [vm_compute], not production realism (realistic supplies
+        are 10^24+).
+
+      - Witness uses [reach_fresh_opt] in the [Reachable p2] step,
+        which bypasses [propose_optimistic]. The throttle/registry/
+        length gates are validated separately by
+        [step1_propose_optimistic_succeeds] but are NOT part of the
+        [Reachable] claim.
+
+      - The [_Hmono] time-monotonicity hypothesis is discarded in
+        the proof body — the numeric constants make the witness
+        work regardless.
+
+      - The witness exercises ONLY the trivial pass-through. No
+        vetoed proposal (no [add_veto] transition), no guardian
+        cancel, no throttle exhaustion, no selector-registry
+        update between propose and execute. The "lifecycle is
+        realizable" claim is realized only along the silent path.
+
+      - Not referenced from [Audit.v]. Zero audit_* notations.
+
+    Read this file as: "happy path types-check coherently." NOT as
+    "the system works under contention."
+    ============================================================
+
     The negative theorems in [Governor_no_double_execution.v] and the
     single-step composition theorems in [Integration_optimistic_propose.v]
     and [Integration_governor_timelock.v] cover "bad things cannot

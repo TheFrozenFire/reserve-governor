@@ -1,5 +1,61 @@
 (** End-to-end standard-execution lifecycle (existence).
 
+    ============================================================
+    ADVERSARIAL-REVIEW DISCLOSURE (SV1, Caveat-10 in Audit.v)
+    ============================================================
+
+    This theorem is decorative. Read this before using it as
+    evidence in any external-facing audit narrative.
+
+    Concrete weaknesses surfaced by the multi-agent review:
+
+      1. Step 3 of the witness chain uses an oracle step
+         [advance_to_std_active] that is NOT a constructor of the
+         per-domain [Governor_no_double_execution.Reachable]
+         inductive. The existence chain lives in a parallel,
+         weaker [JointReachable] relation.
+
+      2. Numeric constants are picked for [vm_compute] friendliness,
+         not realism: [vetoThresholdTok = 1] (a single 1-token vote
+         defeats the parent), [vetoPeriod = 50], no quorum tally
+         arithmetic at all. The standard "voting period" with
+         [c_vetoThrTok = 1] reduces the confirmation gate to "1 >= 1".
+
+      3. The time hypothesis [time_monotone] uses [<=] across t0..t3,
+         and [t2] is never used in the conclusion. Witness can
+         collapse [t1 = t2 = t3] with [votingPeriod = 0] — i.e.
+         vote window of a single instant.
+
+      4. [_Hmono] is discarded in the proof body. The witness works
+         because the numeric constants make it work, not because
+         the monotonicity hypothesis is consumed.
+
+      5. The optimistic theorem uses [reach_fresh_opt] which bypasses
+         [propose_optimistic] entirely — the throttle/registry/
+         length gates are not part of the [Reachable] claim.
+
+      6. Neither theorem in this file is referenced from [Audit.v].
+         Zero audit_* notations advertise it.
+
+    Read this file as: "the type signatures of the simulation's
+    transitions compose without ambiguity into a happy-path
+    sequence, given hand-picked constants." NOT as "the system
+    works end-to-end under contention."
+
+    A real end-to-end existence theorem would:
+      - Use the canonical per-domain [Reachable] (Governor's 10-
+        constructor version), not [JointReachable].
+      - Bind concrete constants to realistic values (vetoThresholdTok
+        proportional to a realistic supply, vetoPeriod in hours).
+      - Drive vote tally through actual [add_veto] transitions, not
+        by skipping past [mark_std_succeeded] with no votes cast.
+      - Use [<] (strict) monotonicity on the time chain.
+
+    Until that rebuild lands, the file remains as documentation of
+    a happy path that the system *could* exhibit. It is not
+    evidence that the system *does* exhibit it under any contention.
+    ============================================================
+
     Audit context. The Governor + Timelock pair is the protocol's
     governance kernel: an optimistic proposal escalates into a
     standard confirmation vote, the standard vote succeeds, the calls
