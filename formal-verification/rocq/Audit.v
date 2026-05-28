@@ -80,6 +80,7 @@ Require ReserveGovernor.proofs.SelectorRegistry.
 Require ReserveGovernor.proofs.StakingVaultExchange.
 Require ReserveGovernor.proofs.StakingVaultRewards.
 Require ReserveGovernor.proofs.StakingVaultDelegation.
+Require ReserveGovernor.proofs.StakingVaultDelegation_validity.
 Require ReserveGovernor.proofs.ProposalLib.
 Require ReserveGovernor.proofs.ProposalLib_validity.
 Require ReserveGovernor.proofs.Governor.
@@ -453,6 +454,13 @@ Notation audit_rewards_conservation :=
         credits the zero delegate.
       - [audit_delegation_burn_no_zero_credit] : burning never
         credits the zero delegate.
+      - [audit_delegation_transfer_preserves_validity] : the storage
+        shape invariant (non-negative balances and votes) survives
+        any transfer that respects the natural debit preconditions.
+      - [audit_delegation_set_opt_delegate_preserves_validity] :
+        same for optimistic-delegate re-pointing.
+      - [audit_delegation_set_std_delegate_preserves_validity] :
+        same for standard-delegate re-pointing.
 *)
 
 Notation audit_delegation_transfer_preserves_total_votes :=
@@ -475,6 +483,15 @@ Notation audit_delegation_mint_no_zero_credit :=
 
 Notation audit_delegation_burn_no_zero_credit :=
   ReserveGovernor.proofs.StakingVaultDelegation.StakingVaultDelegationProofs.transfer_burn_no_zero_credit.
+
+Notation audit_delegation_transfer_preserves_validity :=
+  ReserveGovernor.proofs.StakingVaultDelegation_validity.StakingVaultDelegationValidity.transfer_preserves_validity.
+
+Notation audit_delegation_set_opt_delegate_preserves_validity :=
+  ReserveGovernor.proofs.StakingVaultDelegation_validity.StakingVaultDelegationValidity.set_opt_delegate_preserves_validity.
+
+Notation audit_delegation_set_std_delegate_preserves_validity :=
+  ReserveGovernor.proofs.StakingVaultDelegation_validity.StakingVaultDelegationValidity.set_std_delegate_preserves_validity.
 
 
 (** ============================================================

@@ -74,6 +74,7 @@ proofs/StakingVaultRewards_conservation.v
 simulations/StakingVaultDelegation.v
 proofs/StakingVaultDelegation.v
 proofs/StakingVaultDelegation_xcheck.v
+proofs/StakingVaultDelegation_validity.v
 
 # --- ProposalLib ---
 simulations/ProposalLib.v
