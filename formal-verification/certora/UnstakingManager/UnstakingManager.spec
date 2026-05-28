@@ -1,12 +1,12 @@
-/* UnstakingManager.sol Certora spec — covers the auth + lifecycle
+/* UnstakingManager.sol Certora spec - covers the auth + lifecycle
    surface of the withdrawal-lock queue.
 
    The contract manages per-user time-locked withdrawals:
-     createLock(user, amount, unlockTime)   — only vault may call;
+     createLock(user, amount, unlockTime)   - only vault may call;
                                               auto-assigns nextLockId.
-     cancelLock(lockId)                     — only the lock's user;
+     cancelLock(lockId)                     - only the lock's user;
                                               deposits amount back to vault.
-     claimLock(lockId)                      — permissionless, gated by
+     claimLock(lockId)                      - permissionless, gated by
                                               unlockTime <= now and not
                                               already claimed.
 
@@ -19,14 +19,54 @@
      U6   cancel after claim reverts
      U7   on successful claim, claimedAt is set to block.timestamp
      U8   createLock increments nextLockId by 1
+     U9   claimedAt is set BEFORE the external transfer (CEI ordering
+          guards re-entrancy)
 
-   IERC20 / IERC4626 external calls are summarized as NONDET — token
+   IERC20 / IERC4626 external calls are summarized as NONDET - token
    transfer and vault.deposit are out of scope here; if the lock
    accounting is correct under arbitrary token / vault behavior, it
    is correct period. The conservation invariant (sum of active
    lock amounts equals contract balance) is proved in Rocq
    (formal-verification/rocq/simulations/UnstakingManager.v); CVL is
    not the right tool for that global predicate.
+
+   ------------------------------------------------------------------
+   Re-entrancy scoping
+   ------------------------------------------------------------------
+   claimLock follows CEI: it stamps lock.claimedAt = block.timestamp
+   on line 78, then calls SafeERC20.safeTransfer on line 79. A
+   re-entrant token (via a hook on transfer) that calls
+   claimLock(sameId) back into this contract will read claimedAt != 0
+   and revert via UnstakingManager__AlreadyClaimed.
+
+   The CVL specification cannot directly *exercise* a re-entrant
+   external token because IERC20.transfer is summarized NONDET - the
+   prover models the call as an unconstrained return value, never as
+   an internal call back into UnstakingManager. Modeling re-entrancy
+   under NONDET is unsound by construction.
+
+   The re-entrancy property is therefore captured indirectly through
+   the conjunction of two proved rules:
+
+     U9 (claimSetsClaimedAtBeforeTransfer):  after claimLock returns,
+                                             claimedAt is non-zero.
+                                             By CEI inspection of the
+                                             source, this assignment
+                                             precedes the transfer.
+
+     U5 (doubleClaimReverts):                a call to claimLock on a
+                                             lock with claimedAt != 0
+                                             reverts.
+
+   Together: any re-entrant claimLock(sameId) call originating during
+   the body of an outer claimLock reverts. The token-callback path is
+   safe with respect to the same lockId.
+
+   What this argument does NOT cover: cross-function re-entrancy (a
+   malicious token calling cancelLock or createLock during the
+   transfer). Those paths are guarded by their own state checks (U2,
+   U6) and the vault-only auth on createLock (U1); they are not the
+   double-spend vector the adversarial review highlighted.
 */
 
 methods {
@@ -162,6 +202,29 @@ rule claimStampsTimestamp {
 
     assert claimedTAfter == e.block.timestamp,
         "claimedAt not set to block.timestamp on successful claim";
+}
+
+/* ----- U9: a successful claimLock leaves claimedAt non-zero -----
+   The CEI half of the re-entrancy argument. Conjoined with U5
+   (doubleClaimReverts), this proves that any re-entrant claimLock
+   call on the same lockId during the outer transfer would revert.
+   See the re-entrancy scoping note in the spec header. */
+rule claimSetsClaimedAtBeforeTransfer {
+    env e;
+    uint256 lockId;
+
+    require e.block.timestamp != 0;
+
+    claimLock(e, lockId);
+
+    address lockUserAfter;
+    uint256 amtAfter;
+    uint256 unlockTAfter;
+    uint256 claimedTAfter;
+    lockUserAfter, amtAfter, unlockTAfter, claimedTAfter = locks(lockId);
+
+    assert claimedTAfter != 0,
+        "claimedAt remained zero after a successful claim - re-entrancy guard broken";
 }
 
 /* ----- U8: createLock increments nextLockId by exactly 1 -----

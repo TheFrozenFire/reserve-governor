@@ -16,17 +16,25 @@
                                       unregisterSelectors
      R3   forbiddenTargetSelf:       registerSelectors rejects
                                       target == address(this)
+     R3b  forbiddenTargetGovernor:   registerSelectors rejects
+                                      target == governor
+     R3c  forbiddenTargetTimelock:   registerSelectors rejects
+                                      target == timelock
+     R3d  forbiddenTargetToken:      registerSelectors rejects
+                                      target == token
      R4   zeroSelectorRejected:      registerSelectors rejects the
                                       zero selector
      R5   registerSucceedsOnValidInput: registerSelectors does NOT
                                       revert when called by the
                                       timelock on a non-forbidden
                                       target with a non-zero selector
-                                      — the only revert paths are the
+                                      - the only revert paths are the
                                       auth check and the two validation
                                       checks
      R6   isAllowedAfterUnregister:  a single-selector
-                                      unregisterSelectors leaves
+                                      unregisterSelectors on a
+                                      previously-allowed (target,
+                                      selector) leaves
                                       isAllowed(target, selector) = false
 
    Note on EnumerableSet: a property like "after addSelector,
@@ -108,6 +116,78 @@ rule forbiddenTargetSelf {
     assert lastReverted, "registerSelectors accepted self as target";
 }
 
+/* ----- R3b: forbidden target rejected (target == governor) -----
+   The four forbidden targets in _add() are: self, governor, timelock,
+   token. R3 covered self; R3b/R3c/R3d cover the other three. */
+rule forbiddenTargetGovernor {
+    env e;
+    IOptimisticSelectorRegistry.SelectorData[] data;
+    bytes4 selector;
+    address governorAddr;
+
+    require e.msg.sender == timelockAddr();
+    require governorAddr == governor();
+    // Pin governor != self so we're isolating the governor branch of
+    // the check, not the self branch.
+    require governorAddr != currentContract;
+    require data.length == 1;
+    require data[0].target == governorAddr;
+    require data[0].selectors.length == 1;
+    require data[0].selectors[0] == selector;
+    require selector != to_bytes4(0);
+
+    registerSelectors@withrevert(e, data);
+
+    assert lastReverted, "registerSelectors accepted governor as target";
+}
+
+/* ----- R3c: forbidden target rejected (target == timelock) ----- */
+rule forbiddenTargetTimelock {
+    env e;
+    IOptimisticSelectorRegistry.SelectorData[] data;
+    bytes4 selector;
+    address tlAddr;
+
+    require e.msg.sender == timelockAddr();
+    require tlAddr == timelockAddr();
+    // Isolate the timelock branch: distinct from self and governor.
+    require tlAddr != currentContract;
+    require tlAddr != governor();
+    require data.length == 1;
+    require data[0].target == tlAddr;
+    require data[0].selectors.length == 1;
+    require data[0].selectors[0] == selector;
+    require selector != to_bytes4(0);
+
+    registerSelectors@withrevert(e, data);
+
+    assert lastReverted, "registerSelectors accepted timelock as target";
+}
+
+/* ----- R3d: forbidden target rejected (target == token) ----- */
+rule forbiddenTargetToken {
+    env e;
+    IOptimisticSelectorRegistry.SelectorData[] data;
+    bytes4 selector;
+    address tokAddr;
+
+    require e.msg.sender == timelockAddr();
+    require tokAddr == tokenAddr();
+    // Isolate the token branch: distinct from self, governor, timelock.
+    require tokAddr != currentContract;
+    require tokAddr != governor();
+    require tokAddr != timelockAddr();
+    require data.length == 1;
+    require data[0].target == tokAddr;
+    require data[0].selectors.length == 1;
+    require data[0].selectors[0] == selector;
+    require selector != to_bytes4(0);
+
+    registerSelectors@withrevert(e, data);
+
+    assert lastReverted, "registerSelectors accepted token as target";
+}
+
 /* ----- R4: zero selector rejected at add boundary ----- */
 rule zeroSelectorRejected {
     env e;
@@ -163,10 +243,14 @@ rule registerSucceedsOnValidInput {
         "registerSelectors reverted on valid (timelock, non-forbidden, non-zero) input";
 }
 
-/* ----- R6: after a successful single-selector unregisterSelectors,
-   isAllowed is false. Proxy: removal is reflected in the public view.
-   Note: unregister has no target/selector validation; the only
-   precondition is the timelock auth. */
+/* ----- R6: after a successful single-selector unregisterSelectors
+   on a previously-allowed (target, selector), isAllowed is false.
+
+   Earlier revision lacked `require isAllowed(target, selector);`,
+   which made the rule trivially true for pairs that were never
+   registered (vacuous-pre satisfaction). The precondition forces
+   the prover to exercise the actual remove path through the
+   EnumerableSet. */
 rule isAllowedAfterUnregister {
     env e;
     IOptimisticSelectorRegistry.SelectorData[] data;
@@ -178,6 +262,9 @@ rule isAllowedAfterUnregister {
     require data[0].target == target;
     require data[0].selectors.length == 1;
     require data[0].selectors[0] == selector;
+
+    // Non-trivialize: the pair must have been allowed before the call.
+    require isAllowed(target, selector);
 
     unregisterSelectors(e, data);
 
