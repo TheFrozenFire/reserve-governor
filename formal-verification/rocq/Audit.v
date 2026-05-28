@@ -1038,9 +1038,12 @@ Notation audit_timelock_done_absorbing :=
         across every role kind (admin / manager / guardian).
       - [audit_guardian_renounce_role_preserves_validity] : OZ's
         inherited [renounceRole] preserves the invariant.
-      - [audit_guardian_cancel_preserves_validity] : [cancel] is a
-        pure dispatch and trivially preserves storage validity.
-      - [audit_guardian_revoke_proposer_preserves_validity] :
+      - [audit_guardian_cancel_does_not_mutate_storage] : [cancel]
+        returns a [CancelEvent.t], not a [State.t] — there is no
+        post-state distinct from the pre-state on the Guardian side.
+        (See Caveat-4: this says nothing about the downstream
+        Governor mutation that [cancel] actually triggers on chain.)
+      - [audit_guardian_revoke_proposer_does_not_mutate_storage] :
         [revokeOptimisticProposer] dispatches to the timelock and
         does not touch Guardian's own role sets.
 *)
@@ -1084,11 +1087,11 @@ Notation audit_guardian_revoke_role_preserves_validity :=
 Notation audit_guardian_renounce_role_preserves_validity :=
   ReserveGovernor.proofs.Guardian_validity.GuardianValidity.renounce_preserves_validity.
 
-Notation audit_guardian_cancel_preserves_validity :=
-  ReserveGovernor.proofs.Guardian_validity.GuardianValidity.cancel_preserves_validity.
+Notation audit_guardian_cancel_does_not_mutate_storage :=
+  ReserveGovernor.proofs.Guardian_validity.GuardianValidity.cancel_does_not_mutate_storage.
 
-Notation audit_guardian_revoke_proposer_preserves_validity :=
-  ReserveGovernor.proofs.Guardian_validity.GuardianValidity.revoke_optimistic_proposer_preserves_validity.
+Notation audit_guardian_revoke_proposer_does_not_mutate_storage :=
+  ReserveGovernor.proofs.Guardian_validity.GuardianValidity.revoke_optimistic_proposer_does_not_mutate_storage.
 
 
 (** ============================================================

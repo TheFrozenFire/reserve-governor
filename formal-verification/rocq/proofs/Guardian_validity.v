@@ -210,35 +210,42 @@ Proof.
   - exact Hmnz.
 Qed.
 
-(** ----- cancel doesn't mutate Guardian storage at all.
+(** ----- [cancel] does not mutate Guardian storage at all.
 
-    Unlike grant / revoke / renounce, [cancel] returns a [CancelEvent.t]
-    rather than a [State.t] — the simulation tracks the dispatched call
-    without modeling the downstream governor's mutation. Validity
-    preservation is therefore trivial: there is no post-state distinct
-    from the pre-state. The statement below makes that explicit so the
-    audit can reference it. ----- *)
-Lemma cancel_preserves_validity
+    Honest framing: the simulation's [cancel] returns a
+    [CancelEvent.t], not a [State.t]. There is no post-state being
+    constrained — the lemma below is structurally [P -> P]. Stating
+    it as a "preserves validity" claim (which the previous version
+    did) was misleading; this version's name makes the actual
+    content explicit.
+
+    Note (SV6 from adversarial review): the audit-narrative claim
+    "Guardian.cancel preserves validity" is therefore stronger than
+    what this lemma proves. The deployed [cancel] reaches across to
+    mutate Governor state; the Guardian model treats that as
+    out-of-scope. Per Caveat-4 in Audit.v, the oracle-purity
+    assumption in [cancel] is itself unsound across TOCTOU windows.
+    ----- *)
+Lemma cancel_does_not_mutate_storage
     (s : State.t)
     (io : ProposalId -> bool) (ps : ProposalId -> ProposalState)
     (gpi : ProposalKey.t -> ProposalId) (hc : Address -> bool)
     (caller governor : Address) (key : ProposalKey.t) (ev : CancelEvent.t) :
-  Valid.state s ->
   cancel s io ps gpi hc caller governor key = Result.Success ev ->
-  Valid.state s.
-Proof. intros Hv _. exact Hv. Qed.
+  (* No State.t in the conclusion — cancel returns an event only. *)
+  True.
+Proof. intros _. exact I. Qed.
 
-(** ----- revokeOptimisticProposer doesn't mutate Guardian storage either.
-
-    The operation dispatches to the timelock; Guardian's own role
-    sets are untouched. Same shape as [cancel_preserves_validity]. ----- *)
-Lemma revoke_optimistic_proposer_preserves_validity
+(** ----- [revokeOptimisticProposer] does not mutate Guardian
+    storage either. Dispatches to the timelock; Guardian's own role
+    sets are untouched. Same honest framing as
+    [cancel_does_not_mutate_storage]. ----- *)
+Lemma revoke_optimistic_proposer_does_not_mutate_storage
     (s : State.t)
     (tl_or : Address -> Address) (hc : Address -> bool)
     (caller governor account : Address) (ev : RevokeEvent.t) :
-  Valid.state s ->
   revokeOptimisticProposer s tl_or hc caller governor account = Result.Success ev ->
-  Valid.state s.
-Proof. intros Hv _. exact Hv. Qed.
+  True.
+Proof. intros _. exact I. Qed.
 
 End GuardianValidity.
