@@ -1,11 +1,14 @@
 /* ReserveOptimisticGovernor.sol Certora spec — covers the auth-surface
-   overlay this contract adds on top of OZ Governor.
+   overlay this contract adds on top of OZ Governor, plus the
+   optimistic-vs-pessimistic state-machine guards on the
+   propose/queue/execute/castVote lifecycle.
 
    This is the largest contract in the codebase. We deliberately do NOT
-   verify the full propose/queue/execute state machine — that lives in
-   the Rocq proofs at formal-verification/rocq/proofs/Governor*.v. Here
-   we isolate the optimistic-overlay invariants:
+   verify the full propose/queue/execute state machine end-to-end —
+   that lives in the Rocq proofs at formal-verification/rocq/proofs/
+   Governor*.v. Here we isolate the optimistic-overlay invariants:
 
+   Setter / auth rules:
      R1   updateTimelock always reverts (locked timelock)
      R2   setProposalThrottle requires onlyGovernance
      R3   setOptimisticParams requires onlyGovernance
@@ -23,6 +26,24 @@
           (companion to R10; closes adversarial F4 in
           notes/adversarial_spec_correctness.md)
 
+   Lifecycle / state-machine rules (P1 from notes/adversarial_synthesis.md;
+   close coverage-gap CG1 HIGH):
+     R13  optimisticProposalCannotBeQueued: queue() reverts when the
+          proposal id is optimistic (vetoThreshold > 0). Maps to the
+          OptimisticGovernor__OptimisticProposalCannotBeQueued error
+          and to the audit_no_de_escalation Rocq theorem family.
+     R14  optimisticProposalAcceptsOnlyAgainst: castVote() reverts
+          when the proposal id is optimistic and the support value
+          is not Against (= 0). Maps to the
+          OptimisticGovernor__OptimisticProposalCanOnlyBeVetoed error.
+     R15  optimisticProposalNeedsNoQueuing: the view
+          proposalNeedsQueuing() returns false whenever the proposal
+          id is optimistic — the contract's bypass invariant.
+     R16  cancelRequiresCancellerOrProposer: cancel() reverts when
+          the caller is neither the timelock's CANCELLER_ROLE holder
+          nor the proposal's proposer. Closes the cancel auth-gate
+          half of the state machine.
+
    Heavy NONDET summarisation is used for OZ Governor inherited internals
    and for the external ProposalLib / ThrottleLib delegatecalls. We're
    proving the optimistic-overlay logic, not OZ's internals.
@@ -30,25 +51,53 @@
    Exception: `hasRole` on the timelock is ghost-backed instead of NONDET
    so two reads of the same (role, account) pair agree. The fidelity
    concern is documented as F3 in notes/adversarial_summary_fidelity.md.
-   None of the current R1-R12 rules dispatch through `hasRole`, but the
-   ghost is a no-cost fidelity upgrade that lets future cancel-path or
-   propose-path rules `require ghostHasRole[role][addr] == ...` to pin
-   the auth outcome.
+   R16 explicitly reads ghostHasRole to pin the CANCELLER_ROLE answer.
+   `state()` is also ghost-backed at the wildcard-external surface — that
+   catches inter-contract reads; intra-contract dispatch from OZ's
+   _validateStateBitmap runs the real override, which is sound because
+   the lifecycle rules R13/R14 conclude revert on either path (state-check
+   rejects first, or the optimistic-discriminator check rejects second).
+   This mirrors the Guardian G6a/G6b pattern in Guardian.spec.
 
    Note on conf: `disable_internal_function_instrumentation: true` skips
    the auto-finder compilation pass (which has a path-resolution bug on
    this contract when the sources tree is deep). Internal call summaries
    in this spec are wildcard-external only, so we don't need autofinders.
+   `optimistic_hashing: true` is required so the prover treats
+   getProposalId(...) as a collision-free hash — needed by R13 to relate
+   the proposal id used inside queue() to the one we constrain
+   vetoThreshold on.
 */
+
+/* VoteType enum (GovernorCountingSimpleUpgradeable), ABI-encoded as
+   uint8: 0=Against 1=For 2=Abstain. R14 keys on Against. */
+definition AGAINST() returns uint8 = 0;
+
+/* CANCELLER_ROLE constant from contracts/utils/Constants.sol —
+   keccak256("CANCELLER_ROLE"). Hard-coded here so R16 can pin
+   ghostHasRole[CANCELLER_ROLE()][caller]. */
+definition CANCELLER_ROLE() returns bytes32 =
+    to_bytes32(0xfd643c72710c63c0180259aba6b2d05451e3591a24e58b62239378085726f783);
 
 /* Ghost-backed hasRole. Replaces NONDET so that two AccessControl
    reads of the same (role, account) pair in a single transaction
    agree. Used by `_validateCancel` (CANCELLER_ROLE) and
-   ProposalLib.proposeOptimistic (OPTIMISTIC_PROPOSER_ROLE), both of
-   which are out-of-scope for the current rule set but in-scope for
-   future extensions. Mirrors RewardTokenRegistry.spec / VersionRegistry.spec
-   pattern (WISDOM C015). */
+   ProposalLib.proposeOptimistic (OPTIMISTIC_PROPOSER_ROLE). R16
+   reads ghostHasRole directly; earlier rules are unaffected because
+   the ghost is fully unconstrained (behaves like NONDET on them).
+   Mirrors RewardTokenRegistry.spec / VersionRegistry.spec pattern
+   (WISDOM C015). */
 ghost mapping(bytes32 => mapping(address => bool)) ghostHasRole;
+
+/* Ghost-backed state(proposalId). Pins the inter-contract reads of
+   `governor.state(pid)` to a single value per proposalId — relevant
+   if a future rule needs to thread state across two external reads.
+   The intra-contract dispatch from OZ's _validateStateBitmap runs
+   the real override; R13/R14 are sound under either dispatch since
+   their conclusion is "queue/castVote reverts" — both the
+   state-bitmap reject path and the optimistic-discriminator reject
+   path terminate in revert. */
+ghost mapping(uint256 => uint8) ghostState;
 
 methods {
     // Reserve overlay setters
@@ -59,9 +108,18 @@ methods {
     // Envfree readers
     function proposalThrottleCapacity() external returns (uint256) envfree;
     function timelock() external returns (address) envfree;
+    function vetoThreshold(uint256) external returns (uint256) envfree;
+    function proposalProposer(uint256) external returns (address) envfree;
     // Auto-generated getter for the public `optimisticParams` field. The
     // struct unpacks to (uint48 vetoDelay, uint32 vetoPeriod, uint256 vetoThreshold).
     function optimisticParams() external returns (uint48, uint32, uint256) envfree;
+
+    // === state() ghost-backed summary ===
+    // Wildcard-external: catches `governor.state(pid)` calls from
+    // other contracts. The intra-contract dispatch from
+    // _validateStateBitmap runs the real override and is not
+    // intercepted — see header for why this is sound for R13/R14.
+    function _.state(uint256 pid) external => ghostState[pid] expect uint8;
 
     // === NONDET summaries for everything we don't want to model ===
     // Library external functions (delegatecalled)
@@ -316,4 +374,98 @@ rule setOptimisticParamsPersists {
     assert dAfter == params.vetoDelay, "vetoDelay not persisted";
     assert pAfter == params.vetoPeriod, "vetoPeriod not persisted";
     assert tAfter == params.vetoThreshold, "vetoThreshold not persisted";
+}
+
+/* ----- R13: queue() reverts on optimistic proposal -----
+   _queueOperations override unconditionally reverts with
+   OptimisticGovernor__OptimisticProposalCannotBeQueued when the
+   proposal id is optimistic (vetoThreshold[pid] != 0). queue() in
+   OZ Governor first runs _validateStateBitmap(pid, Succeeded), then
+   _queueOperations. We do NOT constrain state — either the
+   state-bitmap rejects first or the optimistic-discriminator
+   rejects second, but the public-entry call must revert as long as
+   the proposal is optimistic. The "optimistic" flag is real
+   storage (optimisticProposalDetails[pid].vetoThreshold != 0,
+   exposed by vetoThreshold(pid)).
+
+   With optimistic_hashing on, the prover treats keccak as
+   collision-free, so calling getProposalId(args) here returns the
+   same id queue() will compute internally. */
+rule optimisticProposalCannotBeQueued {
+    env e;
+    address[] targets;
+    uint256[] values;
+    bytes[] calldatas;
+    bytes32 descriptionHash;
+
+    uint256 pid = getProposalId(e, targets, values, calldatas, descriptionHash);
+    require vetoThreshold(pid) != 0; // proposal is optimistic
+
+    queue@withrevert(e, targets, values, calldatas, descriptionHash);
+
+    assert lastReverted, "queue accepted an optimistic proposal";
+}
+
+/* ----- R14: castVote() rejects non-Against on optimistic proposal -----
+   _countVote requires (!_isOptimistic || support == VoteType.Against).
+   The castVote → _castVote → _countVote chain therefore reverts when
+   the proposal id is optimistic AND the support value is For (1) or
+   Abstain (2) or any other non-zero value. The state-bitmap check on
+   ProposalState.Active runs first; either path terminates in revert. */
+rule optimisticProposalAcceptsOnlyAgainst {
+    env e;
+    uint256 proposalId;
+    uint8 support;
+
+    require vetoThreshold(proposalId) != 0; // proposal is optimistic
+    require support != AGAINST();           // For, Abstain, or invalid
+
+    castVote@withrevert(e, proposalId, support);
+
+    assert lastReverted, "castVote accepted non-Against vote on optimistic proposal";
+}
+
+/* ----- R15: proposalNeedsQueuing == false on optimistic proposals -----
+   The override at ReserveOptimisticGovernor.sol:294 returns false
+   early when _isOptimistic(pid). Bypass invariant: optimistic
+   execution never routes through the timelock's schedule queue.
+   Pure-view rule — the function reads vetoThreshold storage
+   directly so no ghost is needed for soundness. */
+rule optimisticProposalNeedsNoQueuing {
+    env e;
+    uint256 proposalId;
+
+    require vetoThreshold(proposalId) != 0;
+
+    bool needs = proposalNeedsQueuing(e, proposalId);
+
+    assert !needs, "proposalNeedsQueuing returned true on optimistic proposal";
+}
+
+/* ----- R16: cancel() requires caller is canceller or proposer -----
+   _validateCancel returns true if hasRole(CANCELLER_ROLE, caller),
+   else returns false unless caller == proposalProposer(pid). If
+   neither holds, _validateCancel returns false and cancel reverts
+   with GovernorUnableToCancel.
+
+   We pin ghostHasRole[CANCELLER_ROLE][caller] = false and require
+   caller != proposalProposer(pid). The proposalId-from-calldata
+   match relies on optimistic_hashing (same trick as R13). */
+rule cancelRequiresCancellerOrProposer {
+    env e;
+    address[] targets;
+    uint256[] values;
+    bytes[] calldatas;
+    bytes32 descriptionHash;
+
+    uint256 pid = getProposalId(e, targets, values, calldatas, descriptionHash);
+
+    // Caller is neither the CANCELLER_ROLE holder on the timelock
+    // nor the proposer of this proposal.
+    require !ghostHasRole[CANCELLER_ROLE()][e.msg.sender];
+    require e.msg.sender != proposalProposer(pid);
+
+    cancel@withrevert(e, targets, values, calldatas, descriptionHash);
+
+    assert lastReverted, "unauthorized caller succeeded in cancel";
 }
