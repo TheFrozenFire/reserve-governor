@@ -124,6 +124,9 @@ proofs/VersionRegistry_xcheck.v
 # --- Integration: withdraw lockup conservation ---
 proofs/Integration_withdraw_lockup.v
 
+# --- Integration: withdraw immediate (unstakingDelay = 0 branch) ---
+proofs/Integration_withdraw_immediate.v
+
 # --- Integration: optimistic propose ---
 proofs/Integration_optimistic_propose.v
 

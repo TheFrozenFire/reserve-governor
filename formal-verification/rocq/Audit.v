@@ -109,6 +109,7 @@ Require ReserveGovernor.proofs.Timelock_single_shot.
 
 (* Integration modules — cross-domain composition theorems. *)
 Require ReserveGovernor.proofs.Integration_withdraw_lockup.
+Require ReserveGovernor.proofs.Integration_withdraw_immediate.
 Require ReserveGovernor.proofs.Integration_optimistic_propose.
 Require ReserveGovernor.proofs.Integration_governor_timelock.
 Require ReserveGovernor.proofs.Integration_no_throttle_bypass.
@@ -1067,6 +1068,22 @@ Notation audit_integration_withdraw_with_lockup_conserves_value :=
 
 Notation audit_integration_cancel_drops_total_active :=
   ReserveGovernor.proofs.Integration_withdraw_lockup.IntegrationWithdrawLockup.cancel_drops_total_active.
+
+(** ----- Integration: immediate-transfer branch (unstakingDelay = 0) -----
+
+    [audit_integration_withdraw_immediate_conserves_value] : the
+    vault's [totalDeposited] decrement equals the receiver's ERC20
+    balance increase, with no lockup in between.
+
+    [audit_integration_withdraw_immediate_debits_vault] : the vault's
+    own ERC20 balance loses [assets], closing the transfer pair.
+*)
+
+Notation audit_integration_withdraw_immediate_conserves_value :=
+  ReserveGovernor.proofs.Integration_withdraw_immediate.IntegrationWithdrawImmediate.withdraw_immediate_conserves_value.
+
+Notation audit_integration_withdraw_immediate_debits_vault :=
+  ReserveGovernor.proofs.Integration_withdraw_immediate.IntegrationWithdrawImmediate.withdraw_immediate_debits_vault.
 
 
 (** ----- Integration: Governor + ProposerThrottle + SelectorRegistry -----
