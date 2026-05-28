@@ -119,6 +119,193 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
 (** ============================================================
     ============================================================
     ===                                                      ===
+    ===              Coverage caveats (READ FIRST)           ===
+    ===                                                      ===
+    ============================================================
+    ============================================================
+
+    The audit-narrative theorems below are stated as cleanly as
+    possible, but several headline names sound stronger than what
+    the theorem actually constrains. This section is the honest
+    caveat surface — an external auditor reading Audit.v should
+    treat it as the asterisk on every Part I/II/III claim that
+    follows.
+
+    Source: multi-vantage adversarial review documented at
+    [../../notes/adversarial_review_synthesis.md] (banked from the
+    six-agent review of 2026-05-27).
+
+    Caveat-1 (rewards conservation is conditional on WF_accrue).
+    ---------------------------------------------------------------
+    [audit_rewards_conservation] in Section 5 is proved by
+    induction over [Reachable], which is built from
+    [step_well_formed]. The [WF_accrue] constructor of
+    [step_well_formed] requires
+      accrueUser delta <= balanceAccounted - sum_accrued - totalClaimed
+    at every step — i.e. the per-step bound that IS the conservation
+    inequality. So the theorem is "if every reachable accrue step
+    already preserved conservation, then conservation holds." A
+    real first-principles discharge requires three new invariants
+    threaded through Reachable (supply consistency, delta
+    accounting, gap monotonicity); see
+    [../../notes/wf_accrue_discharge.md]. Treat the theorem as a
+    refactoring of the obligation onto callers, not a reduction of
+    the trust surface.
+
+    Caveat-2 (no-throttle-bypass is per-account, not system-level).
+    ---------------------------------------------------------------
+    [audit_neg_no_throttle_bypass] in Section 9 bounds successful
+    consumes at [2 * capacity] per window per proposer. With N
+    proposer-role holders, total system throughput is N * 2 *
+    capacity. No theorem bounds the proposer-set size or sybil
+    cost. Read this claim as "a single proposer can't exceed 2x";
+    NOT "the protocol can't exceed 2x" globally.
+
+    Caveat-3 (upgrade_authorized excludes the admin-role gate).
+    ---------------------------------------------------------------
+    The Section 11 integration theorems
+    ([audit_integration_register_then_authorize_self] et al.) prove
+    the version-registry-side check (latest && !deprecated) for
+    [StakingVault._authorizeUpgrade], explicitly NOT the
+    [onlyRole(DEFAULT_ADMIN_ROLE)] modifier on that function. A
+    caller who somehow reaches [_authorizeUpgrade] without
+    DEFAULT_ADMIN_ROLE is NOT excluded by any landed theorem.
+    Source: [../../notes/yul_equivalence_upgrade_authorized.md].
+
+    Caveat-4 (Guardian oracle purity is unsound across TOCTOU).
+    ---------------------------------------------------------------
+    [audit_guardian_only_cancel_reverts_on_defeated],
+    [audit_guardian_cancel_guardian_path] et al. take
+    [is_optimistic_oracle] and [proposal_state_oracle] as pure
+    [ProposalId -> ...] functions. On chain these are external
+    SLOADs against mutable Governor storage, racing with
+    [transitionToPessimistic] and [_tallyUpdated]. A guardian
+    cancel that the proofs say succeeds may revert on chain when
+    the proposal transitions between reads. The model assumes
+    serialization the EVM does not provide.
+
+    Caveat-5 (Yul equivalence is sketched, not mechanized).
+    ---------------------------------------------------------------
+    Every audit_* claim about Solidity-source behavior is stated
+    against the hand-written Gallina simulation, not the emitted
+    Yul bytecode. The bridge sketch in
+    [../../notes/yul_equivalence_upgrade_authorized.md] identifies
+    the work needed for one example. Until the bridge is
+    mechanized, divergence between simulation and bytecode is not
+    audited.
+
+    Caveat-6 (Sim/contract precondition gap on several operations).
+    ---------------------------------------------------------------
+    Adversarial review found that the simulation under-constrains
+    several operations relative to the contract — accepting inputs
+    the production code refuses. Concrete known gaps (sim-fidelity
+    review):
+      - Governor.add_veto admits votes from any phase; contract
+        rejects via _validateStateBitmap(Active) and
+        _countVote(Against only).
+      - Governor.cancel skips _validateCancel role + state rules.
+      - Governor.observe misses the pastSupply==0 -> Canceled branch.
+      - StakingVaultExchange.withdraw collapses both unstakingDelay
+        branches into one; revert condition uses totalAssets rather
+        than maxWithdraw(owner).
+      - StakingVaultDelegation.set_opt_delegate never reverts;
+        contract reverts via SafeCast.toUint208 on overflow.
+    Per-domain "preserves_validity" claims hold for the sim's looser
+    operation, not the contract's tighter one.
+
+    Caveat-7 (Inherited OZ functions silently unmodeled).
+    ---------------------------------------------------------------
+    Several state-mutating functions inherited from OZ are not
+    modeled in their owning domain's simulation:
+      - Guardian: admin-driven [grantRole(GUARDIAN, account)] can
+        bypass the zero-address check that [grantOptimisticGuardian]
+        enforces.
+      - Timelock: [revokeOptimisticProposer] (CANCELLER_ROLE-gated,
+        state-mutating) is entirely absent.
+      - Timelock: open-executor mode ([executor = address(0)] in
+        initializer) is structurally absent.
+    Negative theorems for these domains say nothing about sequences
+    containing the unmodeled operations.
+
+    Caveat-8 (External-library trust assumptions are load-bearing).
+    ---------------------------------------------------------------
+    Three external dependencies are axiomatized rather than fully
+    mechanized:
+      - PRBMath UD60x18.powu via 5 axioms ([mocks/PRBMath.v]).
+        Differential-tested in
+        [../../test/PRBMathPowuAxioms.t.sol] but the fuzz coverage
+        caps exponents far below production-realistic values
+        (block.timestamp deltas routinely exceed 86400; tests cap
+        at 256 or 1000).
+      - OZ Checkpoints.Trace208 via a relaxed mock that silently
+        overwrites on out-of-order keys ([mocks/Trace208.v]). The
+        OZ-faithful [push_checked] variant exists but is unused.
+        L2-deployments with sub-second timestamps can diverge.
+      - OZ AccessControlEnumerable via the new [mocks/AccessControl.v]
+        — but the three Tier-4 domains (Guardian, VersionRegistry,
+        RewardTokenRegistry) DO NOT use it. They still model role
+        state locally with ad-hoc lists or boolean Parameters.
+        Cross-contract "only X can call Y" claims cannot be stated
+        until the per-domain rewiring lands ([../../notes/access_control_threading.md]).
+
+    Caveat-9 (Reward-token trust assumption excludes common tokens).
+    ---------------------------------------------------------------
+    The ERC20 mock ([mocks/ERC20.v]) models exact-debit/exact-credit
+    transfers. The following deployed token classes violate the
+    model:
+      - Blacklist tokens (USDT, USDC) — safeTransfer can revert on
+        a blacklisted recipient, breaking [claimRewards] mid-batch.
+      - Rebasing tokens (stETH, etc.) — balanceOf can decrease
+        between blocks without a transfer; the reward-index delta
+        computes phantom outflows.
+      - Fee-on-transfer tokens (PAXG, some BNB tokens) — recipient
+        receives less than amount; balanceLastKnown accounting
+        drifts upward forever.
+      - Callback tokens (ERC777, ERC1363) — transfer-time callbacks
+        enable reentrancy into [_accrueRewards] mid-claim.
+    The "rewards-conservation" theorem holds for the honest-ERC20
+    model only.
+
+    Caveat-10 (End-to-end existence theorems are decorative).
+    ---------------------------------------------------------------
+    [optimistic_lifecycle_exists] and [standard_lifecycle_exists]
+    in [proofs/EndToEnd_*.v] are not surfaced by any audit_*
+    notation in Part II. They are existence-only claims (`exists
+    sequence, conclusion`) with cherry-picked numeric constants
+    (vetoThreshold=10, supply=100, no votes cast). The standard
+    flow uses an oracle step [advance_to_std_active] outside the
+    per-domain Reachable inductive. Time monotonicity is [<=] with
+    an unused [t2], permitting timestamp collapse. Treat these as
+    "the system can be wired up coherently", NOT "the system works
+    under contention".
+
+    Caveat-11 (Protocol-level attacks not covered by formal model).
+    ---------------------------------------------------------------
+    Several real attack vectors are structurally outside the formal
+    model. Documented in adversarial review:
+      - Reentrancy via hookable underlying tokens (no transaction
+        model; tokens are pure oracles).
+      - ERC4626 first-depositor + asset-donation reward capture
+        (the half-life rewards stream over a donated balance gap).
+      - Proposer can cancel a Succeeded optimistic proposal,
+        burning the throttle slot (DoS / censorship by the original
+        proposer).
+      - executeBatchBypass salt-collision DoS if PROPOSER_ROLE
+        expands beyond governor.
+      - StakingVault.initialize trusts arbitrary msg.sender as
+        deployer (off-canonical-deployment risk).
+      - Guardian.cancel TOCTOU with _tallyUpdated transition
+        (proposer races a vetoer to nudge path toward easy
+        cancel-and-retry).
+    These would need Foundry-level fuzz/invariant tests or
+    Yul-equivalence proofs to surface; the existing Gallina
+    simulations cannot reach them.
+*)
+
+
+(** ============================================================
+    ============================================================
+    ===                                                      ===
     ===                  Part I — Per-domain headlines       ===
     ===                                                      ===
     ============================================================
