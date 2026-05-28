@@ -471,6 +471,12 @@ Module Valid.
     avotes_u256       : U256.Valid.t p.(Proposal.againstVotes);
     parent_u256       : U256.Valid.t p.(Proposal.parent);
   }.
+
+  (** A "veto delta" coming in from an external caller is, on chain,
+      a [uint256] — so it's non-negative and bounded. We surface
+      the convention as a named predicate so downstream proofs can
+      cite [Valid.delta d] rather than restating [0 <= d < 2^256]. *)
+  Definition delta (d : U256.t) : Prop := U256.Valid.t d.
 End Valid.
 
 End Governor.

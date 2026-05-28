@@ -352,6 +352,59 @@ Proof.
       contradiction.
 Qed.
 
+(** ----- Mainnet variant: the Schedule corner is ruled out.
+
+    The unconditional [done_creation_is_execute_or_bypass] above
+    surfaces a degenerate disjunct where an [OpSchedule] writes
+    Done directly because [nowS + delay = DONE_TIMESTAMP = 1].
+    That requires [nowS + delay = 1] — i.e. one of:
+
+      - [nowS = 0] (timestamp before Unix epoch — impossible on
+        any real chain),
+      - [nowS = 1, delay = 0] (timestamp 1970-01-01-00:00:01 with
+        zero minimum delay — unreachable on mainnet, and only
+        possible on a chain configured with sub-second timestamps
+        plus a misconfigured timelock).
+
+    Production Ethereum and every L1 we deploy on use second-
+    granularity [block.timestamp] starting well above 1, and the
+    Timelock's [minDelay] is conventionally >= 1 second. Under
+    either assumption ([2 <= nowS] OR [1 <= delay]), the schedule-
+    corner disjunct is ruled out and Done can only be created by
+    [OpExecute] or [OpBypass].
+
+    Sidechains and some L2s allow sub-second timestamps (Avalanche
+    subnets, some Arbitrum configurations). Deployments on such
+    chains should pin [minDelay >= 1] in deploy scripts; otherwise
+    the schedule-corner is in scope. The CAS witness
+    [cas/timelock/scheduling_ordering.gp] does not currently
+    exercise this corner — adding it is future work tracked in the
+    audit notes. ----- *)
+Lemma done_creation_is_execute_or_bypass_mainnet
+    (s s' : State.t) (o : Op) (id : OpId) :
+  (* Mainnet precondition: any [OpSchedule] step has [nowS + delay]
+     strictly greater than [DONE_TIMESTAMP = 1]. Mainnet timestamps
+     are billions, and minDelay is typically >= 1, so this holds
+     for free. *)
+  (forall id' delay nowS hp,
+    o = OpSchedule id' delay nowS hp -> 1 < nowS + delay) ->
+  ~ op_done s id ->
+  op_done s' id ->
+  apply_op s o = Result.Success s' ->
+  (exists now hx, o = OpExecute id now hx)
+  \/ (exists now hp hx, o = OpBypass id now hp hx).
+Proof.
+  intros Hmainnet Hnot Hdone Hok.
+  pose proof (done_creation_is_execute_or_bypass _ _ _ _ Hnot Hdone Hok)
+       as Hcase.
+  destruct Hcase as [Hexec | Hrest]; [left; exact Hexec|].
+  destruct Hrest as [Hbyp | Hsched]; [right; exact Hbyp|].
+  exfalso.
+  destruct Hsched as (id' & delay & nowS & hp & Heq & Hsum & _).
+  specialize (Hmainnet id' delay nowS hp Heq).
+  unfold DONE_TIMESTAMP in Hsum. lia.
+Qed.
+
 (** ===== Reachable-level lifting =====
 
     The per-step stickiness lemma lifts inductively to any reachable

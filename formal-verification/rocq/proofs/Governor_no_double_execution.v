@@ -413,6 +413,92 @@ Inductive Reachable : Proposal.t -> Prop :=
       = Result.Success (parent', child) ->
     Reachable child.
 
+(** ===== Section 5b: Reachable exhaustiveness canaries =====
+
+    Unlike UnstakingManager and Timelock, this file's [Reachable]
+    inductive enumerates constructors per-operation rather than
+    folding over an [Op] type. That means a new Governor simulation
+    operation added in the future could silently fall outside
+    [Reachable], breaking the audit-narrative coverage claim.
+
+    The lemmas below exist as compile-time canaries: each restates
+    "any successful [op] step from a [Reachable] state lands in a
+    [Reachable] state" for each simulation operation, and is proved
+    by direct application of the matching constructor. If anyone
+    extends the simulation without extending [Reachable], the new
+    operation will lack a canary lemma and that fact will be
+    visible to the reviewer.
+
+    Audit cross-reference: [notes/reachable_exhaustiveness_audit.md].
+*)
+
+Lemma canary_reach_fresh_optimistic :
+  forall pid proposer voteStart voteDuration vetoThresholdTok,
+    Reachable
+      (fresh_optimistic pid proposer voteStart voteDuration vetoThresholdTok).
+Proof. intros. apply reach_fresh_opt. Qed.
+
+Lemma canary_reach_fresh_standard :
+  forall parent_pid new_pid proposer voteStart voteDuration,
+    Reachable
+      (fresh_standard_child parent_pid new_pid proposer voteStart voteDuration).
+Proof. intros. apply reach_fresh_std. Qed.
+
+Lemma canary_reach_add_veto :
+  forall p delta, Reachable p -> Reachable (add_veto p delta).
+Proof. intros. apply reach_add_veto. assumption. Qed.
+
+Lemma canary_reach_mark_std_succeeded :
+  forall p p' now,
+    Reachable p ->
+    mark_std_succeeded p now = Result.Success p' ->
+    Reachable p'.
+Proof. intros. eapply reach_mark_std_succeeded; eauto. Qed.
+
+Lemma canary_reach_queue :
+  forall p p',
+    Reachable p ->
+    queue_operations p = Result.Success p' ->
+    Reachable p'.
+Proof. intros. eapply reach_queue; eauto. Qed.
+
+Lemma canary_reach_execute_standard :
+  forall p p',
+    Reachable p ->
+    execute_standard p = Result.Success p' ->
+    Reachable p'.
+Proof. intros. eapply reach_execute_standard; eauto. Qed.
+
+Lemma canary_reach_execute_optimistic :
+  forall p p' now,
+    Reachable p ->
+    execute_optimistic p now = Result.Success p' ->
+    Reachable p'.
+Proof. intros. eapply reach_execute_optimistic; eauto. Qed.
+
+Lemma canary_reach_cancel :
+  forall p p',
+    Reachable p ->
+    cancel p = Result.Success p' ->
+    Reachable p'.
+Proof. intros. eapply reach_cancel; eauto. Qed.
+
+Lemma canary_reach_transition_parent :
+  forall parent parent' child new_pid votingDelay votingPeriod now,
+    Reachable parent ->
+    transition_to_pessimistic parent new_pid votingDelay votingPeriod now
+      = Result.Success (parent', child) ->
+    Reachable parent'.
+Proof. intros. eapply reach_transition_parent; eauto. Qed.
+
+Lemma canary_reach_transition_child :
+  forall parent parent' child new_pid votingDelay votingPeriod now,
+    Reachable parent ->
+    transition_to_pessimistic parent new_pid votingDelay votingPeriod now
+      = Result.Success (parent', child) ->
+    Reachable child.
+Proof. intros. eapply reach_transition_child; eauto. Qed.
+
 (** ===== Section 6: Reachable preserves at most one terminal tag ===== *)
 
 (** Helper: for any reachable proposal, at most one of

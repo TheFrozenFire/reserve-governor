@@ -40,6 +40,33 @@ Proof.
   constructor; simpl; auto.
 Qed.
 
+(** ----- Type-safe variant: [add_veto] preserves validity when
+    [delta] is itself a valid uint256 AND the sum doesn't overflow.
+
+    This is the production-faithful entry point: callers establish
+    [Valid.delta delta] from the Solidity uint256 typing of the
+    castVote input, then discharge the no-overflow precondition
+    (typically from [pastSupply <= 1e18 * vetoThreshold] or a
+    similar global bound). The [Valid.delta] form makes the
+    "uint256 -> non-negative" implication visible in the lemma
+    signature instead of buried in a [Forall (0 <=)] hypothesis. *)
+Lemma add_veto_preserves_validity_typed
+    (p : Proposal.t) (delta : U256.t) :
+  Valid.proposal p ->
+  Valid.delta delta ->
+  U256.Valid.t (p.(Proposal.againstVotes) + delta) ->
+  Valid.proposal (add_veto p delta).
+Proof.
+  intros Hv _ Hbound.
+  apply add_veto_preserves_validity; assumption.
+Qed.
+
+(** ----- Citable convention: [Valid.delta] implies the
+    non-negativity that downstream proofs hand-derive. ----- *)
+Lemma valid_delta_nonneg (delta : U256.t) :
+  Valid.delta delta -> 0 <= delta.
+Proof. unfold Valid.delta, U256.Valid.t. lia. Qed.
+
 (** ----- Phase-only transitions preserve validity. -----
     These are observably trivial: the rewritten record has the same
     numeric fields as the input. *)
