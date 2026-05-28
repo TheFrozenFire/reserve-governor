@@ -17,22 +17,46 @@ Every `<Contract>/<Contract>.conf` in this directory runs the same way.
 | Contract | Spec dir | Rules VERIFIED |
 |---|---|---|
 | Guardian | `Guardian/` | 7 |
-| UnstakingManager | `UnstakingManager/` | 9 |
+| UnstakingManager | `UnstakingManager/` | 10 |
 | RewardTokenRegistry | `RewardTokenRegistry/` | 7 |
-| OptimisticSelectorRegistry | `OptimisticSelectorRegistry/` | 6 |
-| TimelockControllerOptimistic | `Timelock/` | 7 |
+| OptimisticSelectorRegistry | `OptimisticSelectorRegistry/` | 10 |
+| TimelockControllerOptimistic | `Timelock/` | 10 |
 | VersionRegistry | `VersionRegistry/` | 7 |
-| ReserveOptimisticGovernor | `Governor/` | 10 |
-| StakingVault | `StakingVault/` | 9 |
-| **Total** | | **62** |
+| ReserveOptimisticGovernor | `Governor/` | 16 |
+| StakingVault | `StakingVault/` | 17 |
+| ThrottleLib (library) | `ThrottleLib/` | 7 |
+| **Total** | | **91** |
 
-Coverage shaped by an adversarial review pass (synthesis at
-`notes/adversarial_synthesis.md`). Guardian gained two ghost-backed
-rules (G6a, G6b) that close the role-discriminator gap three of four
-review angles flagged. UnstakingManager gained U8 (`nextLockId`
-monotonicity). See P1/P2/P3 in the synthesis memo for the remaining
-deferred work, plus `notes/exploration_rocq_cas_alignment.md` for the
-Rocq+CAS-informed priority ranking.
+Coverage shaped by two adversarial review passes:
+
+- **First pass synthesis**: `notes/adversarial_synthesis.md` (five
+  reports). Headline find: three of four angles flagged Guardian G6
+  missing. P0 fixes landed G6a/G6b, UnstakingManager U8, and a
+  VersionRegistry header disclosure.
+
+- **Second pass** addressed all P1-P3 findings via six parallel
+  sub-agents:
+  - **P1**: Governor lifecycle rules (R13-R16) — `optimisticProposal-
+    CannotBeQueued`, `acceptsOnlyAgainst`, `needsNoQueuing`,
+    `cancelRequiresCancellerOrProposer`.
+  - **P2 TC1**: ThrottleLib harness contract + 7 storage-delta /
+    refill / capacity rules. Triple-confirmation with Rocq's
+    `audit_throttle_consume_storage_delta` + CAS
+    `charge_evolution.gp` INV-2.
+  - **P2 TC2**: StakingVault rewards monotonicity (SV10-SV13).
+    Triple-confirmation with Rocq's `audit_rewards_index_monotone`
+    + CAS `multi_token_rewards.gp` INV-1.
+  - **P2 TC3**: Timelock cross-id preservation (T8-T10).
+    Triple-confirmation with Rocq's `audit_timelock_bypass_preserves_
+    slow_path` + CAS `scheduling_ordering.gp` INV-5.
+  - **P3 Governor**: R11-R12 added (upper-bound + persistence) plus
+    ghost-backed `_.hasRole` fidelity upgrade.
+  - **P3 misc**: SelectorRegistry +3 forbidden-target rules + R6 fix,
+    UnstakingManager U9 (CEI re-entrancy half), StakingVault +4
+    custom-error rules.
+
+See `notes/exploration_rocq_cas_alignment.md` for the Rocq+CAS-
+informed priority ranking that drove the P2 selections.
 
 Plus `spike/Vault.{sol,spec,conf}` — a deliberately-broken-and-fixed
 toy contract that proves the toolchain catches planted bugs (4 VERIFIED
