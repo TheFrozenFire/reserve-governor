@@ -174,6 +174,30 @@ Definition has_manager (s : State.t) (a : Address) : bool :=
 Definition add_role (lst : list Address) (a : Address) : list Address :=
   if addr_in lst a then lst else a :: lst.
 
+(** Remove every occurrence of [a] from [lst]. The simulation's
+    [Valid.state] invariant forces [NoDup] on every role set, so
+    there is at most one occurrence to begin with — but the helper
+    is written to be total. Mirrors OZ's _revokeRole semantics
+    (idempotent on non-members). *)
+Fixpoint remove_role (lst : list Address) (a : Address) : list Address :=
+  match lst with
+  | []     => []
+  | h :: t => if h =? a then remove_role t a else h :: remove_role t a
+  end.
+
+(** ===== RoleKind ===== *)
+(** OZ's role argument is an opaque bytes32 hash. The simulation
+    collapses the three roles Guardian actually distinguishes into a
+    closed inductive so role-revoke proofs can branch on it. Any
+    bytes32 that doesn't match one of these three named roles falls
+    through to OZ's default (no holders, no admin chain to traverse
+    in this contract), so the simulation models the three named
+    roles only. *)
+Inductive RoleKind : Set :=
+| RAdmin
+| RManager
+| RGuardian.
+
 (** ===== _requireNonZero ===== *)
 Definition require_non_zero (a : Address) : Result.t Address :=
   if a =? 0 then revert_zero_address else Result.Success a.
@@ -293,6 +317,81 @@ Definition cancel
               CancelEvent.proposalId := pid;
             |}
         end.
+
+(** ===== revokeRole =====
+
+    Source: AccessControl.revokeRole (inherited via
+    AccessControlEnumerable). Caller must hold the admin role for
+    the target role. In OZ's default linkage (which Guardian does
+    not override), every role's admin is DEFAULT_ADMIN_ROLE; so for
+    all three named roles the gate is [has_admin s caller].
+
+    Semantics: idempotent on non-members. The simulation's
+    [remove_role] mirrors that: removing an absent address is a
+    no-op on the list.
+
+    No zero-address gate — OZ does not refuse [revokeRole(_, 0)];
+    it just no-ops because address(0) is never a holder. *)
+Definition revokeRole
+    (s : State.t) (role : RoleKind) (caller account : Address)
+    : Result.t State.t :=
+  if negb (has_admin s caller) then revert_missing_admin
+  else
+    match role with
+    | RAdmin =>
+        Result.Success {|
+          State.admins                     := remove_role s.(State.admins) account;
+          State.optimisticGuardians        := s.(State.optimisticGuardians);
+          State.optimisticGuardianManagers := s.(State.optimisticGuardianManagers);
+        |}
+    | RManager =>
+        Result.Success {|
+          State.admins                     := s.(State.admins);
+          State.optimisticGuardians        := s.(State.optimisticGuardians);
+          State.optimisticGuardianManagers := remove_role s.(State.optimisticGuardianManagers) account;
+        |}
+    | RGuardian =>
+        Result.Success {|
+          State.admins                     := s.(State.admins);
+          State.optimisticGuardians        := remove_role s.(State.optimisticGuardians) account;
+          State.optimisticGuardianManagers := s.(State.optimisticGuardianManagers);
+        |}
+    end.
+
+(** ===== renounceRole =====
+
+    Source: AccessControl.renounceRole (inherited). The caller can
+    only renounce their own role (the contract requires
+    [callerConfirmation == _msgSender()] on OZ 5+; on earlier
+    versions the same effective constraint holds).
+
+    The simulation tags the operation with the role to renounce and
+    requires no role-based authorization beyond the caller-equals-
+    account convention enforced by the function signature itself.
+    Removing an absent address is a no-op. *)
+Definition renounceRole
+    (s : State.t) (role : RoleKind) (caller : Address)
+    : Result.t State.t :=
+  match role with
+  | RAdmin =>
+      Result.Success {|
+        State.admins                     := remove_role s.(State.admins) caller;
+        State.optimisticGuardians        := s.(State.optimisticGuardians);
+        State.optimisticGuardianManagers := s.(State.optimisticGuardianManagers);
+      |}
+  | RManager =>
+      Result.Success {|
+        State.admins                     := s.(State.admins);
+        State.optimisticGuardians        := s.(State.optimisticGuardians);
+        State.optimisticGuardianManagers := remove_role s.(State.optimisticGuardianManagers) caller;
+      |}
+  | RGuardian =>
+      Result.Success {|
+        State.admins                     := s.(State.admins);
+        State.optimisticGuardians        := remove_role s.(State.optimisticGuardians) caller;
+        State.optimisticGuardianManagers := s.(State.optimisticGuardianManagers);
+      |}
+  end.
 
 (** ===== Validity =====
 

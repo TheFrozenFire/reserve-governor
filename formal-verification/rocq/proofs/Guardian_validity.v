@@ -76,6 +76,41 @@ Proof.
   constructor; assumption.
 Qed.
 
+(** ----- remove_role preserves NoDup. ----- *)
+Lemma remove_role_NoDup (lst : list Address) (a : Address) :
+  NoDup lst -> NoDup (remove_role lst a).
+Proof.
+  induction lst as [|h t IH]; simpl; intros Hnd.
+  - constructor.
+  - inversion Hnd as [|x xs Hnx Hndt]; subst.
+    destruct (h =? a) eqn:Heq.
+    + apply IH; exact Hndt.
+    + constructor; [|apply IH; exact Hndt].
+      intro Hin_rt.
+      apply Hnx.
+      (* Show: In h (remove_role t a) -> In h t. *)
+      clear -Hin_rt.
+      induction t as [|x xs IHt]; simpl in *; [exact Hin_rt|].
+      destruct (x =? a) eqn:Hxa.
+      * right. apply IHt. exact Hin_rt.
+      * destruct Hin_rt as [Hl | Hr].
+        -- left. exact Hl.
+        -- right. apply IHt. exact Hr.
+Qed.
+
+(** ----- remove_role preserves "no zero address". ----- *)
+Lemma remove_role_no_zero (lst : list Address) (a : Address) :
+  Forall (fun x => x <> 0) lst ->
+  Forall (fun x => x <> 0) (remove_role lst a).
+Proof.
+  induction lst as [|h t IH]; simpl; intros Hall.
+  - constructor.
+  - inversion Hall as [|x xs Hnz Hrest]; subst.
+    destruct (h =? a).
+    + apply IH; exact Hrest.
+    + constructor; [exact Hnz | apply IH; exact Hrest].
+Qed.
+
 (** ----- Headline: grantOptimisticGuardian preserves [Valid.state]. ----- *)
 Lemma grant_preserves_validity
     (s s' : State.t) (caller account : Address) :
@@ -102,30 +137,108 @@ Proof.
   - exact Hmnz.
 Qed.
 
-(** ----- cancel doesn't mutate storage. Trivial because the
-    operation returns a [CancelEvent.t], not a [State.t]. The
-    statement we can usefully formalize is: there's no state-mutating
-    surface at all on the cancel path. ----- *)
-Remark cancel_is_pure_dispatch :
-  forall (s : State.t)
-         (io : ProposalId -> bool) (ps : ProposalId -> ProposalState)
-         (gpi : ProposalKey.t -> ProposalId) (hc : Address -> bool)
-         (caller governor : Address) (key : ProposalKey.t),
-  match cancel s io ps gpi hc caller governor key with
-  | Result.Success _ => True
-  | Result.Revert _ _ => True
-  end.
-Proof. intros. destruct (cancel _ _ _ _ _ _ _ _); exact I. Qed.
+(** ----- Headline: revokeRole preserves [Valid.state] for every role kind.
 
-(** ----- revokeOptimisticProposer doesn't mutate Guardian storage. ----- *)
-Remark revoke_is_pure_dispatch :
-  forall (s : State.t)
-         (tl_or : Address -> Address) (hc : Address -> bool)
-         (caller governor account : Address),
-  match revokeOptimisticProposer s tl_or hc caller governor account with
-  | Result.Success _ => True
-  | Result.Revert _ _ => True
-  end.
-Proof. intros. destruct (revokeOptimisticProposer _ _ _ _ _ _); exact I. Qed.
+    Both gates that matter are encoded in the operation:
+      * caller must hold the admin role (revert otherwise — no state
+        change to break the invariant)
+      * removing an absent or zero account is a no-op on the
+        affected role set, so [Forall (<> 0)] survives even when
+        someone calls revokeRole with account = 0. ----- *)
+Lemma revoke_preserves_validity
+    (s s' : State.t) (role : RoleKind) (caller account : Address) :
+  Valid.state s ->
+  revokeRole s role caller account = Result.Success s' ->
+  Valid.state s'.
+Proof.
+  intros Hv Hok.
+  unfold revokeRole in Hok.
+  destruct (negb (has_admin s caller)); [discriminate|].
+  destruct Hv as [Hand Hgnd Hmnd Hanz Hgnz Hmnz].
+  destruct role; injection Hok as Hs'; constructor; rewrite <- Hs'; simpl.
+  - unfold Valid.no_dup_admins; simpl; apply remove_role_NoDup; exact Hand.
+  - exact Hgnd.
+  - exact Hmnd.
+  - unfold Valid.no_zero_admins; simpl; apply remove_role_no_zero; exact Hanz.
+  - exact Hgnz.
+  - exact Hmnz.
+  - exact Hand.
+  - exact Hgnd.
+  - unfold Valid.no_dup_managers; simpl; apply remove_role_NoDup; exact Hmnd.
+  - exact Hanz.
+  - exact Hgnz.
+  - unfold Valid.no_zero_managers; simpl; apply remove_role_no_zero; exact Hmnz.
+  - exact Hand.
+  - unfold Valid.no_dup_guardians; simpl; apply remove_role_NoDup; exact Hgnd.
+  - exact Hmnd.
+  - exact Hanz.
+  - unfold Valid.no_zero_guardians; simpl; apply remove_role_no_zero; exact Hgnz.
+  - exact Hmnz.
+Qed.
+
+(** ----- renounceRole preserves [Valid.state] for every role kind.
+    Same structure as [revoke_preserves_validity] but with the caller
+    in the account slot and no admin gate (the OZ contract allows
+    self-renounce regardless of role membership of the caller). ----- *)
+Lemma renounce_preserves_validity
+    (s s' : State.t) (role : RoleKind) (caller : Address) :
+  Valid.state s ->
+  renounceRole s role caller = Result.Success s' ->
+  Valid.state s'.
+Proof.
+  intros Hv Hok.
+  unfold renounceRole in Hok.
+  destruct Hv as [Hand Hgnd Hmnd Hanz Hgnz Hmnz].
+  destruct role; injection Hok as Hs'; constructor; rewrite <- Hs'; simpl.
+  - unfold Valid.no_dup_admins; simpl; apply remove_role_NoDup; exact Hand.
+  - exact Hgnd.
+  - exact Hmnd.
+  - unfold Valid.no_zero_admins; simpl; apply remove_role_no_zero; exact Hanz.
+  - exact Hgnz.
+  - exact Hmnz.
+  - exact Hand.
+  - exact Hgnd.
+  - unfold Valid.no_dup_managers; simpl; apply remove_role_NoDup; exact Hmnd.
+  - exact Hanz.
+  - exact Hgnz.
+  - unfold Valid.no_zero_managers; simpl; apply remove_role_no_zero; exact Hmnz.
+  - exact Hand.
+  - unfold Valid.no_dup_guardians; simpl; apply remove_role_NoDup; exact Hgnd.
+  - exact Hmnd.
+  - exact Hanz.
+  - unfold Valid.no_zero_guardians; simpl; apply remove_role_no_zero; exact Hgnz.
+  - exact Hmnz.
+Qed.
+
+(** ----- cancel doesn't mutate Guardian storage at all.
+
+    Unlike grant / revoke / renounce, [cancel] returns a [CancelEvent.t]
+    rather than a [State.t] — the simulation tracks the dispatched call
+    without modeling the downstream governor's mutation. Validity
+    preservation is therefore trivial: there is no post-state distinct
+    from the pre-state. The statement below makes that explicit so the
+    audit can reference it. ----- *)
+Lemma cancel_preserves_validity
+    (s : State.t)
+    (io : ProposalId -> bool) (ps : ProposalId -> ProposalState)
+    (gpi : ProposalKey.t -> ProposalId) (hc : Address -> bool)
+    (caller governor : Address) (key : ProposalKey.t) (ev : CancelEvent.t) :
+  Valid.state s ->
+  cancel s io ps gpi hc caller governor key = Result.Success ev ->
+  Valid.state s.
+Proof. intros Hv _. exact Hv. Qed.
+
+(** ----- revokeOptimisticProposer doesn't mutate Guardian storage either.
+
+    The operation dispatches to the timelock; Guardian's own role
+    sets are untouched. Same shape as [cancel_preserves_validity]. ----- *)
+Lemma revoke_optimistic_proposer_preserves_validity
+    (s : State.t)
+    (tl_or : Address -> Address) (hc : Address -> bool)
+    (caller governor account : Address) (ev : RevokeEvent.t) :
+  Valid.state s ->
+  revokeOptimisticProposer s tl_or hc caller governor account = Result.Success ev ->
+  Valid.state s.
+Proof. intros Hv _. exact Hv. Qed.
 
 End GuardianValidity.

@@ -828,6 +828,16 @@ Notation audit_timelock_done_absorbing :=
         leaves admins / managers untouched.
       - [audit_guardian_grant_preserves_validity] : grant preserves
         the role-list invariant (NoDup, no zeros).
+      - [audit_guardian_revoke_role_preserves_validity] : OZ's
+        inherited [revokeRole] preserves the role-list invariant
+        across every role kind (admin / manager / guardian).
+      - [audit_guardian_renounce_role_preserves_validity] : OZ's
+        inherited [renounceRole] preserves the invariant.
+      - [audit_guardian_cancel_preserves_validity] : [cancel] is a
+        pure dispatch and trivially preserves storage validity.
+      - [audit_guardian_revoke_proposer_preserves_validity] :
+        [revokeOptimisticProposer] dispatches to the timelock and
+        does not touch Guardian's own role sets.
 *)
 
 Notation audit_guardian_cancel_requires_authorization :=
@@ -862,6 +872,18 @@ Notation audit_guardian_grant_inserts_account :=
 
 Notation audit_guardian_grant_preserves_validity :=
   ReserveGovernor.proofs.Guardian_validity.GuardianValidity.grant_preserves_validity.
+
+Notation audit_guardian_revoke_role_preserves_validity :=
+  ReserveGovernor.proofs.Guardian_validity.GuardianValidity.revoke_preserves_validity.
+
+Notation audit_guardian_renounce_role_preserves_validity :=
+  ReserveGovernor.proofs.Guardian_validity.GuardianValidity.renounce_preserves_validity.
+
+Notation audit_guardian_cancel_preserves_validity :=
+  ReserveGovernor.proofs.Guardian_validity.GuardianValidity.cancel_preserves_validity.
+
+Notation audit_guardian_revoke_proposer_preserves_validity :=
+  ReserveGovernor.proofs.Guardian_validity.GuardianValidity.revoke_optimistic_proposer_preserves_validity.
 
 
 (** ============================================================
