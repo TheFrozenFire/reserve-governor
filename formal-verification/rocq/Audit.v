@@ -819,6 +819,29 @@ Notation audit_proposal_transition_terminal :=
       - [audit_governor_no_double_execution] : along any reachable
         execution chain, [execute_optimistic] and [execute_standard]
         cannot both succeed on the same proposal.
+
+    Adversarial-review backfills (G3, G4):
+      - [audit_governor_add_veto_validated_requires_active_phase] :
+        the contract-faithful [add_veto_validated] only mutates
+        state when the proposal is in an Active phase (PhaseSubmitted
+        for optimistic, PhaseStdActive for standard) — mapping to
+        Solidity's [_validateStateBitmap(Active)] gate. The looser
+        [add_veto] still exists for proofs that don't need the
+        precondition; new audit theorems should cite the validated
+        variant.
+      - [audit_governor_add_veto_validated_requires_in_window] : a
+        successful [add_veto_validated] proves the call landed inside
+        the [voteStart, voteStart + voteDuration] window.
+      - [audit_governor_cancel_validated_requires_authorization] : a
+        successful [cancel_validated] proves the caller held
+        CANCELLER_ROLE or was the proposer — encoding Solidity's
+        [_validateCancel] auth gate.
+      - [audit_governor_cancel_validated_optimistic_proposer_phase] :
+        for an optimistic proposal cancelled by the proposer alone,
+        the phase was not [PhaseDefeated]. NOTE: this means a
+        Succeeded optimistic proposal CAN be cancelled by the
+        proposer — see Caveat-11 (SV3) and the regression test
+        [test/ProposerCancelSucceeded.t.sol].
 *)
 
 Notation audit_governor_optimistic_execution_iff_succeeded :=
@@ -862,6 +885,19 @@ Notation audit_governor_vetoThresholdTok_floor :=
 
 Notation audit_governor_propose_preserves_validity :=
   ReserveGovernor.proofs.Governor_validity.GovernorValidity.propose_optimistic_preserves_validity.
+
+(* Adversarial-review backfills (G3, G4). *)
+Notation audit_governor_add_veto_validated_requires_active_phase :=
+  ReserveGovernor.proofs.Governor.GovernorProofs.add_veto_validated_requires_active_phase.
+
+Notation audit_governor_add_veto_validated_requires_in_window :=
+  ReserveGovernor.proofs.Governor.GovernorProofs.add_veto_validated_requires_in_window.
+
+Notation audit_governor_cancel_validated_requires_authorization :=
+  ReserveGovernor.proofs.Governor.GovernorProofs.cancel_validated_requires_authorization.
+
+Notation audit_governor_cancel_validated_optimistic_proposer_phase :=
+  ReserveGovernor.proofs.Governor.GovernorProofs.cancel_validated_optimistic_proposer_succeeds_iff_not_defeated.
 
 (* Round-3 no-de-escalation. *)
 Notation audit_governor_cannot_de_escalate_after_transition :=

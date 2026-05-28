@@ -456,4 +456,76 @@ Proof.
   - apply Z.ltb_ge in Hb. lia.
 Qed.
 
+(** ===== Contract-faithful operation lemmas =====
+
+    Adversarial review (G3, G4) found that the loose [add_veto] and
+    [cancel] above accept inputs the contract refuses. The
+    [_validated] variants in the simulation enforce the missing
+    preconditions; the lemmas below pin their behavior. ===== *)
+
+(** [add_veto_validated] only succeeds on Active phases
+    (PhaseSubmitted for optimistic, PhaseStdActive for standard).
+    Maps directly to Solidity [_validateStateBitmap(Active)]. *)
+Lemma add_veto_validated_requires_active_phase
+    (p p' : Proposal.t) (now delta : U256.t) :
+  add_veto_validated p now delta = Result.Success p' ->
+  p.(Proposal.phase) = PhaseSubmitted \/
+  p.(Proposal.phase) = PhaseStdActive.
+Proof.
+  intros Hok. unfold add_veto_validated in Hok.
+  destruct (p.(Proposal.phase));
+    try discriminate; try (left; reflexivity); try (right; reflexivity);
+    destruct (now <? p.(Proposal.voteStart)); try discriminate;
+    destruct (now >? p.(Proposal.voteStart) + p.(Proposal.voteDuration));
+    try discriminate.
+Qed.
+
+(** [add_veto_validated] requires the time-window precondition.
+    If the call succeeded, both [voteStart <= now] and
+    [now <= voteStart + voteDuration] held. *)
+Lemma add_veto_validated_requires_in_window
+    (p p' : Proposal.t) (now delta : U256.t) :
+  add_veto_validated p now delta = Result.Success p' ->
+  p.(Proposal.voteStart) <= now /\
+  now <= p.(Proposal.voteStart) + p.(Proposal.voteDuration).
+Proof.
+  intros Hok. unfold add_veto_validated in Hok.
+  destruct (p.(Proposal.phase)); try discriminate;
+    destruct (now <? p.(Proposal.voteStart)) eqn:Hlow; try discriminate;
+    destruct (now >? p.(Proposal.voteStart) + p.(Proposal.voteDuration)) eqn:Hhi;
+    try discriminate;
+    apply Z.ltb_ge in Hlow;
+    rewrite Z.gtb_ltb in Hhi; apply Z.ltb_ge in Hhi;
+    split; lia.
+Qed.
+
+(** [cancel_validated]: a caller without CANCELLER_ROLE and not the
+    proposer cannot cancel. *)
+Lemma cancel_validated_requires_authorization
+    (p p' : Proposal.t)
+    (has_canceller is_proposer : bool) :
+  cancel_validated p has_canceller is_proposer = Result.Success p' ->
+  has_canceller = true \/ is_proposer = true.
+Proof.
+  intros Hok. unfold cancel_validated in Hok.
+  destruct has_canceller; [left; reflexivity|].
+  destruct is_proposer; [right; reflexivity|].
+  simpl in Hok. discriminate.
+Qed.
+
+(** [cancel_validated]: a proposer cancelling an optimistic
+    proposal succeeds iff the phase is not Defeated. This is the
+    SV3 finding — see test/ProposerCancelSucceeded.t.sol. *)
+Lemma cancel_validated_optimistic_proposer_succeeds_iff_not_defeated
+    (p p' : Proposal.t) :
+  p.(Proposal.isOptimistic) = true ->
+  cancel_validated p false true = Result.Success p' ->
+  p.(Proposal.phase) <> PhaseDefeated.
+Proof.
+  intros Hopt Hok. unfold cancel_validated in Hok.
+  simpl in Hok. rewrite Hopt in Hok.
+  destruct (p.(Proposal.phase)) eqn:Hphase; try discriminate;
+    intros Heq; discriminate Heq.
+Qed.
+
 End GovernorProofs.

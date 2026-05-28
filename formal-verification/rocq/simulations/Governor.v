@@ -180,6 +180,8 @@ Definition revert_wrong_phase          {A : Set} : Result.t A := Result.Revert 9
 Definition revert_optimistic_no_queue  {A : Set} : Result.t A := Result.Revert 128 32.
 Definition revert_not_optimistic       {A : Set} : Result.t A := Result.Revert 160 32.
 Definition revert_already_terminal     {A : Set} : Result.t A := Result.Revert 192 32.
+Definition revert_inactive_phase       {A : Set} : Result.t A := Result.Revert 224 32.
+Definition revert_invalid_state        {A : Set} : Result.t A := Result.Revert 256 32.
 
 (** ===== Veto-threshold snap (Math.max(_, 1)) ===== *)
 Definition vetoThresholdTokOf (vetoThresholdD18 pastSupply : U256.t) : U256.t :=
@@ -450,6 +452,92 @@ Definition cancel (p : Proposal.t) : Result.t Proposal.t :=
           Proposal.parent           := p.(Proposal.parent);
         |}
   end.
+
+(** ===== Contract-faithful variants =====
+
+    Adversarial review (G3, G4) found that the total [add_veto] and
+    permissive [cancel] above accept inputs the contract refuses.
+    Specifically:
+      - Solidity [_castVote] is gated by [_validateStateBitmap(Active)]
+        and [_countVote(Against only)] — votes only count on an
+        Active proposal in the Against direction.
+      - Solidity [_validateCancel] is gated by CANCELLER_ROLE OR
+        (caller == proposer AND state-specific rule) — see
+        ReserveOptimisticGovernor.sol:374-388.
+
+    The two operations below add the missing preconditions. They are
+    the contract-faithful entry points; the looser [add_veto] /
+    [cancel] above remain for proofs that don't need the precondition
+    (e.g. "after a successful add_veto, the state delta is X" — the
+    proof's conclusion holds regardless of whether the precondition
+    actually held at the call site).
+
+    Audit notations should prefer the validated variants for any
+    claim that asserts a state transition is REACHABLE on chain. *)
+
+(** [add_veto_validated]: only mutates state if the proposal is
+    Active. The Solidity [Active] state means [voteStart <= now <=
+    voteStart + voteDuration] AND [phase == PhaseSubmitted] for
+    optimistic OR [phase == PhaseStdActive] for standard. This
+    simulation models phase only; the time check is the caller's
+    responsibility via [now] passed in. *)
+Definition add_veto_validated
+    (p : Proposal.t) (now delta : U256.t) : Result.t Proposal.t :=
+  (* Phase gate: only Active proposals accept votes. *)
+  match p.(Proposal.phase) with
+  | PhaseSubmitted
+  | PhaseStdActive =>
+      (* Time gate: now must be within the vote window. *)
+      if (now <? p.(Proposal.voteStart)) then
+        revert_inactive_phase
+      else if (now >? p.(Proposal.voteStart) + p.(Proposal.voteDuration)) then
+        revert_inactive_phase
+      else
+        Result.Success (add_veto p delta)
+  | _ => revert_inactive_phase
+  end.
+
+(** [cancel_validated]: enforces the CANCELLER_ROLE OR proposer-with-
+    state-specific-rule auth from [_validateCancel]. The simulation
+    abstracts the role check via a [has_canceller_role] oracle bool
+    and the proposer-equality check via [is_proposer] bool. *)
+Definition cancel_validated
+    (p : Proposal.t)
+    (caller_has_canceller_role : bool)
+    (caller_is_proposer : bool)
+    : Result.t Proposal.t :=
+  if caller_has_canceller_role then
+    (* CANCELLER_ROLE can cancel anything that's not already terminal. *)
+    cancel p
+  else if negb caller_is_proposer then
+    (* Neither admin nor proposer -> revert. *)
+    revert_invalid_state
+  else
+    (* Proposer-cancel rule, per _validateCancel:
+       - optimistic AND state != Defeated -> allow
+       - !optimistic (standard) AND state == Pending -> allow
+       The simulation maps state() roughly to phase; the contract's
+       state() is computed from phase + time + supply + votes. We
+       approximate with phase comparison.
+
+       Note (Caveat-11, SV3): the optimistic branch allows the
+       proposer to cancel a Succeeded proposal, which the
+       attack-surface review flagged as a censorship vector. The
+       behavior is here-as-on-chain; whether to tighten is a
+       design call. See test/ProposerCancelSucceeded.t.sol. *)
+    if p.(Proposal.isOptimistic) then
+      (* state != Defeated -> phase != PhaseDefeated *)
+      match p.(Proposal.phase) with
+      | PhaseDefeated => revert_invalid_state
+      | _ => cancel p
+      end
+    else
+      (* Standard: only Pending allowed for proposer-cancel.
+         PhaseStdPending is the standard-track Pending. *)
+      match p.(Proposal.phase) with
+      | PhaseStdPending => cancel p
+      | _ => revert_invalid_state
+      end.
 
 (** ===== Throttle oracle =====
 
