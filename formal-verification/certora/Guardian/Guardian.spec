@@ -7,16 +7,32 @@
      G3   grantOptimisticGuardian on success adds the role
      G4   only DEFAULT_ADMIN_ROLE can revokeOptimisticProposer
      G5   cancel reverts if caller has neither admin nor guardian role
-     G6   cancel by non-admin requires the proposal be optimistic AND not Defeated
+     G6a  non-admin cancel reverts when proposal is not optimistic
+     G6b  non-admin cancel reverts when proposal state is Defeated
 
    External calls into IReserveOptimisticGovernor / IGovernor /
-   ITimelockControllerOptimistic are summarized as NONDET — these
-   contracts have their own coverage (and Rocq simulations); here we
-   isolate Guardian's own logic. The NONDET summaries let the prover
-   choose arbitrary return values, which is the strongest abstraction:
-   if Guardian's auth holds under arbitrary downstream behavior, it
-   holds period.
+   ITimelockControllerOptimistic are summarized as ghost-backed reads
+   for the three proposal-state-snapshot functions (isOptimistic, state,
+   getProposalId) and as NONDET for the rest. The ghost backing makes
+   the prover read consistent values across the two checks the Guardian
+   performs on the same proposalId — without it, G6a/G6b are unprovable
+   because the prover can pick different return values per call site.
+   This mirrors the GovernorStateSnapshot threading in the Rocq
+   simulation at rocq/simulations/Guardian.v.
 */
+
+// IGovernor.ProposalState enum, ABI-encoded as uint8.
+// 0=Pending 1=Active 2=Canceled 3=Defeated 4=Succeeded
+// 5=Queued 6=Expired 7=Executed
+definition DEFEATED() returns uint8 = 3;
+
+// Ghosts pinning the per-call snapshot the Guardian sees.
+// `ghostProposalId` is what getProposalId returns for the call's args;
+// `ghostIsOptimistic[pid]` is what isOptimistic(pid) returns;
+// `ghostState[pid]` is what state(pid) returns.
+ghost uint256 ghostProposalId;
+ghost mapping(uint256 => bool) ghostIsOptimistic;
+ghost mapping(uint256 => uint8) ghostState;
 
 methods {
     // Guardian's own role constants (envfree readers)
@@ -25,12 +41,17 @@ methods {
     function DEFAULT_ADMIN_ROLE() external returns (bytes32) envfree;
     function hasRole(bytes32, address) external returns (bool) envfree;
 
-    // External calls into other contracts — summarized as NONDET.
-    // The leading `_.` means: any function with this signature on any
-    // external address gets this summary.
-    function _.isOptimistic(uint256) external => NONDET;
-    function _.state(uint256) external => NONDET;
-    function _.getProposalId(address[], uint256[], bytes[], bytes32) external => NONDET;
+    // Proposal-state snapshot reads: ghost-backed so the prover reads
+    // consistent values across the two checks Guardian.cancel performs.
+    function _.isOptimistic(uint256 pid) external =>
+        ghostIsOptimistic[pid] expect bool;
+    function _.state(uint256 pid) external =>
+        ghostState[pid] expect uint8;
+    function _.getProposalId(address[], uint256[], bytes[], bytes32) external =>
+        ghostProposalId expect uint256;
+
+    // Side-effecting downstream calls — abstracted as NONDET. Their
+    // post-state is irrelevant to Guardian's auth properties.
     function _.cancel(address[], uint256[], bytes[], bytes32) external => NONDET;
     function _.timelock() external => NONDET;
     function _.revokeOptimisticProposer(address) external => NONDET;
@@ -97,4 +118,54 @@ rule cancelRequiresAuth {
     cancel@withrevert(e, governor, targets, values, calldatas, descriptionHash);
 
     assert lastReverted, "unauthorized caller succeeded in cancel";
+}
+
+/* ----- G6a: non-admin cancel reverts on non-optimistic proposal -----
+   The Guardian's optimistic-guardian role is bounded: it can only
+   cancel proposals flagged as optimistic by the governor. A
+   pessimistic proposal must escape this code path. */
+rule cancelNonAdminRequiresOptimistic {
+    env e;
+    address governor;
+    address[] targets;
+    uint256[] values;
+    bytes[] calldatas;
+    bytes32 descriptionHash;
+
+    // Caller is an optimistic guardian but NOT an admin.
+    require !hasRole(DEFAULT_ADMIN_ROLE(), e.msg.sender);
+    require hasRole(OPTIMISTIC_GUARDIAN_ROLE(), e.msg.sender);
+
+    // The proposal the governor reports for these args is NOT optimistic.
+    require ghostIsOptimistic[ghostProposalId] == false;
+
+    cancel@withrevert(e, governor, targets, values, calldatas, descriptionHash);
+
+    assert lastReverted,
+        "non-admin guardian canceled a non-optimistic proposal";
+}
+
+/* ----- G6b: non-admin cancel reverts on Defeated proposal -----
+   Even an optimistic proposal becomes untouchable once the governor
+   reports its state as Defeated. The guardian role doesn't extend to
+   resurrecting defeated proposals via cancel. */
+rule cancelNonAdminRequiresNotDefeated {
+    env e;
+    address governor;
+    address[] targets;
+    uint256[] values;
+    bytes[] calldatas;
+    bytes32 descriptionHash;
+
+    require !hasRole(DEFAULT_ADMIN_ROLE(), e.msg.sender);
+    require hasRole(OPTIMISTIC_GUARDIAN_ROLE(), e.msg.sender);
+
+    // The proposal IS optimistic (otherwise G6a applies) but is Defeated.
+    require ghostIsOptimistic[ghostProposalId] == true;
+    require ghostState[ghostProposalId] == DEFEATED();
+
+    cancel@withrevert(e, governor, targets, values, calldatas, descriptionHash);
+
+    assert lastReverted,
+        "non-admin guardian canceled a Defeated optimistic proposal";
 }
