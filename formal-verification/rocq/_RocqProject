@@ -12,6 +12,12 @@
 # wired correctly.
 generated/Smoke.v
 
+# --- Project conventions ---
+# Cross-cutting documented assumptions that proofs can cite by name.
+# Currently: block.timestamp monotonicity, validated U256 storage,
+# external library trust boundaries.
+Conventions.v
+
 # Simulations and proofs are added here as they land. The standard
 # per-domain tier shape (mirroring the protocol repo):
 #

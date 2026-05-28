@@ -267,3 +267,77 @@ that don't care about ordering), make the simpler one a derived
 specialization (`setRatio s r := snd (setRatio_with_melt s r 0 0)`)
 or rename it explicitly (`setRatio_unordered`) so the production
 mismatch is in the name itself.
+
+## R014: `simpl` aggressively unfolds `Z.eqb` and breaks subsequent rewrites
+
+In Coq 8.20, `simpl` will eagerly unfold `Z.eqb` into a raw
+`match` on `Z.pos`/`Z.neg` constructors. Subsequent surface-level
+tactics like `rewrite Z.eqb_refl` or `rewrite Hxeqby` then fail to
+match because the term shape no longer carries `Z.eqb` at all.
+
+Workaround: keep `Z.eqb` opaque to `simpl` via either
+`cbn -[Z.eqb]` or by reaching for the goal with `change` + `subst`
+instead. `cbn` respects the unfolding blacklist where `simpl`
+ignores it.
+
+## R015: Nested intro patterns crash the Coq 8.20 parser
+
+In addition to R011 (`[X [Y Z]]` failing on conj-elimination),
+nested OR-patterns like `[Heq | []]` and `[Heq | [Heq2 | Hin]]`
+also fail to parse. Symptoms: cryptic "syntax error" at the
+opening `[` with no useful position info.
+
+Workaround: expand each nesting to an explicit `destruct` chain in
+the proof body, or use Coq 8.20's `(X & Y & Z)` conj-pattern
+syntax for AND and `[X | Y | Z]` flat OR-pattern syntax where the
+shape allows it.
+
+## R016: Logical-path short-name clash when both `simulations.X` and `proofs.X` exist
+
+When a domain `X` has both `simulations/X.v` and `proofs/X.v`, the
+`Import` mechanism doesn't pick a winner — the unqualified name
+`X` resolves to whichever was imported last (typically not the one
+you wanted). Both modules need to be explicitly imported:
+
+```
+Require Import ReserveGovernor.simulations.X.
+Require Import ReserveGovernor.proofs.X.
+Import ReserveGovernor.simulations.X.   (* picks simulations.X.X *)
+Import X.                                (* alias for the inner module *)
+```
+
+The second `Import X.` aliases the inner module after the qualified
+form has already pinned which `X` we mean. Skipping it leaves
+unqualified references bound to whichever `Require` ran last.
+
+## R017: `destruct ... eqn:H` does not substitute through `set`-bound lets
+
+A pattern like:
+
+```
+set (v := f x).
+destruct (v) eqn:Hv.   (* Hv : v = ... ; does NOT rewrite f x *)
+```
+
+doesn't unfold `v` in the goal — the `eqn:Hv` records the
+post-`set` equation, not the original `f x`. Subsequent `rewrite`
+attempts against `f x` then fail.
+
+Workaround: unfold the `set` binding before destructing, or
+destruct directly on `f x`:
+
+```
+unfold v. destruct (f x) eqn:Hv.   (* rewrites the original *)
+```
+
+## R018: Use `cbn -[Z.div Z.mul SCALAR DEC18]` over `lia` for 10^18 arithmetic
+
+`lia` is correct over the rationals but pays a steep symbolic cost
+when the goal contains `10^18` literals — typical reward-math
+calculations spent 30-60s per goal in early rounds.
+
+`cbn -[Z.div Z.mul SCALAR DEC18]` (or whichever D18 / scaling
+constants are in the goal) reduces the structural part while
+keeping the heavy operations symbolic. The remaining lia step is
+then small and fast. Apply this preemptively in any rewards /
+ratio / exchange proof to keep build times tractable.
