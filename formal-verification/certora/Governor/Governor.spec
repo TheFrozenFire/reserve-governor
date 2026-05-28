@@ -16,16 +16,39 @@
      R8   _setOptimisticParams rejects vetoDelay == 0 (< MIN_OPTIMISTIC_VETO_DELAY)
      R9   _setOptimisticParams rejects vetoPeriod < MIN_OPTIMISTIC_VETO_PERIOD
      R10  setProposalThrottle persists the new capacity to storage
+     R11  _setOptimisticParams rejects vetoDelay >= MAX_OPTIMISTIC_DELAY
+          (upper-bound companion to R8; closes adversarial F2 in
+          notes/adversarial_spec_correctness.md)
+     R12  setOptimisticParams persists all three fields to storage
+          (companion to R10; closes adversarial F4 in
+          notes/adversarial_spec_correctness.md)
 
    Heavy NONDET summarisation is used for OZ Governor inherited internals
    and for the external ProposalLib / ThrottleLib delegatecalls. We're
    proving the optimistic-overlay logic, not OZ's internals.
+
+   Exception: `hasRole` on the timelock is ghost-backed instead of NONDET
+   so two reads of the same (role, account) pair agree. The fidelity
+   concern is documented as F3 in notes/adversarial_summary_fidelity.md.
+   None of the current R1-R12 rules dispatch through `hasRole`, but the
+   ghost is a no-cost fidelity upgrade that lets future cancel-path or
+   propose-path rules `require ghostHasRole[role][addr] == ...` to pin
+   the auth outcome.
 
    Note on conf: `disable_internal_function_instrumentation: true` skips
    the auto-finder compilation pass (which has a path-resolution bug on
    this contract when the sources tree is deep). Internal call summaries
    in this spec are wildcard-external only, so we don't need autofinders.
 */
+
+/* Ghost-backed hasRole. Replaces NONDET so that two AccessControl
+   reads of the same (role, account) pair in a single transaction
+   agree. Used by `_validateCancel` (CANCELLER_ROLE) and
+   ProposalLib.proposeOptimistic (OPTIMISTIC_PROPOSER_ROLE), both of
+   which are out-of-scope for the current rule set but in-scope for
+   future extensions. Mirrors RewardTokenRegistry.spec / VersionRegistry.spec
+   pattern (WISDOM C015). */
+ghost mapping(bytes32 => mapping(address => bool)) ghostHasRole;
 
 methods {
     // Reserve overlay setters
@@ -36,6 +59,9 @@ methods {
     // Envfree readers
     function proposalThrottleCapacity() external returns (uint256) envfree;
     function timelock() external returns (address) envfree;
+    // Auto-generated getter for the public `optimisticParams` field. The
+    // struct unpacks to (uint48 vetoDelay, uint32 vetoPeriod, uint256 vetoThreshold).
+    function optimisticParams() external returns (uint48, uint32, uint256) envfree;
 
     // === NONDET summaries for everything we don't want to model ===
     // Library external functions (delegatecalled)
@@ -53,7 +79,12 @@ methods {
     function _.CLOCK_MODE() external => NONDET;
 
     // Timelock interactions
-    function _.hasRole(bytes32, address) external => NONDET;
+    // Ghost-backed (deterministic per (role, account)) — see header. This is
+    // a fidelity-only upgrade; no current rule reads ghostHasRole, so the
+    // ghost is fully unconstrained and behaves like NONDET for the existing
+    // R1-R12 set.
+    function _.hasRole(bytes32 role, address account) external =>
+        ghostHasRole[role][account] expect bool;
     function _.scheduleBatch(address[], uint256[], bytes[], bytes32, bytes32, uint256) external => NONDET;
     function _.executeBatch(address[], uint256[], bytes[], bytes32, bytes32) external => NONDET;
     function _.executeBatchBypass(address[], uint256[], bytes[], bytes32, bytes32) external => NONDET;
@@ -232,4 +263,57 @@ rule setProposalThrottlePersistsCapacity {
 
     assert proposalThrottleCapacity() == newCapacity,
         "setProposalThrottle did not persist capacity";
+}
+
+/* ----- R11: setOptimisticParams rejects vetoDelay >= MAX_OPTIMISTIC_DELAY -----
+   Upper-bound companion to R8. MAX_OPTIMISTIC_DELAY = type(uint48).max / 2
+   = (2^48 - 1) / 2 = 140737488355327 (see contracts/utils/Constants.sol:14).
+   See adversarial_spec_correctness.md F2: without this rule a refactor that
+   dropped the `< MAX_OPTIMISTIC_DELAY` clause would still satisfy R6-R10. */
+rule setOptimisticParamsRejectsTooLargeVetoDelay {
+    env e;
+    IReserveOptimisticGovernor.OptimisticGovernanceParams params;
+
+    require e.msg.sender == currentContract;
+    require timelock() == currentContract;
+    require e.msg.value == 0;
+    require params.vetoDelay >= 140737488355327; // MAX_OPTIMISTIC_DELAY = (2^48 - 1) / 2
+
+    setOptimisticParams@withrevert(e, params);
+
+    assert lastReverted, "setOptimisticParams accepted vetoDelay >= MAX_OPTIMISTIC_DELAY";
+}
+
+/* ----- R12: setOptimisticParams persists all three fields -----
+   Companion to R10. The contract assigns the whole struct via
+   `optimisticParams = params;` at ReserveOptimisticGovernor.sol:498.
+   See adversarial_spec_correctness.md F4: a refactor that wrote only
+   one struct field (e.g. shadow-local bug) would still satisfy R6-R9
+   and R11 without this rule. */
+rule setOptimisticParamsPersists {
+    env e;
+    IReserveOptimisticGovernor.OptimisticGovernanceParams params;
+
+    // Same self-timelock harness as R4-R10 so the deque-pop branch is
+    // skipped. Pin the inputs to the valid range so the call does not
+    // revert in _setOptimisticParams.
+    require e.msg.sender == currentContract;
+    require timelock() == currentContract;
+    require e.msg.value == 0;
+    require params.vetoDelay >= 1; // MIN_OPTIMISTIC_VETO_DELAY = 1
+    require params.vetoDelay < 140737488355327; // < MAX_OPTIMISTIC_DELAY
+    require params.vetoPeriod >= 300; // MIN_OPTIMISTIC_VETO_PERIOD = 5 minutes
+    require params.vetoThreshold != 0;
+    require params.vetoThreshold <= 1000000000000000000; // 1e18
+
+    setOptimisticParams(e, params);
+
+    uint48 dAfter;
+    uint32 pAfter;
+    uint256 tAfter;
+    dAfter, pAfter, tAfter = optimisticParams();
+
+    assert dAfter == params.vetoDelay, "vetoDelay not persisted";
+    assert pAfter == params.vetoPeriod, "vetoPeriod not persisted";
+    assert tAfter == params.vetoThreshold, "vetoThreshold not persisted";
 }
