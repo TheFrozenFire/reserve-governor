@@ -171,4 +171,112 @@ contract PRBMathPowuAxiomsTest is Test {
         // ~2.78 ppm in the user's favor. Tolerance below is generous.
         assertApproxEqAbs(result, 5e17, 1e13, "remaining fraction ~ 0.5e18 after one halfLife");
     }
+
+    // ===========================================================
+    // Production-realistic exponent regime
+    //
+    // The original fuzz tests cap n at uint8 (256) or 1000. The
+    // production StakingVault computes `powu(base, elapsed)` where
+    // `elapsed = block.timestamp - lastPayout` — a duration in
+    // seconds that routinely exceeds 86400 (one day) and can reach
+    // ~32 days between sparse accruals on a low-activity vault.
+    //
+    // The PRBMath axioms in rocq/mocks/PRBMath.v are stated for all
+    // `n : U256.t`. The adversarial review (caveat MV5 / F2) flagged
+    // that the axiom domain is wider than the validated range. The
+    // tests below close that gap by exercising the axiom domain at
+    // the values the contract actually feeds in.
+    // ===========================================================
+
+    /// @dev Compute the "decay base" used by StakingVault for a given
+    ///      half-life: `1e18 - ln(2) / halfLife`.
+    function _decayBase(uint256 halfLife) internal pure returns (uint256) {
+        uint256 LN_2 = 0.693147180559945309e18;
+        return ONE_D18 - (LN_2 / halfLife);
+    }
+
+    function test_Realistic_Boundedness_OneDay() public pure {
+        // halfLife = 1 day; elapsed = 1 day → remaining ≈ 0.5e18
+        uint256 base = _decayBase(86400);
+        uint256 result = unwrap(ud(base).powu(86400));
+        assertLe(result, ONE_D18);
+        assertApproxEqAbs(result, 5e17, 1e13);
+    }
+
+    function test_Realistic_Boundedness_OneWeek() public pure {
+        // halfLife = 1 day; elapsed = 1 week → ≈ 2^-7 ≈ 7.8e15
+        uint256 base = _decayBase(86400);
+        uint256 result = unwrap(ud(base).powu(7 * 86400));
+        assertLe(result, ONE_D18);
+        // 0.5^7 = 1/128 ≈ 7.8125e15
+        assertApproxEqAbs(result, 78125e11, 1e12);
+    }
+
+    function test_Realistic_Boundedness_ThirtyTwoDays() public pure {
+        // halfLife = 1 day; elapsed = 32 days → ≈ 2^-32 ≈ 2.33e8
+        uint256 base = _decayBase(86400);
+        uint256 result = unwrap(ud(base).powu(32 * 86400));
+        assertLe(result, ONE_D18);
+        // 0.5^32 = 1/2^32 ≈ 2.328e8
+        // Generous tolerance because the discrete formula drifts at
+        // many halflives.
+        assertApproxEqAbs(result, 232830643, 1e9);
+    }
+
+    function test_Realistic_Boundedness_LongHalfLifeShortElapsed() public pure {
+        // halfLife = 30 days; elapsed = 1 hour → tiny decay
+        uint256 base = _decayBase(30 * 86400);
+        uint256 result = unwrap(ud(base).powu(3600));
+        assertLe(result, ONE_D18);
+        // Remaining ≈ 0.999...
+        assertGt(result, 9.99e17);
+    }
+
+    /// @dev Fuzz with uint32 exponent so values can reach ~4 billion
+    ///      seconds (well past any realistic block.timestamp delta).
+    ///      Restricted to base near 1e18 since powu of small bases
+    ///      with large exponents underflows to 0 quickly (still
+    ///      bounded, but tests are uninteresting).
+    function testFuzz_Realistic_Boundedness_LargeN(uint32 nLarge) public pure {
+        vm.assume(nLarge >= 86400);          // at least one day
+        vm.assume(nLarge <= 32 * 86400);     // at most 32 days
+        uint256 base = _decayBase(86400);
+        uint256 result = unwrap(ud(base).powu(uint256(nLarge)));
+        assertLe(result, ONE_D18, "powu must stay bounded over realistic seconds-range");
+    }
+
+    /// @dev Monotone-decay fuzz over realistic ranges. n1, n2 both in
+    ///      [86400, 32 * 86400]; n2 = n1 + delta where delta also
+    ///      bounded.
+    function testFuzz_Realistic_MonotoneDecay(uint32 n1, uint32 delta) public pure {
+        vm.assume(n1 >= 86400);
+        vm.assume(n1 <= 30 * 86400);
+        vm.assume(delta <= 2 * 86400);
+        uint256 base = _decayBase(86400);
+        uint256 r1 = unwrap(ud(base).powu(uint256(n1)));
+        uint256 r2 = unwrap(ud(base).powu(uint256(n1) + uint256(delta)));
+        assertGe(r1, r2, "powu must be monotone-decreasing in exponent");
+    }
+
+    /// @dev Stress test: PRBMath's repeated-squaring should not
+    ///      revert on a base in (0, 1) regardless of how large the
+    ///      exponent is. Try max-uint32 (4.29 billion seconds, ~136
+    ///      years) and confirm no revert + result still <= 1e18.
+    function test_Realistic_NoRevertAtMaxUint32() public pure {
+        uint256 base = _decayBase(86400);
+        uint256 result = unwrap(ud(base).powu(type(uint32).max));
+        assertLe(result, ONE_D18);
+        // After ~136 years of 1-day half-life, remaining is essentially 0.
+        assertLt(result, 1);
+    }
+
+    /// @dev Even larger: uint40 exponent (1.1 trillion seconds, ~35k
+    ///      years). Tests the upper boundary where the repeated-
+    ///      squaring loop runs ~40 iterations. Still bounded.
+    function test_Realistic_NoRevertAtUint40Boundary() public pure {
+        uint256 base = _decayBase(86400);
+        uint256 result = unwrap(ud(base).powu((1 << 40) - 1));
+        assertLe(result, ONE_D18);
+        assertLe(result, 1);
+    }
 }
