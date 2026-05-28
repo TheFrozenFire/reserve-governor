@@ -138,4 +138,7 @@ proofs/Integration_upgrade_authorization.v
 # --- Integration: vault balance conservation ---
 proofs/Integration_vault_balance_conservation.v
 
+# --- End-to-end: optimistic flow ---
+proofs/EndToEnd_optimistic_flow.v
+
 Audit.v
