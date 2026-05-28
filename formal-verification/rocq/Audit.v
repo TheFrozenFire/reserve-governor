@@ -1079,6 +1079,23 @@ Notation audit_timelock_done_absorbing :=
         post-state distinct from the pre-state on the Guardian side.
         (See Caveat-4: this says nothing about the downstream
         Governor mutation that [cancel] actually triggers on chain.)
+
+      Adversarial-review backfills (MV1 / Caveat-4):
+      - [audit_guardian_cancel_with_state_requires_authorization] :
+        the TOCTOU-aware [cancel_with_governor_state] still requires
+        the caller to hold admin or guardian role. The state-threaded
+        variant takes a single Governor snapshot so the two reads
+        ([isOptimistic], [state]) agree on a consistent view, closing
+        the in-call racing window present in the original oracle-typed
+        [cancel].
+      - [audit_guardian_cancel_with_state_guardian_path] : a
+        successful guardian-only cancel on the state-threaded variant
+        pins both the snapshot's [optimistic] flag and its [state]
+        field, encoding the requirement that the snapshot's view of
+        the proposal is "optimistic AND not Defeated."
+      - [audit_guardian_cancel_with_state_admin_unrestricted] :
+        admin callers bypass the snapshot's state checks (matching
+        the oracle-based [cancel_admin_unrestricted]).
       - [audit_guardian_revoke_proposer_does_not_mutate_storage] :
         [revokeOptimisticProposer] dispatches to the timelock and
         does not touch Guardian's own role sets.
@@ -1128,6 +1145,16 @@ Notation audit_guardian_cancel_does_not_mutate_storage :=
 
 Notation audit_guardian_revoke_proposer_does_not_mutate_storage :=
   ReserveGovernor.proofs.Guardian_validity.GuardianValidity.revoke_optimistic_proposer_does_not_mutate_storage.
+
+(* Adversarial-review backfills (MV1). *)
+Notation audit_guardian_cancel_with_state_requires_authorization :=
+  ReserveGovernor.proofs.Guardian.GuardianProofs.cancel_with_state_requires_authorization.
+
+Notation audit_guardian_cancel_with_state_guardian_path :=
+  ReserveGovernor.proofs.Guardian.GuardianProofs.cancel_with_state_guardian_path.
+
+Notation audit_guardian_cancel_with_state_admin_unrestricted :=
+  ReserveGovernor.proofs.Guardian.GuardianProofs.cancel_with_state_admin_unrestricted.
 
 
 (** ============================================================

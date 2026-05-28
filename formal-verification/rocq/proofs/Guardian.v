@@ -331,4 +331,74 @@ Proof.
   rewrite Hadm. simpl. reflexivity.
 Qed.
 
+(** ===== TOCTOU-aware cancel variant lemmas =====
+
+    The [cancel_with_governor_state] variant takes a single Governor
+    snapshot so the two-read decision logic agrees on a consistent
+    view. The lemmas below mirror the original [cancel_*] suite. ===== *)
+
+(** Authorization: both admin and guardian paths still require role
+    membership. ----- *)
+Lemma cancel_with_state_requires_authorization
+    (s : State.t)
+    (snap : GovernorStateSnapshot) (hc : Address -> bool)
+    (caller governor : Address) (ev : CancelEvent.t) :
+  cancel_with_governor_state s snap hc caller governor = Result.Success ev ->
+  has_admin s caller = true \/ has_guardian s caller = true.
+Proof.
+  intros Hok. unfold cancel_with_governor_state in Hok.
+  destruct (negb (has_admin s caller || has_guardian s caller)) eqn:Hauth;
+    [discriminate|].
+  apply negb_false_iff in Hauth.
+  apply orb_true_iff in Hauth. exact Hauth.
+Qed.
+
+(** Guardian-only path on the state-threaded variant: pins both
+    snapshot fields. Compare [cancel_guardian_path] above which had
+    the racing oracles. ----- *)
+Lemma cancel_with_state_guardian_path
+    (s : State.t)
+    (snap : GovernorStateSnapshot) (hc : Address -> bool)
+    (caller governor : Address) (ev : CancelEvent.t) :
+  has_admin s caller = false ->
+  cancel_with_governor_state s snap hc caller governor = Result.Success ev ->
+  has_guardian s caller = true /\
+  snap.(snap_optimistic) = true /\
+  snap.(snap_state) <> PSDefeated /\
+  governor <> 0 /\
+  hc governor = true.
+Proof.
+  intros Hadm Hok. unfold cancel_with_governor_state in Hok.
+  rewrite Hadm in Hok. simpl in Hok.
+  destruct (has_guardian s caller) eqn:Hguard; [|discriminate].
+  destruct (governor =? 0) eqn:Hg0; [discriminate|].
+  apply Z.eqb_neq in Hg0.
+  destruct (hc governor) eqn:Hhc; [|discriminate].
+  destruct (snap.(snap_optimistic)) eqn:Hopt; [|discriminate].
+  destruct (snap.(snap_state)) eqn:Hst; try discriminate;
+    repeat split; try assumption; try discriminate.
+Qed.
+
+(** Admin path on the state-threaded variant: same unrestricted
+    behavior as the oracle-based admin path. ----- *)
+Lemma cancel_with_state_admin_unrestricted
+    (s : State.t)
+    (snap : GovernorStateSnapshot) (hc : Address -> bool)
+    (caller governor : Address) :
+  has_admin s caller = true ->
+  governor <> 0 ->
+  hc governor = true ->
+  cancel_with_governor_state s snap hc caller governor
+    = Result.Success {|
+        CancelEvent.governor   := governor;
+        CancelEvent.proposalId := snap.(snap_pid);
+      |}.
+Proof.
+  intros Hadm Hg Hhc.
+  unfold cancel_with_governor_state.
+  rewrite Hadm. simpl.
+  assert (Hgb : (governor =? 0) = false) by (apply Z.eqb_neq; exact Hg).
+  rewrite Hgb. rewrite Hhc. simpl. reflexivity.
+Qed.
+
 End GuardianProofs.

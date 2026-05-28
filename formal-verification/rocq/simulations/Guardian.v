@@ -318,6 +318,78 @@ Definition cancel
             |}
         end.
 
+(** ===== TOCTOU-aware cancel variant =====
+
+    Adversarial review (MV1 / Caveat-4) flagged that the [cancel]
+    above treats [is_optimistic_oracle] and [proposal_state_oracle]
+    as pure functions. On chain these are external SLOADs against
+    mutable Governor storage, racing with [transitionToPessimistic].
+    The model lets a guardian-cancel succeed against a proposal
+    that has already transitioned.
+
+    [cancel_with_governor_state] threads a snapshot of the
+    Governor's state at the moment of the call, so the two reads
+    are forced to agree (no inter-read mutation can sneak in
+    inside this simulation primitive). Callers who construct a
+    fresh snapshot per call get the contract-faithful TOCTOU
+    behavior; callers who pass a stale snapshot get a model that
+    matches what the on-chain reverts would say AT the snapshot
+    time, not "during" some racing transition.
+
+    NOTE: this does not eliminate the on-chain TOCTOU window
+    between Guardian's [hasRole] check and the downstream
+    [governor.cancel] call. The complete model would also need to
+    pass the Governor's storage at the moment of the EXTERNAL
+    cancel — which requires modeling the EVM's call-frame ordering.
+    What this primitive achieves: the two READS inside Guardian's
+    own decision logic agree on a single Governor state. The
+    racing-cancel attack vector is then expressible as "the
+    snapshot the guardian saw is no longer current at the moment
+    the downstream cancel actually fires" — a property the proof
+    can reason about, rather than implicit unsound serialization. *)
+
+(** A minimal Governor-state snapshot capturing the two fields
+    Guardian.cancel reads. The simulation does not commit to the
+    full Governor.Proposal.t structure here to avoid an import
+    cycle; callers construct this from their Governor.observe
+    output at the snapshot time. *)
+Record GovernorStateSnapshot : Set := {
+  snap_pid          : ProposalId;
+  snap_optimistic   : bool;
+  snap_state        : ProposalState;
+}.
+
+Definition cancel_with_governor_state
+    (s : State.t)
+    (snap : GovernorStateSnapshot)
+    (has_code : Address -> bool)
+    (caller : Address) (governor : Address)
+    : Result.t CancelEvent.t :=
+  let isAdmin    := has_admin s caller in
+  let isGuardian := has_guardian s caller in
+  if negb (isAdmin || isGuardian) then revert_unauthorized
+  else if governor =? 0 then revert_invalid_governor
+  else if negb (has_code governor) then revert_invalid_governor
+  else
+    let pid := snap.(snap_pid) in
+    if isAdmin then
+      Result.Success {|
+        CancelEvent.governor   := governor;
+        CancelEvent.proposalId := pid;
+      |}
+    else
+      (* guardian-only gate: BOTH reads come from the SAME snapshot. *)
+      if negb snap.(snap_optimistic) then revert_not_optimistic
+      else
+        match snap.(snap_state) with
+        | PSDefeated => revert_defeated
+        | _ =>
+            Result.Success {|
+              CancelEvent.governor   := governor;
+              CancelEvent.proposalId := pid;
+            |}
+        end.
+
 (** ===== revokeRole =====
 
     Source: AccessControl.revokeRole (inherited via
