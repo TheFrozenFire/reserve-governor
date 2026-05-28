@@ -135,4 +135,7 @@ proofs/Integration_no_throttle_bypass.v
 # --- Integration: upgrade authorization (VersionRegistry + StakingVault) ---
 proofs/Integration_upgrade_authorization.v
 
+# --- Integration: vault balance conservation ---
+proofs/Integration_vault_balance_conservation.v
+
 Audit.v
