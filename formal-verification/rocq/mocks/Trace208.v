@@ -102,6 +102,85 @@ Definition push (tr : t) (key value : U256.t) : t :=
         {| entries := set_last tr.(entries) (key, value) |}
   end.
 
+(** ----- OZ-faithful push variant -----
+
+    [push_checked t key value] mirrors OZ's exact semantics: it
+    reverts (returns [None]) when [key < last_key], appends when
+    [key > last_key], and overwrites in place when [key = last_key].
+
+    The plain [push] above collapses the revert into in-place
+    update, which is observationally indistinguishable on
+    Governor-side use (the Governor only pushes [block.timestamp]
+    keys, which the EVM guarantees monotone). [push_checked] is
+    available for any future caller that needs the strict OZ
+    semantics — typically because the key isn't a timestamp.
+
+    The [Result.t]-style return follows the project's existing
+    Yul-revert convention; here we use [option] because the OZ
+    revert offsets aren't load-bearing for Trace208 (it's an
+    inherited storage primitive, not part of the public ABI). *)
+Definition push_checked (tr : t) (key value : U256.t) : option t :=
+  match tr.(entries) with
+  | [] => Some {| entries := [(key, value)] |}
+  | _  =>
+      let (lk, _) := last_entry tr.(entries) in
+      if key >? lk then
+        Some {| entries := tr.(entries) ++ [(key, value)] |}
+      else if key =? lk then
+        Some {| entries := set_last tr.(entries) (key, value) |}
+      else
+        None
+  end.
+
+(** Bridge lemma: under the monotone-key assumption [last_key <= key],
+    [push_checked] and [push] agree (both either append or overwrite
+    in place). *)
+Lemma push_checked_eq_push_when_monotone :
+  forall (tr : t) (key value : U256.t),
+    (match tr.(entries) with
+     | [] => True
+     | _  => fst (last_entry tr.(entries)) <= key
+     end) ->
+    push_checked tr key value = Some (push tr key value).
+Proof.
+  intros tr key value Hmon.
+  unfold push_checked, push.
+  destruct tr as [es]. simpl in *.
+  destruct es as [|e0 rest] eqn:Hes.
+  - reflexivity.
+  - destruct (last_entry (e0 :: rest)) as [lk lv] eqn:Hle.
+    simpl in Hmon.
+    destruct (key >? lk) eqn:Hgt; [reflexivity|].
+    assert (Hkle : key <= lk).
+    { rewrite Z.gtb_ltb in Hgt. apply Z.ltb_ge in Hgt. exact Hgt. }
+    assert (Hkeq : key = lk) by lia.
+    rewrite Hkeq. rewrite Z.eqb_refl. reflexivity.
+Qed.
+
+(** Negative form: when [key < last_key], [push_checked] reverts
+    (returns [None]) while [push] silently overwrites — this is the
+    fidelity gap the audit memo flags. The lemma below makes the
+    divergence formally inspectable. *)
+Lemma push_checked_reverts_below_last :
+  forall (tr : t) (key value : U256.t),
+    (match tr.(entries) with
+     | [] => False
+     | _  => key < fst (last_entry tr.(entries))
+     end) ->
+    push_checked tr key value = None.
+Proof.
+  intros tr key value Hbelow.
+  unfold push_checked.
+  destruct tr as [es]. simpl in *.
+  destruct es as [|e0 rest] eqn:Hes; [contradiction|].
+  destruct (last_entry (e0 :: rest)) as [lk lv] eqn:Hle.
+  simpl in Hbelow.
+  assert (Hgt : (key >? lk) = false).
+  { rewrite Z.gtb_ltb. apply Z.ltb_ge. lia. }
+  assert (Heq : (key =? lk) = false) by (apply Z.eqb_neq; lia).
+  rewrite Hgt. rewrite Heq. reflexivity.
+Qed.
+
 (** [latest tr]: value of the last entry, or 0 when empty.
     Production: [Checkpoints.latest()] returns 0 on an empty trace. *)
 Definition latest (tr : t) : U256.t :=

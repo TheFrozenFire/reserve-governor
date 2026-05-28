@@ -637,6 +637,7 @@ Definition xc_dep : ERC20.Address := 201.  (** depositor / lock receiver *)
 Definition xc_erc20_init : ERC20.State := {|
   ERC20.balances := [(xc_dep, 10^21)];
   ERC20.totalSupply := 10^21;
+  ERC20.allowances := [];
 |}.
 
 Definition xc_world_init : World := {|

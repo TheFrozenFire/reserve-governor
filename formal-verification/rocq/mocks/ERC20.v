@@ -63,11 +63,13 @@ Definition revert_insufficient_allowance {A : Set} : Result.t A :=
 Record State : Set := {
   balances    : list (Address * U256.t);
   totalSupply : U256.t;
+  allowances  : list ((Address * Address) * U256.t);
 }.
 
 Definition empty_state (supply : U256.t) : State := {|
   balances := [];
   totalSupply := supply;
+  allowances := [];
 |}.
 
 (** [balanceOf s addr]: list-lookup, default 0. Mirrors Solidity's
@@ -113,7 +115,11 @@ Definition do_transfer
       let b_to := balanceOf s to in
       let bs1  := set_balance s.(balances) from (b_from - amount) in
       let bs2  := set_balance bs1 to (b_to + amount) in
-      Result.Success {| balances := bs2; totalSupply := s.(totalSupply) |}.
+      Result.Success {|
+        balances := bs2;
+        totalSupply := s.(totalSupply);
+        allowances := s.(allowances);
+      |}.
 
 (** [transfer s from to amount]: a self-initiated transfer. The mock
     takes [from] as an explicit argument (production: msg.sender);
@@ -135,6 +141,116 @@ Definition transferFrom
     revert_insufficient_allowance
   else
     do_transfer s from to amount.
+
+(** ----- Allowance map operations -----
+
+    OZ ERC20 stores allowances as a nested mapping
+    [owner => spender => uint256]. The mock represents this as a
+    list of [((owner, spender), amount)] pairs with the same
+    pointwise-update discipline used for [balances].
+
+    [approve(owner, spender, amount)] sets the allowance to the
+    given value (replacing any prior value). This mirrors OZ's
+    [_approve] internal helper.
+
+    [transferFrom_with_allowance_decrement] is the production-faithful
+    variant that updates the on-chain allowance ledger as part of
+    the call. The simpler [transferFrom] above is retained for
+    proofs that don't need to track allowance evolution. *)
+
+Fixpoint allowance_lookup
+    (al : list ((Address * Address) * U256.t))
+    (owner spender : Address) : U256.t :=
+  match al with
+  | [] => 0
+  | ((o, sp), v) :: rest =>
+      if andb (Z.eqb o owner) (Z.eqb sp spender)
+      then v
+      else allowance_lookup rest owner spender
+  end.
+
+Definition allowance (s : State) (owner spender : Address) : U256.t :=
+  allowance_lookup s.(allowances) owner spender.
+
+Fixpoint set_allowance
+    (al : list ((Address * Address) * U256.t))
+    (owner spender : Address) (v : U256.t)
+    : list ((Address * Address) * U256.t) :=
+  match al with
+  | [] => [((owner, spender), v)]
+  | ((o, sp), vv) :: rest =>
+      if andb (Z.eqb o owner) (Z.eqb sp spender)
+      then ((owner, spender), v) :: rest
+      else ((o, sp), vv) :: set_allowance rest owner spender v
+  end.
+
+Definition approve
+    (s : State) (owner spender : Address) (amount : U256.t) : State :=
+  {|
+    balances    := s.(balances);
+    totalSupply := s.(totalSupply);
+    allowances  := set_allowance s.(allowances) owner spender amount;
+  |}.
+
+(** ----- Mint / Burn -----
+
+    OZ ERC20 [_mint(to, amount)] credits the receiver's balance and
+    increases [totalSupply] by [amount]. [_burn(from, amount)]
+    debits the sender's balance and decreases [totalSupply]. Both
+    revert on insufficient balance (burn) or on receiver-is-zero /
+    sender-is-zero.
+
+    The mock takes [to] / [from] as non-zero by precondition — the
+    caller is responsible for excluding the zero address. Burn
+    reverts (returns [Revert]) when balance is insufficient; mint
+    cannot fail since it only credits. *)
+
+Definition mint (s : State) (to : Address) (amount : U256.t) : State :=
+  if Z.eqb amount 0 then s
+  else
+    let b_to := balanceOf s to in
+    {|
+      balances    := set_balance s.(balances) to (b_to + amount);
+      totalSupply := s.(totalSupply) + amount;
+      allowances  := s.(allowances);
+    |}.
+
+Definition burn
+    (s : State) (from : Address) (amount : U256.t) : Result.t State :=
+  if Z.eqb amount 0 then Result.Success s
+  else
+    let b_from := balanceOf s from in
+    if b_from <? amount then
+      revert_insufficient_balance
+    else
+      Result.Success {|
+        balances    := set_balance s.(balances) from (b_from - amount);
+        totalSupply := s.(totalSupply) - amount;
+        allowances  := s.(allowances);
+      |}.
+
+(** ----- Allowance-tracking transferFrom -----
+
+    Production-faithful: deducts the spent amount from the on-chain
+    allowance ledger atomically. Reverts on insufficient allowance
+    or insufficient balance. *)
+Definition transferFrom_tracked
+    (s : State) (caller from to : Address) (amount : U256.t)
+    : Result.t State :=
+  let cur_allowance := allowance s from caller in
+  if cur_allowance <? amount then
+    revert_insufficient_allowance
+  else
+    match do_transfer s from to amount with
+    | Result.Revert p q => Result.Revert p q
+    | Result.Success s' =>
+        Result.Success {|
+          balances    := s'.(balances);
+          totalSupply := s'.(totalSupply);
+          allowances  := set_allowance s'.(allowances)
+                            from caller (cur_allowance - amount);
+        |}
+    end.
 
 (** -- Validity invariant -- *)
 
@@ -266,6 +382,84 @@ Proof.
     reflexivity.
 Qed.
 
+(** L_mint_supply: [mint] grows totalSupply by exactly [amount]. *)
+Lemma mint_increases_totalSupply :
+  forall (s : State) (to : Address) (amount : U256.t),
+    0 < amount ->
+    (mint s to amount).(totalSupply) = s.(totalSupply) + amount.
+Proof.
+  intros s to amount Hpos.
+  unfold mint.
+  destruct (Z.eqb amount 0) eqn:Hamt; [apply Z.eqb_eq in Hamt; lia|].
+  reflexivity.
+Qed.
+
+(** L_burn_supply: a successful [burn] drops totalSupply by [amount]. *)
+Lemma burn_decreases_totalSupply :
+  forall (s s' : State) (from : Address) (amount : U256.t),
+    burn s from amount = Result.Success s' ->
+    s'.(totalSupply) = s.(totalSupply) - amount.
+Proof.
+  intros s s' from amount Hok.
+  unfold burn in Hok.
+  destruct (Z.eqb amount 0) eqn:Hamt.
+  - apply Z.eqb_eq in Hamt. subst amount.
+    injection Hok as Hs'. subst s'. lia.
+  - destruct (balanceOf s from <? amount); [discriminate|].
+    injection Hok as Hs'. subst s'. simpl. reflexivity.
+Qed.
+
+(** L_approve_sets: [approve] installs exactly the given amount in
+    the allowance ledger. *)
+(** Structural lemma about set_allowance / allowance_lookup. *)
+Lemma allowance_lookup_set_allowance_eq :
+  forall (al : list ((Address * Address) * U256.t))
+         (owner spender : Address) (v : U256.t),
+    allowance_lookup (set_allowance al owner spender v) owner spender = v.
+Proof.
+  intros al owner spender v.
+  induction al as [|hd rest IH].
+  - cbn -[Z.eqb]. rewrite Z.eqb_refl. rewrite Z.eqb_refl. reflexivity.
+  - destruct hd as [pair vv]. destruct pair as [o sp].
+    cbn -[Z.eqb] in *.
+    destruct (Z.eqb o owner) eqn:Ho.
+    + destruct (Z.eqb sp spender) eqn:Hs.
+      * cbn -[Z.eqb]. rewrite Z.eqb_refl. rewrite Z.eqb_refl. reflexivity.
+      * cbn -[Z.eqb]. rewrite Ho. rewrite Hs. cbn. exact IH.
+    + cbn -[Z.eqb]. rewrite Ho. cbn. exact IH.
+Qed.
+
+Lemma approve_sets_allowance :
+  forall (s : State) (owner spender : Address) (amount : U256.t),
+    allowance (approve s owner spender amount) owner spender = amount.
+Proof.
+  intros s owner spender amount.
+  unfold allowance, approve. simpl.
+  apply allowance_lookup_set_allowance_eq.
+Qed.
+
+(** L_tracked_transferFrom_decrements_allowance: tracked
+    transferFrom decrements the [from -> caller] allowance by
+    exactly [amount]. *)
+Lemma transferFrom_tracked_decrements_allowance :
+  forall (s s' : State) (caller from to : Address) (amount : U256.t),
+    from <> to ->
+    0 < amount ->
+    transferFrom_tracked s caller from to amount = Result.Success s' ->
+    allowance s' from caller = allowance s from caller - amount.
+Proof.
+  intros s s' caller from to amount Hne Hpos Hok.
+  unfold transferFrom_tracked in Hok.
+  destruct (allowance s from caller <? amount) eqn:Hal; [discriminate|].
+  destruct (do_transfer s from to amount) as [s_inner | p q] eqn:Hdo; [|discriminate].
+  injection Hok as Hs'. subst s'.
+  unfold allowance. cbn [allowances].
+  (* set_allowance sets (from, caller) -> cur - amount; lookup at the
+     same key returns that value. *)
+  remember (allowance s from caller) as cur eqn:Hcur.
+  rewrite allowance_lookup_set_allowance_eq. reflexivity.
+Qed.
+
 (** L3: a zero-amount transfer or a self-transfer is a state no-op. *)
 Lemma transfer_zero_to_self_noop :
   forall (s : State) (from to : Address) (amount : U256.t),
@@ -293,6 +487,7 @@ Definition carol : Address := 3.
 Definition s0 : State := {|
   balances := [(alice, 100); (bob, 50)];
   totalSupply := 150;
+  allowances := [];
 |}.
 
 (** Successful transfer: alice sends 30 to carol. *)
