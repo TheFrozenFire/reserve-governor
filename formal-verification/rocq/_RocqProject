@@ -39,6 +39,7 @@ Conventions.v
 mocks/Trace208.v
 mocks/ERC20.v
 mocks/PRBMath.v
+mocks/AccessControl.v
 
 # --- ProposerThrottle ---
 simulations/ProposerThrottle.v
