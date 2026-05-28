@@ -409,3 +409,218 @@ worktree before dispatching, or include the symlink instruction in
 the agent prompt. The cleanest fix would be to make `node_modules`
 worktree-aware (e.g. a shared symlink committed to the repo pointing
 at a sibling install).
+
+## C017: Two-ghost summary divergence — the wrong-spec catch technique
+
+When a contract calls one of two related external methods (e.g.
+`getPastTotalSupply` vs `getPastOptimisticVotingSupply`), the
+**wildcard NONDET** form
+
+```cvl
+function _.getPastTotalSupply(uint256) external => NONDET;
+function _.getPastOptimisticVotingSupply(uint256) external => NONDET;
+```
+
+makes verification BLIND to which method actually gets called — both
+get the same NONDET treatment, so swapping one for the other in the
+contract is invisible to the prover.
+
+**Workaround:** summarize the two methods to **separate ghost
+mappings**:
+
+```cvl
+ghost mapping(uint256 => uint256) ghostPastTotalSupply;
+ghost mapping(uint256 => uint256) ghostPastOptimisticSupply;
+
+methods {
+    function _.getPastTotalSupply(uint256 ts) external =>
+        ghostPastTotalSupply[ts] expect uint256;
+    function _.getPastOptimisticVotingSupply(uint256 ts) external =>
+        ghostPastOptimisticSupply[ts] expect uint256;
+}
+```
+
+Then assertions can constrain the two ghosts to disagree:
+`require ghostPastTotalSupply[snapshot] > ghostPastOptimisticSupply[snapshot]`.
+The prover will search for a state where the contract reads the
+"wrong" supply and produces a bad outcome.
+
+This is the structural shape of the **Cantina PR #36 catch**: the
+verification stack pre-fix used wildcard NONDET, so it couldn't see
+that the contract was reading total supply when intent dictated
+optimistic supply. The two-ghost form surfaces the bug in 4 seconds
+of solver time.
+
+Generalization: anywhere a contract has *multiple plausible related
+external reads*, summarize them to *distinct* ghosts so the prover
+can witness divergence. The wildcard is fast but blind.
+
+## C018: Replayed-check harness for library-internal properties
+
+CVL's pointer analysis sometimes fails on Solidity libraries that
+work with `calldata` structs. The error looks like:
+
+```
+WARN INLINER - Pointer analysis for call resolution failed
+                in contract ProposalLib
+```
+
+Verifying a property at the **governor entry-point level** has the
+opposite problem — the OZ Governor inheritance chain bloats the
+symbolic state and the prover times out.
+
+**Workaround:** replay the library's check inside a small **harness
+contract** that *imports the library's constants and helpers
+directly* and asserts the same require condition byte-identically.
+
+```solidity
+// ConfirmationPrefixHarness.sol
+import { ProposalLib } from "@governance/lib/ProposalLib.sol";
+
+contract ConfirmationPrefixHarness {
+    function replayedPrefixCheck(string memory desc) external pure {
+        // SAME require as ProposalLib._validateProposal, with the
+        // SAME constant imported from the library
+        bytes18 prefix = bytes18(bytes(desc));
+        require(prefix != ProposalLib.CONFIRMATION_PREFIX_BYTES,
+                "reserved prefix");
+    }
+}
+```
+
+Soundness rests on **two compile-time guarantees**:
+
+1. The constant is *imported*, not duplicated — a refactor of
+   `ProposalLib.CONFIRMATION_PREFIX_BYTES` automatically flows
+   through to the harness.
+2. *Every* library entry point that the property depends on calls
+   the replayed check first — verified by reading the library, not
+   by Certora.
+
+Document both as explicit assumptions in the spec header. This is
+the third-attempt pattern from S35; the first two attempts (live
+delegatecall + library-only harness) timed out.
+
+## C019: Wrong-spec class is structurally invisible to faithful encoding
+
+Formal verification proves a system meets its spec. **It cannot tell
+you the spec is wrong.** Every layer of the verification stack
+(Rocq, CAS, Certora) is downstream of the spec. If the spec is
+wrong, the implementation matching the wrong spec verifies cleanly.
+
+The Cantina PR #36 bug was a wrong-spec bug: the design used
+`getPastTotalSupply` as the veto-threshold denominator, but intent
+dictated only opted-in delegated supply should count. All three
+verification layers faithfully encoded the wrong choice.
+
+**Workaround:** write **intent-derived rules** sourced from
+*documentation, threat models, and user-facing semantics*, not from
+code inspection. The contrast:
+
+- *Code-derived rule:* "the function reverts when role X is missing"
+  — sourced by reading the `onlyRole` modifier.
+- *Intent-derived rule:* "this role cannot achieve outcome X without
+  doing Y first" — sourced from the documented threat model.
+
+Intent-derived rules can be VIOLATED on a correct implementation if
+the spec is wrong. That's the demonstration the PR #36 postmortem
+records: intent-derived CVL caught the Cantina headline finding in
+4 seconds of solver time, while the existing 91-rule corpus did not.
+
+## C020: Token-balance NONDET is too-loose for conservation invariants
+
+Conservation invariants of the form
+
+```
+totalClaimed + sum(accruedRewards) <= balanceAccounted
+```
+
+cannot close in CVL if `IERC20.balanceOf` is summarized as NONDET.
+The contract's `balanceAccounted` is updated by reading
+`balanceOf(this)` over time; the prover picks `balanceOf` values
+that drift from any tracked accounting, making the high-water mark
+overstated relative to the actual balance.
+
+Three options to close such invariants:
+
+1. **DISPATCHER + harness ERC20** — deploy a mock token alongside
+   the contract under verification, summarize `_.balanceOf` as
+   `DISPATCHER(true)`. The mock keeps internal `balanceOf` state
+   consistent.
+2. **Bounded assumption invariant** —
+   `requireInvariant balanceOf(this) >= balanceAccounted`. Sound
+   under non-adversarial tokens; unsound for deflationary or
+   fee-on-transfer tokens.
+3. **Delta form** — state conservation as a per-call delta:
+   `delta(balanceAccounted) <= delta(balanceOf(this))`. Weaker but
+   doesn't require modeling the underlying token.
+
+This is why the Rocq side's `audit_rewards_conservation` proves
+cleanly while the Certora side does not: Rocq models the vault's
+balance as a single ground-truth quantity, not as an external
+NONDET read.
+
+## C021: `mathint` for fixed-point division results
+
+CVL distinguishes bounded `uint256` arithmetic from unbounded
+mathematical integers (`mathint`). Division by a non-constant
+divisor produces a `mathint` automatically:
+
+```cvl
+uint256 capacity;
+uint256 slot = FIX_ONE() / capacity;  // ERROR: type mismatch
+mathint slot = FIX_ONE() / capacity;  // OK
+```
+
+The error message is unhelpful — it usually just says "overflow
+warning." If you see one on a division expression, the fix is
+declaring the local as `mathint`. Storage-delta assertions in
+particular need this; comparing a stored `uint256` to a derived
+`mathint` works (the comparison happens in `mathint` space).
+
+## C022: Scenario vs structural rule duality
+
+For invariant-shaped properties, there are two natural CVL forms:
+
+- **Scenario rule** — pin a specific input configuration, drive the
+  function, assert a specific outcome. Fast (~seconds), focused,
+  suitable for routine CI.
+- **Structural invariant** — parametric over all methods, assert
+  the property holds in any reachable state. Heavy (minutes), broad,
+  suitable for pre-release or refactor-time verification.
+
+The same property is captured at two strengths. Cantina's wrong-
+denominator was provable as both:
+
+- `VetoThresholdReachability.spec` — scenario rule, 4 seconds, one
+  CEX shape.
+- `VetoCoalitionReachability.spec` — structural invariant, ~9
+  minutes near OOM, comprehensive coverage of all reachable states.
+
+Don't pick one — write both. The scenario form is what you run on
+every PR; the structural form is what you run when supply-handling
+code changes or at release gates. Solver-budget cost on the
+structural form is the price of refactor-resistance.
+
+## C023: Long-solver-loop agents drop out mid-iteration
+
+When a sub-agent dispatches `certoraRun.py` and the rule is
+parametric over many methods × ghost-summary chains, the solver
+produces tens of obligations. The agent's loop budget often expires
+before the solver finishes. Three observations:
+
+1. The spec/conf files survive on disk in the agent's worktree (or
+   in the main repo if the agent broke out per C016).
+2. The `certoraRun.py` process continues as a detached job; you can
+   `pgrep` for the java emv.jar and wait for it.
+3. The `emv-N-certora-*` output dir lands as the run completes;
+   inspect the `treeView/treeViewStatus_*.json` to harvest results.
+
+**Workaround:** when dispatching agents for inductive / parametric
+invariants, expect to manually harvest. Either (a) split the rule
+into single-method probes that complete faster, or (b) plan a
+manual second pass to commit + report after the solver lands.
+
+This is independent of C016 (worktree breakout) but compounds with
+it: if the agent broke out, its files are in main; if not, in the
+worktree. Check both.
