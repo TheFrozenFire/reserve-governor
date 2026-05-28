@@ -16,15 +16,23 @@ Every `<Contract>/<Contract>.conf` in this directory runs the same way.
 
 | Contract | Spec dir | Rules VERIFIED |
 |---|---|---|
-| Guardian | `Guardian/` | 5 |
-| UnstakingManager | `UnstakingManager/` | 7 |
+| Guardian | `Guardian/` | 7 |
+| UnstakingManager | `UnstakingManager/` | 9 |
 | RewardTokenRegistry | `RewardTokenRegistry/` | 7 |
 | OptimisticSelectorRegistry | `OptimisticSelectorRegistry/` | 6 |
 | TimelockControllerOptimistic | `Timelock/` | 7 |
 | VersionRegistry | `VersionRegistry/` | 7 |
 | ReserveOptimisticGovernor | `Governor/` | 10 |
 | StakingVault | `StakingVault/` | 9 |
-| **Total** | | **58** |
+| **Total** | | **62** |
+
+Coverage shaped by an adversarial review pass (synthesis at
+`notes/adversarial_synthesis.md`). Guardian gained two ghost-backed
+rules (G6a, G6b) that close the role-discriminator gap three of four
+review angles flagged. UnstakingManager gained U8 (`nextLockId`
+monotonicity). See P1/P2/P3 in the synthesis memo for the remaining
+deferred work, plus `notes/exploration_rocq_cas_alignment.md` for the
+Rocq+CAS-informed priority ranking.
 
 Plus `spike/Vault.{sol,spec,conf}` — a deliberately-broken-and-fixed
 toy contract that proves the toolchain catches planted bugs (4 VERIFIED
