@@ -163,3 +163,22 @@ rule claimStampsTimestamp {
     assert claimedTAfter == e.block.timestamp,
         "claimedAt not set to block.timestamp on successful claim";
 }
+
+/* ----- U8: createLock increments nextLockId by exactly 1 -----
+   The lock-id-monotone invariant the Rocq-side no-double-spend proof
+   leans on. Reads `nextLockId` via private-storage access, which CVL
+   permits on the contract under test regardless of Solidity visibility. */
+rule createLockIncrementsNextLockId {
+    env e;
+    address user;
+    uint256 amount;
+    uint256 unlockTime;
+
+    uint256 before = currentContract.nextLockId;
+    require before + 1 <= max_uint256;  // no overflow
+
+    createLock(e, user, amount, unlockTime);
+
+    assert currentContract.nextLockId == before + 1,
+        "nextLockId not incremented by 1";
+}

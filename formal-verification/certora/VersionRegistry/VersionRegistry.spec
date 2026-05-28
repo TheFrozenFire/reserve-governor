@@ -9,10 +9,18 @@
      V5   on success, deprecateVersion flips isDeprecated[versionHash] true
      V6   deprecateVersion does not affect the deprecation flag of a
           different versionHash (no cross-key bleed)
-     V7   getLatestVersion reverts when no version has ever been
-          registered (latestVersion -> address(0))
      V8   registerVersion rejects re-registration of a versionHash that
           already maps to a non-zero deployer
+
+   Deferred:
+     V7   getLatestVersion reverts when no version has ever been
+          registered. The function reverts iff
+          deployments[latestVersion] == 0, but latestVersion is private
+          and CVL's exploration starts from arbitrary storage states.
+          Without an inductive invariant tying latestVersion to
+          deployments[], we cannot prove "initial state implies revert".
+          Would need contract change (public latestVersion) or a
+          requireInvariant chain. Left as future work.
 
    External RoleRegistry calls are summarized via ghost functions so the
    prover can reason deterministically about the auth gate. The deployer
