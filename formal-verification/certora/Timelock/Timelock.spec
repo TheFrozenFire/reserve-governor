@@ -12,13 +12,24 @@
      T7   executeBatchBypass reverts if op already scheduled
             (OperationConflict — the optimistic bypass cannot stomp on
             a real queue entry)
+     T8   executeBatchBypass(id1, ...) does NOT change getTimestamp(id2)
+            for any id2 != id1 (cross-id non-interference: the bypass
+            on one operation cannot disturb any other scheduled or
+            executed operation). This is the bytecode-level form of
+            Rocq's `audit_timelock_bypass_preserves_slow_path` /
+            CAS INV-5.
+     T9   scheduleBatch(targets1, ..., salt1) does NOT change
+            getTimestamp(id2) for any id2 != computed_id1
+            (cross-id non-interference for scheduling).
+     T10  cancel(id1) does NOT change getTimestamp(id2) for any
+            id2 != id1 (cross-id non-interference for cancel).
 
    The OZ inheritance pulls in the full timelock queue logic.
-   T6 and T7 exercise the bypass path with targets/values/payloads
-   constrained to length 0, so the inner `target.call{value}(data)`
-   dispatch loop in `_execute` never runs. This isolates the
-   queue-state transitions (Unset -> Done; OperationConflict guard)
-   from the side-effect semantics of external dispatch.
+   T6-T10 exercise the queue-mutating paths with targets / values /
+   payloads constrained to length 0, so the inner
+   `target.call{value}(data)` dispatch loop in `_execute` never runs.
+   This isolates the queue-state transitions from the side-effect
+   semantics of external dispatch.
 
    `rule_sanity` is disabled in the conf. The proof obligations
    themselves are sound — the prover finds no counterexample under the
@@ -207,4 +218,122 @@ rule bypassRejectsExistingOp {
     executeBatchBypass@withrevert(e, targets, values, payloads, predecessor, salt);
 
     assert lastReverted, "bypass accepted an already-scheduled op";
+}
+
+/* ----- T8: executeBatchBypass(id1) preserves any other id2's timestamp -----
+
+   Cross-id non-interference for the optimistic bypass path. The bypass
+   on operation id1 must not perturb the queue entry of any unrelated
+   operation id2. Concretely: pick an arbitrary `otherId` distinct from
+   the bypass-computed id; snapshot its timestamp; run the bypass;
+   assert the snapshot is unchanged.
+
+   This is the Certora witness for Rocq's
+   `audit_timelock_bypass_preserves_slow_path` and CAS
+   `scheduling_ordering.gp` INV-5: bypassing one operation cannot
+   reorder, skip, advance, or wipe any other scheduled operation.
+
+   Asserting on the raw `getTimestamp(otherId)` storage value (rather
+   than going through `isOperationDone` or `getOperationState`)
+   sidesteps the block.timestamp dependency and gives us the cleanest
+   non-interference statement — the timestamp slot is the entire OZ
+   per-id queue state, so untouched timestamp = untouched op.
+
+   Same empty-arrays pattern as T6/T7 to isolate the queue transition
+   from external-call side effects.
+*/
+rule bypassPreservesOtherOps {
+    env e;
+    address[] targets;
+    uint256[] values;
+    bytes[] payloads;
+    bytes32 predecessor;
+    bytes32 salt;
+    bytes32 otherId;
+
+    require targets.length == 0;
+    require values.length == 0;
+    require payloads.length == 0;
+    require e.msg.value == 0;
+    require e.block.timestamp > 1;
+    require predecessor == to_bytes32(0);
+    require hasRole(PROPOSER_ROLE(), e.msg.sender);
+    require hasRole(EXECUTOR_ROLE(), e.msg.sender);
+
+    bytes32 id = hashOperationBatch(targets, values, payloads, predecessor, salt);
+
+    // Cross-id witness: otherId is unrelated to the bypass target.
+    require otherId != id;
+    // The bypass guard requires id be Unset; we still snapshot otherId's
+    // arbitrary timestamp (could be Unset / Waiting / Ready / Done).
+    require getTimestamp(id) == 0;
+
+    uint256 otherTsBefore = getTimestamp(otherId);
+
+    executeBatchBypass(e, targets, values, payloads, predecessor, salt);
+
+    assert getTimestamp(otherId) == otherTsBefore,
+        "bypass(id1) disturbed the timestamp of an unrelated id2";
+}
+
+/* ----- T9: scheduleBatch(id1) preserves any other id2's timestamp -----
+
+   Sibling of T8 for the slow-path scheduling action. Scheduling
+   operation id1 writes only the timestamps slot for id1 — every
+   other op's slot is untouched.
+
+   Empty arrays again isolate the storage write from the dispatch
+   loop. Unlike the bypass path, scheduleBatch does NOT enter
+   _execute, but the empty-arrays constraint still keeps the symbolic
+   trace tight.
+*/
+rule schedulePreservesOtherOps {
+    env e;
+    address[] targets;
+    uint256[] values;
+    bytes[] payloads;
+    bytes32 predecessor;
+    bytes32 salt;
+    uint256 delay;
+    bytes32 otherId;
+
+    require targets.length == 0;
+    require values.length == 0;
+    require payloads.length == 0;
+    require hasRole(PROPOSER_ROLE(), e.msg.sender);
+
+    bytes32 id = hashOperationBatch(targets, values, payloads, predecessor, salt);
+    require otherId != id;
+
+    uint256 otherTsBefore = getTimestamp(otherId);
+
+    scheduleBatch(e, targets, values, payloads, predecessor, salt, delay);
+
+    assert getTimestamp(otherId) == otherTsBefore,
+        "scheduleBatch(id1) disturbed the timestamp of an unrelated id2";
+}
+
+/* ----- T10: cancel(id1) preserves any other id2's timestamp -----
+
+   Sibling of T8/T9 for cancellation. cancel takes the id directly
+   (no hash computation) so the cross-id rule is simpler — two
+   distinct bytes32 ids.
+
+   No empty-arrays constraint needed: cancel touches only the
+   timestamps map and emits an event; no dispatch loop runs.
+*/
+rule cancelPreservesOtherOps {
+    env e;
+    bytes32 id;
+    bytes32 otherId;
+
+    require otherId != id;
+    require hasRole(CANCELLER_ROLE(), e.msg.sender);
+
+    uint256 otherTsBefore = getTimestamp(otherId);
+
+    cancel(e, id);
+
+    assert getTimestamp(otherId) == otherTsBefore,
+        "cancel(id1) disturbed the timestamp of an unrelated id2";
 }
