@@ -2,33 +2,35 @@
    ERC4626 + multi-token rewards + dual-delegation contract.
 
    Properties proved:
-     SV1  convertToShares(0) == 0 (zero-asset edge of the ER curve)
-     SV2  convertToAssets(0) == 0 (zero-share edge of the ER curve)
-     SV3  deposit() mints exactly the returned `shares` to the receiver
-     SV4  addRewardToken requires DEFAULT_ADMIN_ROLE
-     SV5  removeRewardToken requires DEFAULT_ADMIN_ROLE
-     SV6  setRewardRatio requires DEFAULT_ADMIN_ROLE
-     SV7  setUnstakingDelay requires DEFAULT_ADMIN_ROLE
-     SV8  delegateOptimistic only changes the caller's delegate
-     SV9  delegateOptimistic on success sets caller's delegate
-     SV10 setUnstakingDelay reverts when delay > MAX_UNSTAKING_DELAY
-          (Vault__InvalidUnstakingDelay)
-     SV11a setRewardRatio reverts when half-life > MAX
-           (Vault__InvalidRewardsHalfLife - upper bound)
-     SV11b setRewardRatio reverts when half-life < MIN
-           (Vault__InvalidRewardsHalfLife - lower bound)
-     SV12 addRewardToken reverts when token == address(this)
-          (Vault__InvalidRewardToken - self branch)
+     SV1   convertToShares(0) == 0 (zero-asset edge of the ER curve)
+     SV2   convertToAssets(0) == 0 (zero-share edge of the ER curve)
+     SV3   deposit() mints exactly the returned `shares` to the receiver
+     SV4   addRewardToken requires DEFAULT_ADMIN_ROLE
+     SV5   removeRewardToken requires DEFAULT_ADMIN_ROLE
+     SV6   setRewardRatio requires DEFAULT_ADMIN_ROLE
+     SV7   setUnstakingDelay requires DEFAULT_ADMIN_ROLE
+     SV8   delegateOptimistic only changes the caller's delegate
+     SV9   delegateOptimistic on success sets caller's delegate
+     SV10  rewardIndex is monotone non-decreasing across any method call
+           (P2 TC2; mirrors Rocq `updateRewardIndex_monotone` /
+           audit_rewards_index_monotone)
+     SV11  totalClaimed is monotone non-decreasing across any method call
+           (mirrors Rocq `claimUser_totalClaimed_monotone`)
+     SV12  user.accruedRewards is monotone non-decreasing across any
+           non-claim method (mirrors Rocq
+           `accrueUser_accrued_monotone`)
+     SV13  claimRewards zeroes the claimed user's accruedRewards for
+           the (single-token) calldata array (mirrors Rocq
+           `claimUser_zeroes_accrued`)
 
-   These four error rules cover three of the ten custom errors. The
-   remaining seven errors are either (a) initialize-only paths only
-   reachable through the deployer (Vault__InvalidAdmin), (b) gated
-   behind external-call return values summarized as NONDET that the
-   prover cannot pin to one outcome cleanly (RewardAlreadyRegistered,
-   RewardNotRegistered, MaxRewardTokensReached, DisallowedRewardToken),
-   or (c) inside _authorizeUpgrade which is reached via UUPSUpgradeable
-   plumbing that the spec deliberately scopes out
-   (VersionDeprecated, NotLatestStakingVault).
+   Deferred:
+   - The per-user lastRewardIndex sync property
+     (`accrueUser_no_op_when_index_stable`) is exercised through the
+     Rocq simulation but not pinned at CVL: the property depends on
+     the token being currently present in the `rewardTokens`
+     EnumerableSet, and the WISDOM C004 cross-slot HAVOC pathology
+     makes membership reasoning unreliable from arbitrary initial
+     states.
 
    Scoping decisions:
    - All IERC20 calls (balanceOf, transfer, transferFrom, approve) and the
@@ -36,14 +38,31 @@
      NONDET. That gives the prover maximum freedom for downstream
      contracts and keeps the rules about *this* contract's logic.
    - The UnstakingManager.createLock external call is also NONDET.
-   - Reward-accrual math (rewardIndex, accruedRewards updates) is not
-     directly asserted; it is exercised transitively by deposit/withdraw
-     rules under the NONDET token summaries.
    - The ERC20Votes side of dual delegation is covered by OZ's own
      audits; we focus on the optimistic overlay where the bookkeeping
      is contract-owned.
    - Reentrancy / signature paths (delegateOptimisticBySig) deferred.
+
+   Note on `_calculateHandout` summary:
+   The helper computes the time-decayed handout via `UD60x18.powu`
+   which is an unbounded loop the prover cannot close. We summarize
+   the internal helper as CONSTANT - the prover picks one uint256
+   value per rule. Crucially, CONSTANT picks a uint256, which is
+   non-negative by type, and the downstream usage is
+       rewardIndex += mulDiv(tokensToHandout, SCALAR * 10**decimals, totalSupply)
+   so deltaIndex is non-negative whenever totalSupply > 0. That is
+   exactly the precondition we need for `rewardIndexMonotone`.
+   The same property carries through to `totalClaimedMonotone`
+   (claim increments by `claimable >= 0`) and to
+   `userAccruedMonotoneExceptClaim` (`_accrueUser` adds a
+   non-negative `supplierDelta`).
 */
+
+// Ghost backing the IRewardTokenRegistry.isRegistered summary so two
+// reads within the same rule (the contract reads it inside both
+// `_accrueRewards(_caller,_receiver)` and `addRewardToken`) agree on
+// the registration status of a given token.
+ghost mapping(address => bool) ghostIsRegistered;
 
 methods {
     // Envfree views on StakingVault state.
@@ -55,6 +74,17 @@ methods {
     function rewardRatio() external returns (uint256) envfree;
     function optimisticDelegates(address) external returns (address) envfree;
 
+    // Auto-generated getters for the public reward-tracker mappings.
+    // `rewardTrackers(token)` returns the RewardInfo tuple:
+    //   (payoutLastPaid, rewardIndex, balanceAccounted,
+    //    balanceLastKnown, totalClaimed)
+    // `userRewardTrackers(token, user)` returns the UserRewardInfo tuple:
+    //   (lastRewardIndex, accruedRewards)
+    function rewardTrackers(address) external
+        returns (uint256, uint256, uint256, uint256, uint256) envfree;
+    function userRewardTrackers(address, address) external
+        returns (uint256, uint256) envfree;
+
     // ERC4626 conversion views - not envfree because totalAssets() reads
     // block.timestamp via _currentAccountedNativeRewards.
     function convertToShares(uint256) external returns (uint256);
@@ -63,10 +93,12 @@ methods {
     // _calculateHandout walks UD60x18.powu which is a long loop the
     // prover cannot close in reasonable time. Summarize the internal
     // helper as CONSTANT: the prover picks one uint256 and returns it
-    // for every call within a single rule. Sound for the properties we
-    // care about (monotonicity in the assets/shares argument; share
-    // balance change on mint) since they do not depend on the specific
-    // handout value, only that it is consistent across the rule.
+    // for every call within a single rule. Sound for every property
+    // in this spec - including the rewardIndex / totalClaimed / user
+    // accruedRewards monotonicity rules - because the return type is
+    // uint256, hence the picked value is non-negative, and the
+    // downstream usage only ever *adds* a value derived from
+    // `tokensToHandout` to the relevant monotone slot.
     function _calculateHandout(uint256, uint256) internal returns (uint256) => CONSTANT;
 
     // Wildcard summaries for all external calls into other contracts.
@@ -80,8 +112,12 @@ methods {
     function _.allowance(address, address) external => NONDET;
     function _.totalSupply() external => NONDET;
 
-    // RewardTokenRegistry: only one method.
-    function _.isRegistered(address) external => NONDET;
+    // RewardTokenRegistry: ghost-backed so two reads within a rule
+    // for the same token return the same answer. NONDET would let the
+    // prover flip the registration status between reads of the same
+    // token, making any rule that pins on registration vacuously
+    // unprovable (per WISDOM C015).
+    function _.isRegistered(address t) external => ghostIsRegistered[t] expect bool;
 
     // UnstakingManager.createLock (called from _withdraw delay branch).
     function _.createLock(address, uint256, uint256) external => NONDET;
@@ -209,6 +245,137 @@ rule delegateOptimisticSetsCallerDelegate {
 
     assert optimisticDelegates(e.msg.sender) == newDelegate,
         "delegateOptimistic did not set caller's delegate";
+}
+
+/* ----- SV10: rewardIndex monotone non-decreasing -----
+   Triple-confirmation of audit_rewards_index_monotone:
+     Rocq simulations/StakingVaultRewards.v        (mechanized proof)
+     CAS  cas/staking_vault/multi_token_rewards.gp (INV-1 witness)
+     CVL  this rule                                (bytecode level)
+
+   Quantifies over an arbitrary reward `token` and an arbitrary
+   external method `f`. Snapshots `rewardIndex` before and after
+   the call; asserts non-decrease.
+
+   Soundness of the `_calculateHandout => CONSTANT` summary for
+   this rule: the only writer of `rewardIndex` in the contract is
+   `_accrueRewards(address)` which does
+       rewardIndex += deltaIndex
+   where `deltaIndex = mulDiv(tokensToHandout, _, _)`. CONSTANT
+   makes the prover pick a uint256 (non-negative) for the handout
+   value; mulDiv of non-negatives with a non-zero denominator is
+   non-negative; therefore `rewardIndex` only grows. */
+rule rewardIndexMonotone(method f)
+    filtered {
+        // UUPS upgradeToAndCall is an arbitrary delegatecall; storage
+        // semantics after upgrade are out of scope (the new
+        // implementation can map slots however it likes). Authorisation
+        // for that path is covered by VersionRegistry/Upgrade specs.
+        f -> f.selector != sig:upgradeToAndCall(address,bytes).selector
+    }
+{
+    env e;
+    calldataarg args;
+    address token;
+
+    uint256 idxBefore;
+    uint256 a; uint256 b; uint256 c; uint256 d;
+    a, idxBefore, b, c, d = rewardTrackers(token);
+
+    f(e, args);
+
+    uint256 idxAfter;
+    uint256 a2; uint256 b2; uint256 c2; uint256 d2;
+    a2, idxAfter, b2, c2, d2 = rewardTrackers(token);
+
+    assert idxAfter >= idxBefore,
+        "rewardIndex decreased across method call";
+}
+
+/* ----- SV11: totalClaimed monotone non-decreasing -----
+   Mirrors Rocq `claimUser_totalClaimed_monotone`. The only writer
+   is the `+= claimableRewards[i]` in `claimRewards`, where
+   `claimableRewards[i]` is a uint256 (non-negative). Quantified
+   over all methods to catch any future code path that touches
+   the slot. */
+rule totalClaimedMonotone(method f)
+    filtered {
+        f -> f.selector != sig:upgradeToAndCall(address,bytes).selector
+    }
+{
+    env e;
+    calldataarg args;
+    address token;
+
+    uint256 claimedBefore;
+    uint256 a; uint256 b; uint256 c; uint256 d;
+    a, b, c, d, claimedBefore = rewardTrackers(token);
+
+    f(e, args);
+
+    uint256 claimedAfter;
+    uint256 a2; uint256 b2; uint256 c2; uint256 d2;
+    a2, b2, c2, d2, claimedAfter = rewardTrackers(token);
+
+    assert claimedAfter >= claimedBefore,
+        "totalClaimed decreased across method call";
+}
+
+/* ----- SV12: user.accruedRewards monotone except across claim -----
+   `claimRewards` is the only method that zeroes accruedRewards;
+   every other path either leaves it untouched or extends it by a
+   non-negative `supplierDelta` in `_accrueUser`. The rule
+   quantifies over all methods and filters claimRewards out. */
+rule userAccruedMonotoneExceptClaim(method f)
+    filtered {
+        f -> f.selector != sig:claimRewards(address[]).selector
+          && f.selector != sig:upgradeToAndCall(address,bytes).selector
+    }
+{
+    env e;
+    calldataarg args;
+    address token;
+    address user;
+
+    uint256 lastIdxBefore; uint256 accruedBefore;
+    lastIdxBefore, accruedBefore = userRewardTrackers(token, user);
+
+    f(e, args);
+
+    uint256 lastIdxAfter; uint256 accruedAfter;
+    lastIdxAfter, accruedAfter = userRewardTrackers(token, user);
+
+    assert accruedAfter >= accruedBefore,
+        "accruedRewards decreased across non-claim method";
+}
+
+/* ----- SV13: claimRewards zeroes the caller's accruedRewards -----
+   The contract zeroes `userRewardTracker.accruedRewards` inside
+   the `claimableRewards[i] != 0` branch, but after the
+   `accrueRewards(msg.sender, msg.sender)` modifier has already
+   run. The modifier picks up the latest global index and folds
+   any pending payout into the user's accrued slot; the claim then
+   transfers that exact amount and zeroes the slot.
+
+   We pin the single-token shape (length-1 calldata array) - the
+   loop-iteration bound is 3 in the conf, but a single-element
+   shape captures the essential property without inviting the
+   prover to chase the cross-element interleaving. */
+rule claimZeroesAccrued {
+    env e;
+    address token;
+    address[] tokens;
+
+    require tokens.length == 1;
+    require tokens[0] == token;
+
+    claimRewards(e, tokens);
+
+    uint256 lastIdxAfter; uint256 accruedAfter;
+    lastIdxAfter, accruedAfter = userRewardTrackers(token, e.msg.sender);
+
+    assert accruedAfter == 0,
+        "claimRewards did not zero the caller's accruedRewards";
 }
 
 /* ----- SV10: setUnstakingDelay rejects delay > MAX_UNSTAKING_DELAY -----
