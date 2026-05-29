@@ -876,6 +876,45 @@ Notation audit_rewards_claim_internal_consistency :=
 
 
 (** ============================================================
+    === Section 6e: Flash-loan-resistance theorems ===
+    ============================================================
+
+    Addresses the OWASP SC04 attack class (flash-loan-amplified
+    voting). Two real 2025 exploits hit this shape: GreenField
+    DAO ($31M, Apr 2025) and FutureSwapX ($500K, Dec 2025). The
+    Reserve Governor's structural defense is the [vetoDelay] gap
+    between proposal creation and snapshot — long enough that no
+    same-block flash loan can span it.
+
+      [audit_flash_loan_post_snapshot_acquisition_invisible]
+        — Trace208 checkpoints pushed at blocks strictly greater
+          than the snapshot are invisible to the snapshot-time
+          [upperLookupRecent] query. The structural form of
+          "post-snapshot weight doesn't count."
+      [audit_flash_loan_never_held_no_weight]
+        — Empty-trace baseline: an attacker who never held the
+          token contributes no weight at any snapshot.
+      [audit_flash_loan_vetoDelay_positive_separates_blocks]
+        — [vetoDelay > 0] forces the snapshot block to differ
+          from the proposal-creation block. Audit-facing
+          structural statement of the protocol's design defense.
+
+    Coverage cross-reference: notes/owasp_2026_coverage.md SC04.
+*)
+
+Require ReserveGovernor.proofs.Flash_loan_resistance.
+
+Notation audit_flash_loan_post_snapshot_acquisition_invisible :=
+  ReserveGovernor.proofs.Flash_loan_resistance.FlashLoanResistance.post_snapshot_acquisition_invisible.
+
+Notation audit_flash_loan_never_held_no_weight :=
+  ReserveGovernor.proofs.Flash_loan_resistance.FlashLoanResistance.never_held_no_weight.
+
+Notation audit_flash_loan_vetoDelay_positive_separates_blocks :=
+  ReserveGovernor.proofs.Flash_loan_resistance.FlashLoanResistance.vetoDelay_positive_implies_distinct_blocks.
+
+
+(** ============================================================
     === Section 7: ProposalLib ===
     ============================================================
 
