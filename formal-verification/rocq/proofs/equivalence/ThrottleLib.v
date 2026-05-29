@@ -292,31 +292,43 @@ Definition memory_has_scratch
     (memory : SimulatedMemory.t) : Prop :=
   exists w0 w1 rest, memory = w0 :: w1 :: rest.
 
-(** Convenience: assert [block.timestamp] returns the given [now].
+(** Block-timestamp pinning hypothesis. R020 is now resolved — the
+    dev-clone runtime defines [Stdlib.timestamp] as
+    [LowM.Primitive Primitive.GetBlockTimestamp M.pure] with
+    [eval_primitive] reading from [State.block_timestamp]. So
+    "block.timestamp returns now" is just [state.(State.block_timestamp) = now]. *)
 
-    NOTE — BLOCKER: the upstream's [Stdlib.timestamp] is defined as
-    [LowM.Impossible "timestamp"] (see
-    [rocq-of-solidity/rocq/RocqOfSolidity/simulations/RocqOfSolidity.v:911]).
-    The [RunO.t] judgment has no inference rule for [LowM.Impossible],
-    so this convenience predicate cannot be discharged against the
-    current upstream apparatus for ANY concrete [now] value. The same
-    blocker applies to [Stdlib.number], [Stdlib.balance],
-    [Stdlib.chainid], [Stdlib.origin], [Stdlib.gasprice],
-    [Stdlib.coinbase], [Stdlib.difficulty], [Stdlib.prevrandao],
-    [Stdlib.gaslimit], and [Stdlib.blobhash].
+(** ----- Closed building-block lemmas -----
 
-    This predicate is stated for theorem-shape clarity; closing
-    [run_getProposalsAvailable_equivalent] below requires either
-    patching the upstream's [Stdlib.timestamp] to read from a new
-    [Environment.timestamp] field, or building a governor-side
-    Stdlib-shim that overrides the [Impossible] stub. See
-    [notes/equivalence_proof_methodology.md] § Phase 1.2 outcome. *)
-Definition timestamp_is
-    (codes : Codes.t) (env : Environment.t) (state : State.t)
-    (now : U256.t) : Prop :=
-  {{? codes, env, Some state |
-    Stdlib.timestamp ⇓ Result.Ok now
-  | Some state ?}}.
+    Small leaves of the [_getProposalsAvailable] call tree. Each one
+    closes mechanically — they accumulate the workflow patterns we
+    need for the larger proof body below. *)
+
+Module ThrottleLibLeaves.
+
+  Import ThrottleLib_153.ThrottleLib_153_deployed.
+
+  (** Returns the constant 0. *)
+  Lemma run_zero_value_for_split_t_uint256 codes env state :
+    {{? codes, env, Some state |
+      zero_value_for_split_t_uint256 ⇓ Result.Ok 0
+    | Some state ?}}.
+  Proof.
+    unfold zero_value_for_split_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** Identity on valid U256.t. *)
+  Lemma run_cleanup_t_uint256 codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      cleanup_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+End ThrottleLibLeaves.
 
 (** ----- The main equivalence theorem (Admitted; see header note) ----- *)
 
@@ -329,7 +341,7 @@ Theorem run_getProposalsAvailable_equivalent
     (H_valid_account : Address.Valid.t account)
     (H_valid_now     : U256.Valid.t now)
     (H_storage       : storage_matches_sim codes env state base_slot sim)
-    (H_timestamp     : forall st, timestamp_is codes env st now)
+    (H_timestamp     : state.(State.block_timestamp) = now)
     (H_memory        : state.(State.memory) = Memory.of_u256_list memory)
     (H_scratch       : memory_has_scratch memory)
     (H_no_overflow   : (** charge computation does not revert via checked_*: *)
