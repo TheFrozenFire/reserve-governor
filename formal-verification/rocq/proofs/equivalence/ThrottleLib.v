@@ -1335,23 +1335,58 @@ Module MakeStateForm.
         exact H_capacity_ok.
     }
 
-    1: { (* Goal 4: clamped-branch closure.
-            Open under [all: admit]. Confirmed experimentally that this
-            is NOT a Goal-2-pollution issue: even with Goal 2 closed
-            using the natural raw form (no Z.min), Goal 4 still fails
-            with the same unification error. The shared metavariable
-            comes from the theorem's [exists state'] at the top —
-            [eexists] binds one state existential across both branches
-            of the if-then-else, which can only be unified to one
-            concrete form.
-
-            Real fix: refactor the proof to destruct on the if's
-            condition BEFORE [eexists], so each branch has its own
-            state existential. Or weaken the theorem to wrap
-            [(BlockUnit.t * State)] in a [Z.min]-aware form. *)
+    1: { (* Goal 4: clamped-branch closure via Z.min_l bridge through
+            a focused tuple-equality. *)
       unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
       throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account.
-      all: admit.
+      - (* Goal 4.A: checked_div(cap * FIX_ONE, FIX_ONE) *)
+        c; [ apply ThrottleLibLeaves.run_checked_div_t_uint256 | apply RunO.Pure ].
+        + unfold ProposerThrottle.FIX_ONE in *.
+          split.
+          * pose proof H_valid_sim as Hvs. destruct Hvs as [H_cap_v _].
+            unfold ProposerThrottle.Valid.capacity, UINT256_MAX in H_cap_v.
+            apply Z.mul_nonneg_nonneg; [lia | unfold FIX_ONE; lia].
+          * unfold FIX_ONE; exact H_capacity_ok.
+        + unfold U256.Valid.t, FIX_ONE; lia.
+        + unfold FIX_ONE; lia.
+      - (* Goal 4.B: tuple-emit cascade. Use Z.min_l bridge with a
+           focused tuple-equality rewrite. *)
+        cbn match.
+        l. { apply RunO.Pure. }
+        cbn match.
+        l. { apply RunO.Pure. }
+        cbn match.
+        (* Derive FIX_ONE <= raw from Hclamp = false. *)
+        unfold Pure.gt in Hclamp.
+        apply Z.eqb_neq in Hclamp.
+        unfold PROPOSAL_THROTTLE_PERIOD in *.
+        set (b := (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+          (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+          1000000000000000000 / (12 * 3600) >? 1000000000000000000) in *.
+        destruct b eqn:Hgt; [|exfalso; apply Hclamp; reflexivity].
+        unfold b in Hgt.
+        assert (Hge_raw :
+          1000000000000000000 <=
+          (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+          (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+          1000000000000000000 / (12 * 3600)).
+        { apply Z.gtb_lt in Hgt. lia. }
+        (* Use PureEq instead of Pure — it accepts [output ≠ output']
+           with a side equality proof. The output equality is
+           [Z.min 1e18 raw = 1e18] in the clamped branch via Z.min_l. *)
+        apply RunO.PureEq.
+        + (* Output equality. Z.min reduces to 1e18 in clamped branch
+             via Z.min_l, then both tuple components match. *)
+          assert (E : Z.min 1000000000000000000
+            ((ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+             (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+             1000000000000000000 / (12 * 3600)) = 1000000000000000000)
+            by (apply Z.min_l; exact Hge_raw).
+          replace (12 * 3600) with 43200 in E by reflexivity.
+          rewrite E.
+          reflexivity.
+        + (* State equality: trivially refl. *)
+          reflexivity.
     }
 
     (* Goal 5: the outer tuple-swap. With Goal 2.B's Z.min_r bridge,
@@ -1365,7 +1400,9 @@ Module MakeStateForm.
 
     (** ----- Phase E closure status -----
 
-        Closed: Goals 1, 2, 3, 5 (four of five).
+        Phase E [run_getProposalsAvailable_equivalent_make_state] now
+        closes with [Qed], no remaining [admit]. All five subgoals:
+
           - Goal 1: unclamped checked_mul(cap, charge_raw) preconditions
             via set + destruct b eqn + Z.gtb_spec (R031).
           - Goal 2: unclamped checked_div + tuple cascade. Goal 2.B's
@@ -1374,26 +1411,22 @@ Module MakeStateForm.
             the shared metavariable picks up the abstract form.
           - Goal 3: clamped checked_mul(cap, FIX_ONE) preconditions
             directly via H_capacity_ok.
-          - Goal 5: the outer tuple swap. Closes via [cbn match; unfold
+          - Goal 4: clamped tuple-emit via [RunO.PureEq] (rather than
+            RunO.Pure) — it accepts [output ≠ output'] given a side
+            equality proof. The equality is [Z.min 1e18 raw = 1e18]
+            via Z.min_l from [FIX_ONE ≤ raw] (Hclamp = false implies
+            raw > FIX_ONE).
+          - Goal 5: outer tuple swap via [cbn match; unfold
             ProposerThrottle.proposalsAvailable, readCharge; apply
-            RunO.Pure]. The cbn-match resolves the swap, the unfold
-            exposes the sim definitions in the Z.min form, and the
-            apply succeeds because Goal 2's Z.min_r bridge already
-            pinned the metavariable to the same form.
+            RunO.Pure]. The unfold exposes the sim's definitions in
+            the Z.min form, matching the metavariable Goal 2's bridge
+            pinned.
 
-        Open: Goal 4 (clamped tuple-emit residual).
-
-        Goal 4 still requires the structural fix described in R032 —
-        the [eexists state'] at the proof top creates a state
-        metavariable shared between the if-then-else's branches, and
-        the clamped emit (FIX_ONE, ...) cannot fit the same form as
-        Goal 2's Z.min closure. Closing it would either require
-        weakening the theorem's spec to state the output via Z.min
-        directly, or restructuring the proof body to destruct before
-        eexists (which our experimental attempt showed disrupts the
-        existing closure tactics in non-trivial ways). Left as
-        Admitted with the full analysis in the file and WISDOM R032. *)
-  Admitted.
+        The key tactic discovery: [RunO.PureEq] / [pe] from the
+        upstream library is the right tool for bridging
+        syntactically-different but provably-equal outputs across
+        if-then-else branches. *)
+  Qed.
 
   (** ----- Phase F: public-wrapper equivalence -----
 

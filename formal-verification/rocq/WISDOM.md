@@ -1078,9 +1078,9 @@ hypothesis still has `(12 * 3600)`.
   Hclamp; rewrite Hgt in Hclamp; discriminate` closes the
   contradictory branch.
 
-## R032: Phase E syntactic-vs-algebraic gap on `Z.min FIX_ONE raw`
+## R032: Phase E syntactic-vs-algebraic gap on `Z.min FIX_ONE raw` — RESOLVED via `RunO.PureEq`
 
-### The gap
+### The gap (resolved 2026-05-29)
 
 The contract emits `(FIX_ONE, cap * FIX_ONE / FIX_ONE)` in the
 clamped branch (when `raw > FIX_ONE`). The theorem expects
@@ -1093,6 +1093,42 @@ to `FIX_ONE`), but `apply RunO.Pure` uses syntactic unification and
 won't reduce `Z.min` without an explicit case-split. The unclamped
 branch has the inverse problem: `(raw, cap*raw/FIX_ONE)` vs
 `(Z.min FIX_ONE raw, ...)` where `raw ≤ FIX_ONE ⇒ Z.min = raw`.
+
+### The fix: `RunO.PureEq` (alias tactic `pe`)
+
+The upstream library exposes a constructor `RunO.PureEq` that
+accepts syntactically-different outputs with a side equality proof:
+
+```coq
+Lemma PureEq codes environment {A : Set} (output output' : A) state state' :
+  output = output' ->
+  state = state' ->
+  {{? codes, environment, state | LowM.Pure output ⇓ output' | state' ?}}.
+```
+
+Where `RunO.Pure` requires `output ≡ output'` syntactically, `PureEq`
+just needs them provably equal. This is the right tool for bridging
+if-then-else branches whose concrete forms equal a shared abstract
+form (like `Z.min FIX_ONE raw`).
+
+### Closure pattern
+
+```coq
+(* Goal 4 (clamped): emit is (1e18, cap*1e18/1e18); shared
+   metavariable expects (Z.min 1e18 raw, cap*Z.min 1e18 raw/1e18). *)
+apply RunO.PureEq.
+- (* output equality *)
+  assert (E : Z.min 1e18 raw_expr = 1e18) by (apply Z.min_l; <bound>).
+  rewrite E. reflexivity.
+- (* state equality *)
+  reflexivity.
+```
+
+The single `rewrite E` substitutes `Z.min 1e18 raw_expr` with `1e18`
+in ALL positions of the goal at once (because they're all the SAME
+subexpression — Coq's rewrite finds and substitutes uniformly).
+After that, the two sides become syntactically equal, and
+`reflexivity` closes.
 
 ### Partial-closure pattern that works (Goal 2.B unclamped)
 
