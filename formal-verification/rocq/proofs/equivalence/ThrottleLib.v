@@ -1354,37 +1354,45 @@ Module MakeStateForm.
       all: admit.
     }
 
-    (* Goal 5 (outer tuple-swap, plus any walker residual): closes
-       symbolically once the branch outputs are pinned to the sim form. *)
+    (* Goal 5: the outer tuple-swap. With Goal 2.B's Z.min_r bridge,
+       the metavariable carries the Z.min form. The swap reduces to
+       Result.Ok (cap*Z.min FIX_ONE raw/FIX_ONE, Z.min FIX_ONE raw),
+       which equals Result.Ok (proposalsAvailable, readCharge) by the
+       sim's definitions. *)
+    all: (cbn match;
+          unfold ProposerThrottle.proposalsAvailable, ProposerThrottle.readCharge;
+          apply RunO.Pure).
 
     (** ----- Phase E closure status -----
 
-        Closed: Goals 1, 2, 3.
+        Closed: Goals 1, 2, 3, 5 (four of five).
           - Goal 1: unclamped checked_mul(cap, charge_raw) preconditions
             via set + destruct b eqn + Z.gtb_spec (R031).
           - Goal 2: unclamped checked_div + tuple cascade. Goal 2.B's
             final emit uses the Z.min_r bridge — [replace raw with
             Z.min FIX_ONE raw] discharged by [Z.min_r Hle_raw] — so
-            the shared metavariable picks up the abstract form rather
-            than the concrete raw expression.
+            the shared metavariable picks up the abstract form.
           - Goal 3: clamped checked_mul(cap, FIX_ONE) preconditions
             directly via H_capacity_ok.
+          - Goal 5: the outer tuple swap. Closes via [cbn match; unfold
+            ProposerThrottle.proposalsAvailable, readCharge; apply
+            RunO.Pure]. The cbn-match resolves the swap, the unfold
+            exposes the sim definitions in the Z.min form, and the
+            apply succeeds because Goal 2's Z.min_r bridge already
+            pinned the metavariable to the same form.
 
-        Open: Goal 4 (clamped tuple-emit), Goal 5 (outer swap).
+        Open: Goal 4 (clamped tuple-emit residual).
 
-        The clamped-branch closure has to match the *same* metavariable
-        form set by Goal 2's Z.min_r bridge. Naive [rewrite H at N]
-        accumulates nested Z.min wrappers because each rewrite shifts
-        occurrence indices and the unification picks up partially
-        rewritten terms.
-
-        Possible next approach: instead of rewriting Goal 4's emit
-        post-hoc, restructure the proof to handle the if-then-else at
-        an outer level — destruct on Hclamp BEFORE the walker exits,
-        then both branches close independently against fresh
-        metavariables, and Goal 5 (the swap) handles the algebraic
-        equivalence via Z.min case analysis in a single coordinated
-        step. *)
+        Goal 4 still requires the structural fix described in R032 —
+        the [eexists state'] at the proof top creates a state
+        metavariable shared between the if-then-else's branches, and
+        the clamped emit (FIX_ONE, ...) cannot fit the same form as
+        Goal 2's Z.min closure. Closing it would either require
+        weakening the theorem's spec to state the output via Z.min
+        directly, or restructuring the proof body to destruct before
+        eexists (which our experimental attempt showed disrupts the
+        existing closure tactics in non-trivial ways). Left as
+        Admitted with the full analysis in the file and WISDOM R032. *)
   Admitted.
 
   (** ----- Phase F: public-wrapper equivalence -----
