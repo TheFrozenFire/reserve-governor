@@ -81,6 +81,9 @@ work and was added after the Cantina contest surfaced a class of
 | See the Certora coverage matrix | [`certora/README.md`](certora/README.md) |
 | Understand the intent-derived rule methodology | [`certora/notes/cantina_pr36_postmortem.md`](certora/notes/cantina_pr36_postmortem.md) |
 | Browse the governance-shape bug catalog | [`certora/notes/governance_intent_and_shapes.md`](certora/notes/governance_intent_and_shapes.md) |
+| See OWASP-2026 threat-category coverage | [`notes/owasp_2026_coverage.md`](notes/owasp_2026_coverage.md) |
+| See Trace2Inv invariant-template coverage | [`notes/trace2inv_template_coverage.md`](notes/trace2inv_template_coverage.md) |
+| See Trail of Bits maturity-framework positioning | section "Maturity classification" below |
 | Understand a specific component's math | `rocq/simulations/<Component>.v` (e.g. `StakingVault.v` once added) |
 | Audit the modeling fidelity | [`notes/simulation_fidelity_audit.md`](notes/simulation_fidelity_audit.md) |
 | See `--ir-rocq` compile coverage of every contract | [`notes/ir_rocq_coverage.md`](notes/ir_rocq_coverage.md) |
@@ -88,7 +91,55 @@ work and was added after the Cantina contest surfaced a class of
 | Reproduce the CAS sweeps | `bash cas/run-check.sh` |
 | Build the whole Rocq tree | `bash scripts/rocq-build` |
 | Run a single Certora spec | `source ~/git/reserve/_tools/certora/env.sh && certoraRun.py certora/<Contract>/<Contract>.conf` |
+| Run the Halmos symbolic checks | `halmos --match-contract HalmosChecks` (governor checkout) |
 | Regenerate `--ir-rocq` coverage matrix | `bash scripts/ir-rocq-coverage` |
+
+## Maturity classification
+
+The Reserve Governor's defense-in-depth posture against private-
+key compromise sits at **Level 3** of the [Trail of Bits maturity
+framework](https://blog.trailofbits.com/2025/06/25/maturing-your-smart-contracts-beyond-private-key-risk/),
+with several paths backed by Level-4-adjacent immutability
+theorems.
+
+| Component | Maturity | Theorem(s) backing the claim |
+|---|---|---|
+| `ReserveOptimisticGovernor` | L3 — timelock + 4 distinct roles (proposer, executor, canceller, admin) + optimistic-vs-standard channel separation | `audit_governor_no_double_execution`, `audit_governor_optimistic_cannot_be_queued`, `audit_governor_execute_standard_requires_queued`; Certora S33 channel-separation, S31 veto-coalition reachability |
+| `TimelockControllerOptimistic` | L3 — proposer/executor/canceller role split + scheduled-delay enforcement | `audit_timelock_no_double_execute`, `audit_timelock_op_done_persists`; Certora `Timelock.spec` |
+| `StakingVault` | L3 — admin role for upgrades, gated by `VersionRegistry.deprecated`. L4-adjacent on upgrade authorization (the upgrade path is permission-checked structurally, not arbitrarily settable). | `audit_integration_upgrade_authorization` |
+| `VersionRegistry` | L3 — `IRoleRegistry.isOwner` for register, `isOwnerOrEmergencyCouncil` for deprecate | `audit_version_register_requires_owner` |
+| `UnstakingManager` | L4-adjacent — no admin functions post-deploy; lockup mechanics are pure-state-machine | `audit_unstaking_createLock_conservation`, `audit_unstaking_no_double_spend`, `audit_unstaking_total_active_bounded` |
+| `Guardian` | L3 — two-tier (admin unrestricted + guardian conditional on proposal state) | `audit_guardian_cancel_with_state_admin_unrestricted`, `audit_guardian_cancel_with_state_guardian_path` |
+| `RewardTokenRegistry` | L3 — `IRoleRegistry`-gated register/unregister | `audit_reward_token_register_not_owner_reverts`, `audit_reward_token_register_preserves_validity` |
+| `OptimisticSelectorRegistry` | L3 — owner-gated add/remove with forbidden-target catalog | per-domain `audit_selector_registry_*` (NoDup invariants + forbidden-target rejection) |
+| `ProposerThrottle` | structural rate-limit — not role-gated (anyone can call), but per-account state-machine bounded | `audit_throttle_consume_success_iff_available`, `audit_throttle_consume_storage_delta`, `audit_throttle_preserves_validity`, `audit_proposalsAvailable_le_capacity`; Halmos `check_Throttle*` symbolic confirmation |
+| `ProposalLib` | L3 — proposer-role check + description-suffix proposer-binding | `audit_proposal_id_injective`, `audit_proposal_rejects_restricted_proposer`, `audit_proposal_optimistic_role_gate`; Certora `ProposalLib.spec` |
+| Flash-loan resistance | L3 — vetoDelay > 0 separates snapshot from proposal-creation block; post-snapshot acquisitions are invisible | `audit_flash_loan_*` (3 theorems in `Flash_loan_resistance.v`) |
+| Reentrancy guard | L3 — zero-first ordering in `claimRewards` machine-checked under outer-inner-outer interleaving | `audit_reentrancy_*` (5 theorems in `StakingVaultRewardsReentrancy.v`) |
+
+The framework's L4 ("radical immutability") is unreachable for a
+*governance* contract — the whole point is to be administrable by
+the protocol's DAO. The closest L4-adjacent claims are
+`UnstakingManager` (no post-deploy admin) and the upgrade-
+authorization path (constrained by the version registry rather
+than arbitrarily settable). Both have explicit theorems backing
+the claim.
+
+### Three framing axes
+
+The corpus is cross-referenced against three external catalogs.
+Each row of each catalog points at the same underlying artifacts;
+the catalogs are different *views* of the coverage, not different
+coverage:
+
+1. **Threat catalog (attacks)** — [OWASP Smart Contract Top 10 (2026)](notes/owasp_2026_coverage.md): 10 of 10 categories addressed
+2. **Defensive-pattern catalog (invariants)** — [Trace2Inv templates (FSE 2024)](notes/trace2inv_template_coverage.md): 14 of 14 applicable templates addressed
+3. **Defense-in-depth catalog (architecture)** — Trail of Bits maturity framework: L3 with L4-adjacent paths documented above
+
+When all three matrices read positive on overlapping rows, the
+underlying proof is doing its job. When they disagree, the gap
+points at either a missing theorem or a missing framing — both
+are signals worth chasing.
 
 ## Toolchain
 

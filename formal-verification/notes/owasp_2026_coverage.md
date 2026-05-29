@@ -38,9 +38,9 @@ in vocabulary external reviewers expect. A category marked
 |---|---|
 | Guardian admin/guardian split | `audit_guardian_cancel_admin_unrestricted`, `audit_guardian_cancel_guardian_conditional` |
 | Governor proposer / canceller / executor | `audit_governor_cancel_validated_requires_authorization`, `audit_governor_add_veto_validated_requires_active_phase` |
-| VersionRegistry isOwner gate | `audit_version_registry_register_requires_owner` |
-| RewardTokenRegistry isOwner gate | `audit_reward_token_registry_register_requires_owner` |
-| Timelock proposer/executor/canceller | `audit_timelock_schedule_requires_proposer` and surrounding |
+| VersionRegistry isOwner gate | `audit_version_register_requires_owner` |
+| RewardTokenRegistry isOwner gate | `audit_reward_token_register_not_owner_reverts` |
+| Timelock proposer/executor/canceller | `audit_timelock_schedule_preserves_validity` and surrounding |
 | Per-role mock fidelity | `mocks/AccessControl.v` carrying role storage |
 | Source-vs-bytecode | Certora `Guardian.spec` (G6a/G6b), `Governor.spec` role-discriminator rules |
 
@@ -59,7 +59,7 @@ in vocabulary external reviewers expect. A category marked
 | Proposal lifecycle state machine | `audit_proposal_lifecycle_*` + Reachable-style theorems |
 | Optimistic veto threshold (Cantina catch) | Certora `VetoThresholdReachability.spec` scenario + `VetoCoalitionReachability.spec` structural form (S31) |
 | Optimistic-vs-standard channel separation | Certora S33 (channel separation), S26+S27 (cross-domain + actor set) |
-| Vault exchange rate never-underwater | `audit_exchange_never_underwater` |
+| Vault exchange rate never-underwater | `audit_vault_never_underwater` |
 | Rewards conservation (internal counters) | `audit_rewards_conservation` |
 | Rewards conservation (against external ERC20) | `audit_rewards_claim_external_conservation` (Tier-A #3 work) |
 | Halmos symbolic check for throttle | `test/HalmosChecks.t.sol:check_ThrottleCapSaturation`, `check_ThrottleChargeBound`, `check_ThrottleReplenishMonotone`, `check_ThrottleConsumeDebitsUnit` |
@@ -145,7 +145,7 @@ not proven.
 | PRBMath differential validation at production-realistic exponents | `test/PRBMathPowuAxioms.t.sol` (28 tests, including uint40 stress) |
 | Math.mulDiv bounded correctness | abstracted to `Z.div (a*b) c`; standard convention |
 | Reward index over- and under-flow bounds | `audit_rewards_index_monotone` |
-| StakingVault exchange rate floor | `audit_exchange_never_underwater` |
+| StakingVault exchange rate floor | `audit_vault_never_underwater` |
 
 **Status:** covered. The PRBMath axioms are the single
 cryptographic-grade trust surface; everything else is integer
@@ -201,7 +201,7 @@ output is in bound or reverts; no silent wrap can occur.
 
 | Surface | Artifact |
 |---|---|
-| VersionRegistry deprecation gate | `audit_version_registry_*` |
+| VersionRegistry deprecation gate | `audit_version_register_*` family |
 | Upgrade authorization via VersionRegistry + StakingVault | `audit_integration_upgrade_authorization` |
 | UUPS implementation slot uniqueness | Trust assumption T-PROXY in `notes/external_dependencies.md` |
 | OZ ERC1967Proxy correctness | out-of-scope by deployment-time-only argument |
