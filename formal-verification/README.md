@@ -80,6 +80,7 @@ enumerate within bound."
 | Flash-loan resistance (snapshot-based voting) | ✓ | – | ✓ | Trace208 past-vote correctness plus `vetoDelay`-separates-blocks at the structural level. |
 | EIP-712 signature delegation (`delegateOptimisticBySig`) | ✓ | – | – | ECDSA + Nonces mocks back signer-binding, replay-rejection, and cross-chain / cross-contract hash injectivity. Foundry differential tests cross-validate the axioms against the deployed implementations. |
 | Pure-arithmetic state-machine bounds | ✓ | ✓ | ✓ | Halmos symbolic verification on throttle cap saturation, charge bound, and consume-debits-unit; complements the Rocq theorems at the EVM-arithmetic level. |
+| Per-lock lifecycle state machine (UnstakingManager) | ✓ | – | – | Halmos symbolic checks on the lifecycle-subset harness: terminal states are absorbing (no-double-cancel / no-double-claim / no-claim-after-cancel / no-cancel-after-claim), premature claims revert, per-call structural transitions hold for every input. |
 
 (✓ = applies; – = not applicable, or out of scope)
 
@@ -191,8 +192,10 @@ Four toolchains support the four verification surfaces.
   under `certora/`. Activated via a single sourced env script;
   individual specs run with `certoraRun.py certora/<Contract>/<Contract>.conf`.
 - **Halmos** (`pipx install halmos` or `uv tool install halmos`)
-  for the symbolic-test layer under `test/HalmosChecks.t.sol`
-  (governor checkout). Run with `halmos --match-contract HalmosChecks`.
+  for the symbolic-test layer under `test/Halmos*.t.sol`
+  (governor checkout). Run with `halmos --match-contract '^Halmos'`.
+  The Foundry config emits Solidity AST in artifacts (`ast = true`),
+  which Halmos parses to drive symbolic execution.
 
 The Rocq fork of `solc` that emits `--ir-rocq` IR
 (`rocq-of-solidity`) is shared across protocol and governor
@@ -214,7 +217,7 @@ bash formal-verification/cas/run-check.sh
 
 # Foundry + Halmos — from the governor checkout root
 forge test
-halmos --match-contract HalmosChecks
+halmos --match-contract '^Halmos'
 
 # Certora — one spec at a time
 source <certora env>

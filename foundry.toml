@@ -4,6 +4,11 @@ script = "script"
 src = "contracts"
 test = "test"
 
+# Emit Solidity AST in artifacts — required by Halmos symbolic
+# checks under test/Halmos*.t.sol, which parse AST nodes from
+# the compiled output.
+ast = true
+
 # Gas/Memory
 dynamic_test_linking = true 
 gas_limit = "18446744073709551615" # 2^64 - 1
