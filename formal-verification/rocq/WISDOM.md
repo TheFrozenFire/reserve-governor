@@ -512,3 +512,60 @@ For our workstream this means: either patch upstream both ways
 entirely. The intermediate option is to close ONLY ThrottleLib
 (after R020 patch) as a demonstration target and leave Caveat-5
 permanently partial for the rest.
+
+## R022: `Dict.Eq.eqb` on tuple keys anomalies `cbn`/`simpl`/`hauto`
+
+When mechanizing lemmas about `Dict.t (U256.t * U256.t) U256.t` (used
+by the upstream's `StorableValue.MapStruct` variant), the
+`Dict.Eq.eqb (a, b) (c, d)` projection dispatches through the
+`Dict.Eq.ITuple2` typeclass instance and Coq 8.20.1 anomalies when
+the surrounding tactic tries to reduce it.
+
+Concretely, the goal looks like:
+
+```coq
+StorableValue.map_get_u256 (some_flat_map sim) (account, 0)
+  = ...some_field_accessor account
+```
+
+After `unfold StorableValue.map_get_u256, Dict.get`, the head reduces
+to `match Dict.Eq.eqb (account, 0) (k, j) with ...` and *any* attempt
+to reduce that projection — `simpl`, `cbn`, `cbn -[Dict.Eq.eqb]`,
+even `hauto lq: on` — surfaces:
+
+```
+Conversion test raised an anomaly:
+Anomaly "Uncaught exception Not_found."
+```
+
+The anomaly is at the kernel level, not the tactic level. It occurs
+even with `at i j`-positional `unfold` and even when restricting the
+blacklist to `Dict.Eq.eqb`.
+
+### Workarounds (none clean)
+
+1. **Admit and document.** For projection-sanity lemmas (those that
+   are mathematically trivial but tactically blocked), Admit with a
+   comment pointing at R022. The body of the involved function is
+   pure and inspectable; correctness is by direct read.
+
+2. **Manual `change`.** Tried but unreliable: `change` requires
+   syntactic identity through the projection, and the typeclass
+   instance argument is implicit.
+
+3. **Upstream-side helper.** Add `Lemma Dict_eq_eqb_pair_unfold` in
+   `rocq-of-solidity/proofs/RocqOfSolidity.v` exposing
+   `Dict.Eq.eqb (a, b) (c, d) = andb (Z.eqb a c) (Z.eqb b d)`
+   provably (or definitionally with the right `Arguments`
+   directives). This is the right long-term fix.
+
+### Touchpoints in this repo
+
+- `proofs/equivalence/ThrottleLib.v`:
+  `throttles_packed_currentCharge`, `throttles_packed_lastUpdated`
+  Admitted with R022 reference.
+- Phases 2.x onward (UnstakingManager.locks, StakingVault rewards,
+  Governor proposals) — every contract using struct-mapping storage
+  will hit this same pattern. Closing R022 once unblocks all of them.
+
+Tracked as part of task #185 (Ongoing WISDOM.md updates).

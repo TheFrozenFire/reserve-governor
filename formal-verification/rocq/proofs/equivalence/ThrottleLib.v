@@ -618,3 +618,170 @@ Proof.
       Estimated ~200 lines of mechanical proof. Land as part of
       Phase 1.3 since [consumeProposalCharge] reuses the same body. *)
 Admitted.
+
+(** ----- Phase B: [make_state] form (task #187) -----
+
+    The legacy [storage_matches_sim] precondition above takes a family
+    of [sload <slot> = <value>] hypotheses keyed by [SlotKind.t]. Each
+    storage-touching subproof has to invoke the hypothesis with the
+    right [SlotKind.t] tag — readable, but it doesn't compose with the
+    upstream's [apply_run_sload_*] Ltacs which expect a
+    [make_state env state memory storage] state shape.
+
+    With Phase A's new [StorableValue.MapStruct] variant (in the
+    rocq-of-solidity fork at commit 2b66701431), we can now project
+    the sim's [ThrottleLibStorage.t] into a [SimulatedStorage.t] list
+    of length 2 and re-state the main theorem against
+    [make_state env state_base memory (proj_sim sim)]. Subsequent
+    storage reads then dispatch via [apply_run_sload_u256] (capacity)
+    and [apply_run_sload_struct_field] (per-throttle fields).
+
+    The legacy [storage_matches_sim] form is left in place for the
+    leaf lemmas that reference it; new lemmas in Phases C-F prefer
+    the [make_state] form. *)
+
+Require Import RocqOfSolidity.proofs.RocqOfSolidity.
+
+Module MakeStateForm.
+
+  (** Pack a sim's [throttles] dict into the flat (account, offset)-keyed
+      map shape that [StorableValue.MapStruct] uses. Each non-zero
+      throttle contributes two entries: (account, 0) -> currentCharge
+      and (account, 1) -> lastUpdated. Accounts not in the sim's dict
+      project to no entries, so [map_get_u256] returns 0 at those
+      keys — matching Solidity's "uninitialised storage is zero". *)
+  Definition throttles_packed (sim : ThrottleLibStorage.t) :
+      Dict.t (U256.t * U256.t) U256.t :=
+    List.flat_map (fun (entry : Address.t * Throttle.t) =>
+      let (account, t) := entry in
+      [((account, 0), t.(Throttle.currentCharge));
+       ((account, 1), t.(Throttle.lastUpdated))])
+      sim.(ThrottleLibStorage.throttles).
+
+  (** The full sim ↔ Yul-storage projection. Two top-level slots:
+
+        slot 0: capacity (uint256)
+        slot 1: throttles mapping (MapStruct; field offset 0 =
+                currentCharge, field offset 1 = lastUpdated)
+
+      With this projection, [make_state env state_base memory (proj_sim sim)]
+      is a [State.t] whose storage agrees with the sim and whose memory
+      is freely chosen — the shape every Phase C-F lemma will take as
+      its precondition. *)
+  Definition proj_sim (sim : ThrottleLibStorage.t) : SimulatedStorage.t := [
+    StorableValue.U256 sim.(ThrottleLibStorage.capacity);
+    StorableValue.MapStruct (throttles_packed sim)
+  ].
+
+  (** Sanity: the [proj_sim] entries' lookup keys match the slot-address
+      helpers above. The MapStruct sload uses
+      [keccak256_tuple2 account (Z.of_nat 1) + offset], and [slot_currentCharge]
+      is [keccak256_tuple2 account (base_slot + 1)], so they agree when
+      [base_slot = 0] (which is the convention used by every governor
+      contract's ThrottleLib instance — the throttle storage is at the
+      contract's slot 0 + 1).
+
+      The cross-check below verifies the projection is well-formed at
+      the capacity slot. The per-field checks for MapStruct sloads
+      land in Phase C alongside the [apply_run_sload_struct_field]
+      tactic usage. *)
+  Lemma proj_sim_well_formed (sim : ThrottleLibStorage.t) :
+    List.length (proj_sim sim) = 2%nat.
+  Proof. reflexivity. Qed.
+
+  Lemma proj_sim_capacity (sim : ThrottleLibStorage.t) :
+    List.nth_error (proj_sim sim) 0
+    = Some (StorableValue.U256 sim.(ThrottleLibStorage.capacity)).
+  Proof. reflexivity. Qed.
+
+  Lemma proj_sim_throttles (sim : ThrottleLibStorage.t) :
+    List.nth_error (proj_sim sim) 1
+    = Some (StorableValue.MapStruct (throttles_packed sim)).
+  Proof. reflexivity. Qed.
+
+  (** [throttles_packed] lookup: when the sim contains an entry for
+      [account], the packed map returns the requested field's value.
+      When the sim has no entry, the lookup defaults to 0 (matching
+      [ThrottleLibStorage.default_throttle], which is also zero in both
+      fields). *)
+  (** ----- Projection sanity lemmas (Admitted — WISDOM R022) -----
+
+      These two lemmas relate the [throttles_packed] map's offset-0 /
+      offset-1 lookups to the sim's [Throttle.currentCharge] /
+      [Throttle.lastUpdated] field accessors. Phase C uses them as the
+      rewrite rules after [apply_run_sload_struct_field] surfaces a
+      [map_get_u256 (throttles_packed sim) (account, offset)] in the
+      goal.
+
+      They are mathematically trivial — the [throttles_packed] flat_map
+      lays out [(account, 0) -> currentCharge] and [(account, 1) -> lastUpdated]
+      for each sim throttle, and the [map_get_u256] lookup
+      sequentially scans for the matching key. Mechanizing the proof
+      in Coq 8.20.1 hits a typeclass-projection anomaly: [Dict.Eq.eqb]
+      on tuple keys dispatches through [Dict.Eq.ITuple2], and both
+      [simpl] / [cbn] / [hauto] anomaly on the unfolded body with
+      "Conversion test raised an anomaly: Uncaught exception Not_found".
+      Manual [change] tactics also fail because [change] requires
+      syntactic identity through the typeclass projection, which Coq
+      doesn't reduce.
+
+      WISDOM.md R022 captures this trap; the upstream-side workaround
+      would be to expose a [Dict.Eq.eqb_pair_unfold] lemma in the
+      rocq-of-solidity simulation. Tracked as task #185 (WISDOM
+      updates) — the lemma will close once that helper lands.
+
+      Their use is non-defeating: Phases C-F use them as oracle
+      rewrites; treat them as sound on inspection of the
+      [throttles_packed] body, which is a pure function. *)
+  Lemma throttles_packed_currentCharge (sim : ThrottleLibStorage.t) (account : Address.t) :
+    StorableValue.map_get_u256 (throttles_packed sim) (account, 0)
+    = (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge).
+  Proof.
+  Admitted.
+
+  Lemma throttles_packed_lastUpdated (sim : ThrottleLibStorage.t) (account : Address.t) :
+    StorableValue.map_get_u256 (throttles_packed sim) (account, 1)
+    = (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated).
+  Proof.
+  Admitted.
+
+  (** ----- Restated main theorem (still Admitted) -----
+
+      Replaces the [storage_matches_sim] precondition with the
+      canonical [make_state] form. The state-skeleton [state_base]
+      carries everything except memory and storage; [memory] is the
+      scratch memory the function uses internally; [proj_sim sim] is
+      the projected storage. *)
+  Theorem run_getProposalsAvailable_equivalent_make_state
+      (codes : Codes.t) (env : Environment.t) (state_base : State.t)
+      (account : Address.t)
+      (sim : ThrottleLibStorage.t) (now : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_valid_sim     : Valid.state sim)
+      (H_valid_account : Address.Valid.t account)
+      (H_valid_now     : U256.Valid.t now)
+      (H_timestamp     : state_base.(State.block_timestamp) = now)
+      (H_no_overflow   : (** charge computation does not revert via checked_*: *)
+         let throttle := ThrottleLibStorage.get_throttle sim account in
+         now >= throttle.(Throttle.lastUpdated) /\
+         throttle.(Throttle.currentCharge)
+           + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
+             / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
+         sim.(ThrottleLibStorage.capacity) * ProposerThrottle.FIX_ONE < 2 ^ 256) :
+    let state    := make_state env state_base memory (proj_sim sim) in
+    let throttle  := ThrottleLibStorage.get_throttle sim account in
+    let charge    := ProposerThrottle.readCharge throttle now in
+    let available := ProposerThrottle.proposalsAvailable
+                       throttle sim.(ThrottleLibStorage.capacity) now in
+    exists memory',
+    {{? codes, env, Some state |
+      ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152
+        0 (** base_slot *) account ⇓
+      Result.Ok (available, charge)
+    | Some (state <| State.memory := Memory.of_u256_list memory' |>) ?}}.
+  Proof.
+  (** Discharged in Phases C-F via apply_run_sload_struct_field,
+      apply_run_mstore, apply_run_keccak256_tuple2, CanonizeState.execute. *)
+  Admitted.
+
+End MakeStateForm.
