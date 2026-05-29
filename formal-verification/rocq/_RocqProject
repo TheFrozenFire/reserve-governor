@@ -216,6 +216,7 @@ Audit.v
 # Phase A-F scaffold (Phase C closed, Phases B/D/E/F Admitted under
 # R022-family blockers — see WISDOM R022 and the Audit.v Caveat-5
 # update for current coverage).
+proofs/equivalence/Common.v
 proofs/equivalence/Sandbox.v
 proofs/equivalence/ThrottleLib.v
 proofs/equivalence/UnstakingManager.v
