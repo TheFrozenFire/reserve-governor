@@ -1288,16 +1288,14 @@ Module MakeStateForm.
               [apply Z.mul_le_mono_nonneg_l; lia | exact H_capacity_ok].
         + unfold U256.Valid.t, FIX_ONE; lia.
         + unfold FIX_ONE; lia.
-      - (* Goal 2.B: tuple-emit cascade. cbn match reduces the outer
-           match; walker handles the LowM.Let pass-throughs; then we
-           bridge the syntactic emit to the [Z.min FIX_ONE raw] form
-           so Goal 5's expected output unifies on both branches. *)
+      - (* Goal 2.B: tuple-emit cascade with Z.min_r bridge. Closes
+           cleanly because the unclamped branch has a single [raw]
+           expression that propagates uniformly through the substitution. *)
         cbn match.
         l. { apply RunO.Pure. }
         cbn match.
         l. { apply RunO.Pure. }
         cbn match.
-        (* Derive raw <= FIX_ONE from Hclamp. *)
         unfold Pure.gt in Hclamp.
         apply Z.eqb_eq in Hclamp.
         unfold PROPOSAL_THROTTLE_PERIOD in *.
@@ -1316,7 +1314,6 @@ Module MakeStateForm.
              1000000000000000000 / (12 * 3600))
             1000000000000000000) as [Hlt|HleX];
             [congruence | exact HleX]. }
-        (* Rewrite raw to Z.min FIX_ONE raw via Z.min_r, then close. *)
         replace ((ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
           (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
           1000000000000000000 / (12 * 3600))
@@ -1339,20 +1336,19 @@ Module MakeStateForm.
     }
 
     1: { (* Goal 4: clamped-branch closure.
-            Open under [all: admit]. See R032 / the Phase E status
-            note: Goal 2.B's Z.min_r bridge set the shared metavariable
-            to a form with [Z.min 1e18 raw] in multiple positions.
-            Closing Goal 4 with the clamped emit (1e18, ...) requires
-            unifying against that form, but [rewrite <- H_min_l at N]
-            accumulates nested [Z.min] wrappers — Coq picks
-            occurrences inside the already-set metavariable's [Z.min]
-            terms instead of the bare 1e18 positions.
+            Open under [all: admit]. Confirmed experimentally that this
+            is NOT a Goal-2-pollution issue: even with Goal 2 closed
+            using the natural raw form (no Z.min), Goal 4 still fails
+            with the same unification error. The shared metavariable
+            comes from the theorem's [exists state'] at the top —
+            [eexists] binds one state existential across both branches
+            of the if-then-else, which can only be unified to one
+            concrete form.
 
-            The cleanest fix is to restructure: split Goal 5 first via
-            the same Hclamp destruct, so each (branch, Goal 5 copy)
-            pair shares its own metavariable. Then both branches close
-            with concrete forms and the algebraic equivalence is
-            absorbed into Goal 5's reduction. *)
+            Real fix: refactor the proof to destruct on the if's
+            condition BEFORE [eexists], so each branch has its own
+            state existential. Or weaken the theorem to wrap
+            [(BlockUnit.t * State)] in a [Z.min]-aware form. *)
       unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
       throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account.
       all: admit.
