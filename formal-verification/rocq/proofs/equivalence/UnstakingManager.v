@@ -97,6 +97,32 @@ Module UnstakingManagerEquivalence.
       Dict.t (U256.t * U256.t) U256.t :=
     locks_packed_aux [] 0 locks.
 
+  (** Cleaner accumulator-free shape — equivalent to [locks_packed]
+      but defined recursively without threading an [acc] argument.
+      Easier to induct on. *)
+  Fixpoint flat_entries (i : U256.t) (locks : list Lock.t) :
+      Dict.t (U256.t * U256.t) U256.t :=
+    match locks with
+    | []          => []
+    | l :: rest   => lock_to_entries i l ++ flat_entries (i + 1) rest
+    end.
+
+  Lemma locks_packed_aux_eq_flat (acc : Dict.t (U256.t * U256.t) U256.t)
+      (i : U256.t) (locks : list Lock.t) :
+    locks_packed_aux acc i locks = acc ++ flat_entries i locks.
+  Proof.
+    revert acc i.
+    induction locks as [|l rest IH]; intros acc i; simpl.
+    - rewrite List.app_nil_r. reflexivity.
+    - rewrite IH. rewrite <- List.app_assoc. reflexivity.
+  Qed.
+
+  Lemma locks_packed_eq_flat (locks : list Lock.t) :
+    locks_packed locks = flat_entries 0 locks.
+  Proof.
+    unfold locks_packed. rewrite locks_packed_aux_eq_flat. reflexivity.
+  Qed.
+
   (** ----- Full sim ↔ Yul-storage projection -----
 
       Slot 0: [nextLockId] (uint256).
@@ -138,29 +164,367 @@ Module UnstakingManagerEquivalence.
            reduces by case-split on [lockId =? lockId'] and [offset =? off'].
         3. The terminating case returns the correct field of the
            default_lock (which has all four fields = 0). *)
-  Lemma locks_packed_get_user (locks : list Lock.t) (lockId : U256.t) :
+  (** ----- One-step list-prefix unfolding -----
+
+      [map_get_u256 (xs ++ ys) k = map_get_u256 xs k] when the key
+      is present in [xs]; otherwise falls through to [map_get_u256
+      ys k]. For our use, we exploit the fact that the 4-entry
+      prefix [lock_to_entries i l] either matches (i =? lockId) or
+      uniformly misses. *)
+  Lemma map_get_u256_app
+      (xs ys : Dict.t (U256.t * U256.t) U256.t)
+      (k : U256.t * U256.t) :
+    StorableValue.map_get_u256 (xs ++ ys) k
+    = match Dict.get xs k with
+      | Some v => v
+      | None   => StorableValue.map_get_u256 ys k
+      end.
+  Proof.
+    unfold StorableValue.map_get_u256.
+    induction xs as [|x rest IH]; simpl; [reflexivity|].
+    destruct x as [k' v']. destruct k as [a b].
+    destruct k' as [c d].
+    change (Dict.get (((c, d), v') :: rest ++ ys) (a, b))
+      with (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (a, b) (c, d)
+            then Some v' else Dict.get (rest ++ ys) (a, b)).
+    change (Dict.get (((c, d), v') :: rest) (a, b))
+      with (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (a, b) (c, d)
+            then Some v' else Dict.get rest (a, b)).
+    destruct (@Dict.Eq.eqb _ Dict.Eq.ITuple2 (a, b) (c, d)); [reflexivity|exact IH].
+  Qed.
+
+  (** ----- Per-lock 4-entry prefix lookup, per-offset specialized -----
+
+      For each of the four offsets (0,1,2,3), prove the [Dict.get
+      (lock_to_entries i l) (lockId, offset)] lookup result with
+      concrete offset values to avoid an offset-case-split that would
+      hit Coq 8.20 R015 nested-or-pattern issues. *)
+
+  Lemma lock_to_entries_get_match_0 (i : U256.t) (l : Lock.t) :
+    Dict.get (lock_to_entries i l) (i, 0) = Some l.(Lock.user).
+  Proof.
+    unfold lock_to_entries, LockField.user_offset, LockField.amount_offset,
+           LockField.unlockTime_offset, LockField.claimedAt_offset.
+    change (Dict.get (((i, 0), l.(Lock.user))
+                     :: ((i, 1), l.(Lock.amount))
+                     :: ((i, 2), l.(Lock.unlockTime))
+                     :: ((i, 3), l.(Lock.claimedAt)) :: []) (i, 0))
+      with (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 0) (i, 0)
+            then Some l.(Lock.user)
+            else Dict.get (((i, 1), l.(Lock.amount))
+                     :: ((i, 2), l.(Lock.unlockTime))
+                     :: ((i, 3), l.(Lock.claimedAt)) :: []) (i, 0)).
+    rewrite Dict_Eq_eqb_ZZ_pair_unfold, Z.eqb_refl. reflexivity.
+  Qed.
+
+  Lemma lock_to_entries_get_match_1 (i : U256.t) (l : Lock.t) :
+    Dict.get (lock_to_entries i l) (i, 1) = Some l.(Lock.amount).
+  Proof.
+    unfold lock_to_entries, LockField.user_offset, LockField.amount_offset,
+           LockField.unlockTime_offset, LockField.claimedAt_offset.
+    change (Dict.get (((i, 0), l.(Lock.user))
+                     :: ((i, 1), l.(Lock.amount))
+                     :: ((i, 2), l.(Lock.unlockTime))
+                     :: ((i, 3), l.(Lock.claimedAt)) :: []) (i, 1))
+      with (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 1) (i, 0)
+            then Some l.(Lock.user)
+            else Dict.get (((i, 1), l.(Lock.amount))
+                     :: ((i, 2), l.(Lock.unlockTime))
+                     :: ((i, 3), l.(Lock.claimedAt)) :: []) (i, 1)).
+    rewrite Dict_Eq_eqb_ZZ_pair_unfold, Z.eqb_refl. simpl.
+    change (Dict.get (((i, 1), l.(Lock.amount))
+                     :: ((i, 2), l.(Lock.unlockTime))
+                     :: ((i, 3), l.(Lock.claimedAt)) :: []) (i, 1))
+      with (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 1) (i, 1)
+            then Some l.(Lock.amount)
+            else Dict.get (((i, 2), l.(Lock.unlockTime))
+                     :: ((i, 3), l.(Lock.claimedAt)) :: []) (i, 1)).
+    rewrite Dict_Eq_eqb_ZZ_pair_unfold, Z.eqb_refl. reflexivity.
+  Qed.
+
+  Lemma lock_to_entries_get_match_2 (i : U256.t) (l : Lock.t) :
+    Dict.get (lock_to_entries i l) (i, 2) = Some l.(Lock.unlockTime).
+  Proof.
+    unfold lock_to_entries, LockField.user_offset, LockField.amount_offset,
+           LockField.unlockTime_offset, LockField.claimedAt_offset.
+    change (Dict.get _ (i, 2)) with
+      (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 2) (i, 0)
+       then Some l.(Lock.user)
+       else if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 2) (i, 1)
+            then Some l.(Lock.amount)
+            else if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 2) (i, 2)
+                 then Some l.(Lock.unlockTime)
+                 else if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 2) (i, 3)
+                      then Some l.(Lock.claimedAt) else None).
+    rewrite !Dict_Eq_eqb_ZZ_pair_unfold, Z.eqb_refl. reflexivity.
+  Qed.
+
+  Lemma lock_to_entries_get_match_3 (i : U256.t) (l : Lock.t) :
+    Dict.get (lock_to_entries i l) (i, 3) = Some l.(Lock.claimedAt).
+  Proof.
+    unfold lock_to_entries, LockField.user_offset, LockField.amount_offset,
+           LockField.unlockTime_offset, LockField.claimedAt_offset.
+    change (Dict.get _ (i, 3)) with
+      (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 3) (i, 0)
+       then Some l.(Lock.user)
+       else if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 3) (i, 1)
+            then Some l.(Lock.amount)
+            else if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 3) (i, 2)
+                 then Some l.(Lock.unlockTime)
+                 else if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (i, 3) (i, 3)
+                      then Some l.(Lock.claimedAt) else None).
+    rewrite !Dict_Eq_eqb_ZZ_pair_unfold, Z.eqb_refl. reflexivity.
+  Qed.
+
+  Lemma lock_to_entries_get_miss (i : U256.t) (l : Lock.t)
+      (lockId offset : U256.t) (H : lockId <> i) :
+    Dict.get (lock_to_entries i l) (lockId, offset) = None.
+  Proof.
+    unfold lock_to_entries.
+    change (Dict.get _ _) with
+      (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (lockId, offset) (i, 0)
+       then Some l.(Lock.user)
+       else if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (lockId, offset) (i, 1)
+            then Some l.(Lock.amount)
+            else if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (lockId, offset) (i, 2)
+                 then Some l.(Lock.unlockTime)
+                 else if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (lockId, offset) (i, 3)
+                      then Some l.(Lock.claimedAt) else None).
+    rewrite !Dict_Eq_eqb_ZZ_pair_unfold.
+    apply Z.eqb_neq in H. rewrite H. reflexivity.
+  Qed.
+
+  (** ----- Per-offset generalized lookup over flat_entries -----
+
+      One lemma per offset to avoid the offset case-split that would
+      hit the R015 nested-or-pattern issue. *)
+  (** Helper: manually peel 4 head entries via map_get_u256_pair_cons,
+      reducing flat_entries i (l :: rest) lookup to either a match
+      (when lockId = i and offset is in range) or a recursive lookup
+      on (i+1) rest. *)
+  Lemma flat_entries_cons_peel_0 (l : Lock.t) (rest : list Lock.t)
+      (i lockId : U256.t) :
+    StorableValue.map_get_u256 (flat_entries i (l :: rest)) (lockId, 0)
+    = if Z.eqb lockId i then l.(Lock.user)
+      else StorableValue.map_get_u256 (flat_entries (i + 1) rest) (lockId, 0).
+  Proof.
+    change (flat_entries i (l :: rest))
+      with (((i, 0), l.(Lock.user))
+             :: ((i, 1), l.(Lock.amount))
+             :: ((i, 2), l.(Lock.unlockTime))
+             :: ((i, 3), l.(Lock.claimedAt))
+             :: flat_entries (i + 1) rest).
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    replace (0 =? 0) with true by reflexivity.
+    replace (0 =? 1) with false by reflexivity.
+    replace (0 =? 2) with false by reflexivity.
+    replace (0 =? 3) with false by reflexivity.
+    rewrite !Bool.andb_true_r, !Bool.andb_false_r.
+    destruct (Z.eqb lockId i); reflexivity.
+  Qed.
+
+  Lemma flat_entries_cons_peel_1 (l : Lock.t) (rest : list Lock.t)
+      (i lockId : U256.t) :
+    StorableValue.map_get_u256 (flat_entries i (l :: rest)) (lockId, 1)
+    = if Z.eqb lockId i then l.(Lock.amount)
+      else StorableValue.map_get_u256 (flat_entries (i + 1) rest) (lockId, 1).
+  Proof.
+    change (flat_entries i (l :: rest))
+      with (((i, 0), l.(Lock.user))
+             :: ((i, 1), l.(Lock.amount))
+             :: ((i, 2), l.(Lock.unlockTime))
+             :: ((i, 3), l.(Lock.claimedAt))
+             :: flat_entries (i + 1) rest).
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    replace (1 =? 0) with false by reflexivity.
+    replace (1 =? 1) with true by reflexivity.
+    replace (1 =? 2) with false by reflexivity.
+    replace (1 =? 3) with false by reflexivity.
+    rewrite !Bool.andb_true_r, !Bool.andb_false_r.
+    destruct (Z.eqb lockId i); reflexivity.
+  Qed.
+
+  Lemma flat_entries_cons_peel_2 (l : Lock.t) (rest : list Lock.t)
+      (i lockId : U256.t) :
+    StorableValue.map_get_u256 (flat_entries i (l :: rest)) (lockId, 2)
+    = if Z.eqb lockId i then l.(Lock.unlockTime)
+      else StorableValue.map_get_u256 (flat_entries (i + 1) rest) (lockId, 2).
+  Proof.
+    change (flat_entries i (l :: rest))
+      with (((i, 0), l.(Lock.user))
+             :: ((i, 1), l.(Lock.amount))
+             :: ((i, 2), l.(Lock.unlockTime))
+             :: ((i, 3), l.(Lock.claimedAt))
+             :: flat_entries (i + 1) rest).
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    replace (2 =? 0) with false by reflexivity.
+    replace (2 =? 1) with false by reflexivity.
+    replace (2 =? 2) with true by reflexivity.
+    replace (2 =? 3) with false by reflexivity.
+    rewrite !Bool.andb_true_r, !Bool.andb_false_r.
+    destruct (Z.eqb lockId i); reflexivity.
+  Qed.
+
+  Lemma flat_entries_cons_peel_3 (l : Lock.t) (rest : list Lock.t)
+      (i lockId : U256.t) :
+    StorableValue.map_get_u256 (flat_entries i (l :: rest)) (lockId, 3)
+    = if Z.eqb lockId i then l.(Lock.claimedAt)
+      else StorableValue.map_get_u256 (flat_entries (i + 1) rest) (lockId, 3).
+  Proof.
+    change (flat_entries i (l :: rest))
+      with (((i, 0), l.(Lock.user))
+             :: ((i, 1), l.(Lock.amount))
+             :: ((i, 2), l.(Lock.unlockTime))
+             :: ((i, 3), l.(Lock.claimedAt))
+             :: flat_entries (i + 1) rest).
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    rewrite map_get_u256_pair_cons.
+    replace (3 =? 0) with false by reflexivity.
+    replace (3 =? 1) with false by reflexivity.
+    replace (3 =? 2) with false by reflexivity.
+    replace (3 =? 3) with true by reflexivity.
+    rewrite !Bool.andb_true_r, !Bool.andb_false_r.
+    destruct (Z.eqb lockId i); reflexivity.
+  Qed.
+
+  Lemma flat_entries_get_user (locks : list Lock.t) (i lockId : U256.t)
+      (H_geq : i <= lockId) :
+    StorableValue.map_get_u256 (flat_entries i locks) (lockId, 0)
+    = (List.nth (Z.to_nat (lockId - i)) locks default_lock).(Lock.user).
+  Proof.
+    revert i lockId H_geq.
+    induction locks as [|l rest IH]; intros i lockId H_geq.
+    - simpl. destruct (Z.to_nat (lockId - i)); reflexivity.
+    - rewrite flat_entries_cons_peel_0.
+      destruct (Z.eqb lockId i) eqn:Hli.
+      + apply Z.eqb_eq in Hli. subst lockId.
+        replace (i - i) with 0 by lia. simpl. reflexivity.
+      + apply Z.eqb_neq in Hli.
+        assert (Hgt : i < lockId) by lia.
+        rewrite (IH (i + 1) lockId) by lia.
+        replace (Z.to_nat (lockId - i)) with (S (Z.to_nat (lockId - (i + 1)))).
+        { simpl. reflexivity. }
+        rewrite <- Z2Nat.inj_succ by lia. f_equal. lia.
+  Qed.
+
+  Lemma flat_entries_get_amount (locks : list Lock.t) (i lockId : U256.t)
+      (H_geq : i <= lockId) :
+    StorableValue.map_get_u256 (flat_entries i locks) (lockId, 1)
+    = (List.nth (Z.to_nat (lockId - i)) locks default_lock).(Lock.amount).
+  Proof.
+    revert i lockId H_geq.
+    induction locks as [|l rest IH]; intros i lockId H_geq.
+    - simpl. destruct (Z.to_nat (lockId - i)); reflexivity.
+    - rewrite flat_entries_cons_peel_1.
+      destruct (Z.eqb lockId i) eqn:Hli.
+      + apply Z.eqb_eq in Hli. subst lockId.
+        replace (i - i) with 0 by lia. simpl. reflexivity.
+      + apply Z.eqb_neq in Hli.
+        assert (Hgt : i < lockId) by lia.
+        rewrite (IH (i + 1) lockId) by lia.
+        replace (Z.to_nat (lockId - i)) with (S (Z.to_nat (lockId - (i + 1)))).
+        { simpl. reflexivity. }
+        rewrite <- Z2Nat.inj_succ by lia. f_equal. lia.
+  Qed.
+
+  Lemma flat_entries_get_unlockTime (locks : list Lock.t) (i lockId : U256.t)
+      (H_geq : i <= lockId) :
+    StorableValue.map_get_u256 (flat_entries i locks) (lockId, 2)
+    = (List.nth (Z.to_nat (lockId - i)) locks default_lock).(Lock.unlockTime).
+  Proof.
+    revert i lockId H_geq.
+    induction locks as [|l rest IH]; intros i lockId H_geq.
+    - simpl. destruct (Z.to_nat (lockId - i)); reflexivity.
+    - rewrite flat_entries_cons_peel_2.
+      destruct (Z.eqb lockId i) eqn:Hli.
+      + apply Z.eqb_eq in Hli. subst lockId.
+        replace (i - i) with 0 by lia. simpl. reflexivity.
+      + apply Z.eqb_neq in Hli.
+        assert (Hgt : i < lockId) by lia.
+        rewrite (IH (i + 1) lockId) by lia.
+        replace (Z.to_nat (lockId - i)) with (S (Z.to_nat (lockId - (i + 1)))).
+        { simpl. reflexivity. }
+        rewrite <- Z2Nat.inj_succ by lia. f_equal. lia.
+  Qed.
+
+  Lemma flat_entries_get_claimedAt (locks : list Lock.t) (i lockId : U256.t)
+      (H_geq : i <= lockId) :
+    StorableValue.map_get_u256 (flat_entries i locks) (lockId, 3)
+    = (List.nth (Z.to_nat (lockId - i)) locks default_lock).(Lock.claimedAt).
+  Proof.
+    revert i lockId H_geq.
+    induction locks as [|l rest IH]; intros i lockId H_geq.
+    - simpl. destruct (Z.to_nat (lockId - i)); reflexivity.
+    - rewrite flat_entries_cons_peel_3.
+      destruct (Z.eqb lockId i) eqn:Hli.
+      + apply Z.eqb_eq in Hli. subst lockId.
+        replace (i - i) with 0 by lia. simpl. reflexivity.
+      + apply Z.eqb_neq in Hli.
+        assert (Hgt : i < lockId) by lia.
+        rewrite (IH (i + 1) lockId) by lia.
+        replace (Z.to_nat (lockId - i)) with (S (Z.to_nat (lockId - (i + 1)))).
+        { simpl. reflexivity. }
+        rewrite <- Z2Nat.inj_succ by lia. f_equal. lia.
+  Qed.
+
+  Lemma locks_packed_get_user (locks : list Lock.t) (lockId : U256.t)
+      (H_lockId_nn : 0 <= lockId) :
     StorableValue.map_get_u256 (locks_packed locks) (lockId, LockField.user_offset)
     = (List.nth (Z.to_nat lockId) locks default_lock).(Lock.user).
   Proof.
-  Admitted.
+    unfold LockField.user_offset.
+    rewrite (locks_packed_eq_flat locks).
+    pose proof (flat_entries_get_user locks 0 lockId H_lockId_nn) as Hf.
+    replace (lockId - 0) with lockId in Hf by lia.
+    exact Hf.
+  Qed.
 
-  Lemma locks_packed_get_amount (locks : list Lock.t) (lockId : U256.t) :
+  Lemma locks_packed_get_amount (locks : list Lock.t) (lockId : U256.t)
+      (H_lockId_nn : 0 <= lockId) :
     StorableValue.map_get_u256 (locks_packed locks) (lockId, LockField.amount_offset)
     = (List.nth (Z.to_nat lockId) locks default_lock).(Lock.amount).
   Proof.
-  Admitted.
+    unfold LockField.amount_offset.
+    rewrite (locks_packed_eq_flat locks).
+    pose proof (flat_entries_get_amount locks 0 lockId H_lockId_nn) as Hf.
+    replace (lockId - 0) with lockId in Hf by lia.
+    exact Hf.
+  Qed.
 
-  Lemma locks_packed_get_unlockTime (locks : list Lock.t) (lockId : U256.t) :
+  Lemma locks_packed_get_unlockTime (locks : list Lock.t) (lockId : U256.t)
+      (H_lockId_nn : 0 <= lockId) :
     StorableValue.map_get_u256 (locks_packed locks) (lockId, LockField.unlockTime_offset)
     = (List.nth (Z.to_nat lockId) locks default_lock).(Lock.unlockTime).
   Proof.
-  Admitted.
+    unfold LockField.unlockTime_offset.
+    rewrite (locks_packed_eq_flat locks).
+    pose proof (flat_entries_get_unlockTime locks 0 lockId H_lockId_nn) as Hf.
+    replace (lockId - 0) with lockId in Hf by lia.
+    exact Hf.
+  Qed.
 
-  Lemma locks_packed_get_claimedAt (locks : list Lock.t) (lockId : U256.t) :
+  Lemma locks_packed_get_claimedAt (locks : list Lock.t) (lockId : U256.t)
+      (H_lockId_nn : 0 <= lockId) :
     StorableValue.map_get_u256 (locks_packed locks) (lockId, LockField.claimedAt_offset)
     = (List.nth (Z.to_nat lockId) locks default_lock).(Lock.claimedAt).
   Proof.
-  Admitted.
+    unfold LockField.claimedAt_offset.
+    rewrite (locks_packed_eq_flat locks).
+    pose proof (flat_entries_get_claimedAt locks 0 lockId H_lockId_nn) as Hf.
+    replace (lockId - 0) with lockId in Hf by lia.
+    exact Hf.
+  Qed.
 
   (** ----- Phase 2.2 (task #177): createLock equivalence -----
 
