@@ -1307,24 +1307,33 @@ Module MakeStateForm.
         [LowM.let_] / [LowM.Pure] / [LowM.Call] constructors are exposed
         to the walker's lazymatch arms. [M.let_] is included for nested
         calls like [checked_mul (x, convert(y))] where the inner call
-        gets sequenced via [M.let_]. *)
-    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+        gets sequenced via [M.let_]. [Shallow.let_state] and
+        [Shallow.if_] are unfolded so the walker can reach the
+        underlying conditional after the clamp comparison. *)
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
     (** Aggressive walker — closes the trivial Yul let-bindings, the
         zero-init, cleanup, convert, constant calls, the
         mapping_index_access call, the [timestamp] primitive, the
         per-account [read_from_storage_*] calls (both offsets), all
         four [checked_*] arithmetic ops ([checked_sub], [checked_mul],
-        [checked_div], [checked_add]), and the Stdlib pure-comparison
-        ops ([gt], [lt], [eq], [sub], [mul], [div]) automatically.
+        [checked_div], [checked_add]), the Stdlib pure-comparison
+        ops ([gt], [lt], [eq], [sub], [mul], [div]), and reduces
+        through the [Shallow.if_] charge clamp via [simpl] (after
+        [Shallow.let_state, Shallow.if_] unfolding).
 
-        Leaves open (post-arithmetic): the [Shallow.if_] charge clamp
-        at FIX_ONE (needs case analysis on the [charge > FIX_ONE]
-        comparison result), the [read_from_storage] for [capacity]
-        via [apply_run_sload_u256], the final [checked_mul / checked_div]
-        for [proposalsAvailable], and the tuple repackaging.
+        Leaves open (post-clamp): the deeper BlockUnit-match
+        structure of the let_state's continuation (each branch needs
+        case analysis), the [read_from_storage] for [capacity] via
+        [apply_run_sload_u256], the final [checked_mul / checked_div]
+        for [proposalsAvailable], and the tuple repackaging into the
+        (proposalsAvailable, readCharge) return value.
 
         The walker's structure is the template for follow-up: each new
-        arm covers one call site. *)
+        arm covers one call site. The remaining work needs a
+        case-analysis arm for the let_state's BlockUnit mode match
+        (Tt vs Break/Continue/Leave) and a [Pure.gt] case split for
+        the clamp value selection. *)
     try
       (repeat
       (lazymatch goal with
@@ -1511,6 +1520,7 @@ Module MakeStateForm.
                   unfold ProposerThrottle.FIX_ONE in Hchg;
                   unfold PROPOSAL_THROTTLE_PERIOD in *;
                   exact Hchg ] | ]
+       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
        | |- _ => s
        end)).
