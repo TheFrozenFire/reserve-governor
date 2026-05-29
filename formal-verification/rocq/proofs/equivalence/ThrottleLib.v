@@ -839,8 +839,12 @@ Module MakeStateForm.
     pose proof (Dict.get_is_valid
                   Address.Valid.t ProposerThrottle.Valid.throttle
                   sim.(ThrottleLibStorage.throttles) account Hthr) as H.
-    destruct (Dict.get _ _) as [t|];
-      [destruct H; assumption | unfold ProposerThrottle.FIX_ONE; cbn; lia].
+    destruct (Dict.get _ _) as [t|].
+    - destruct H; assumption.
+    - (* default_throttle branch: currentCharge = 0, FIX_ONE = 1e18 *)
+      change (ThrottleLibStorage.default_throttle.(Throttle.currentCharge)) with 0.
+      change ProposerThrottle.FIX_ONE with 1000000000000000000.
+      lia.
   Qed.
 
   (** ----- Restated main theorem (Phase E — scaffolding) -----
