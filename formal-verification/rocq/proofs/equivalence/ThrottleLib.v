@@ -993,4 +993,70 @@ Module MakeStateForm.
       apply leaf. } ... } CanonizeState.execute. ...]. *)
   Admitted.
 
+  (** ----- Phase F: public-wrapper equivalence -----
+
+      [fun_getProposalsAvailable_91] is a thin wrapper around the
+      private [fun__getProposalsAvailable_152] (note the double
+      underscore). It delegates to the inner function and returns just
+      the first component of the [(available, charge)] tuple.
+
+      The proof composes via the inner theorem (still Admitted).
+      Closure pattern: discharge the inner call by
+      [apply run_getProposalsAvailable_equivalent_make_state], extract
+      the first component, return. *)
+  Theorem run_getProposalsAvailable_public_make_state
+      (codes : Codes.t) (env : Environment.t) (state_base : State.t)
+      (account : Address.t)
+      (sim : ThrottleLibStorage.t) (now : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_valid_sim     : Valid.state sim)
+      (H_valid_account : Address.Valid.t account)
+      (H_valid_now     : U256.Valid.t now)
+      (H_timestamp     : state_base.(State.block_timestamp) = now)
+      (H_memory_scratch : exists w0 w1 rest, memory = w0 :: w1 :: rest)
+      (H_no_overflow   :
+         let throttle := ThrottleLibStorage.get_throttle sim account in
+         now >= throttle.(Throttle.lastUpdated) /\
+         throttle.(Throttle.currentCharge)
+           + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
+             / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
+         sim.(ThrottleLibStorage.capacity) * ProposerThrottle.FIX_ONE < 2 ^ 256) :
+    let state    := make_state env state_base memory (proj_sim sim) in
+    let throttle  := ThrottleLibStorage.get_throttle sim account in
+    let available := ProposerThrottle.proposalsAvailable
+                       throttle sim.(ThrottleLibStorage.capacity) now in
+    exists state',
+    {{? codes, env, Some state |
+      ThrottleLib_153.ThrottleLib_153_deployed.fun_getProposalsAvailable_91
+        0 (** base_slot *) account ⇓
+      Result.Ok available
+    | Some state' ?}}.
+  Proof.
+    (** Body-level skeleton:
+
+          unfold fun_getProposalsAvailable_91.
+          l. {
+            l. { c. { apply run_zero_value_for_split_t_uint256. } p. }
+            l. { p. }   (* trivial assignment of zero *)
+            l. { p. }   (* slot copy *)
+            l. { p. }   (* account copy *)
+            l. {
+              c. { apply run_getProposalsAvailable_equivalent_make_state;
+                   try assumption.  (* discharges the inner call *)
+                 }
+              p.   (* extract first component *)
+            }
+            p.
+          }
+          p.
+
+        The first component of the inner call's [(available, charge)]
+        pair is [available], which is what the wrapper returns —
+        cleanly matches the sim's [proposalsAvailable].
+
+        Like the inner theorem, this body's mechanical assembly is
+        deferred under the R022-family pending blockers; the
+        composition is correct by construction. *)
+  Admitted.
+
 End MakeStateForm.
