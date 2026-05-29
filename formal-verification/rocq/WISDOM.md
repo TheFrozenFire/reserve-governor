@@ -883,3 +883,80 @@ Proof.
 The same pattern applies for any non-leaf helper that returns an
 existential (memory-mutating helpers, scratch-using helpers,
 struct-field accessors).
+
+## R028: Walker unfold list must include M.let_, not just M.strong_let_
+
+When the shallow form has a call with a NESTED call as an argument —
+e.g., `checked_mul ~(| x, convert(y) |)` — the inner call gets
+sequenced via `M.let_` (lowercase), not `M.strong_let_`. The two are
+similar but desugar to different underlying constructors:
+
+- `M.strong_let_ e1 e2 = LowM.Let e1 (fun result => match result …)`
+  — matches the walker's `LowM.Let _ _` arm via [l].
+- `M.let_ e1 e2 = LowM.let_ e1 (fun result => match result …)`
+  — `LowM.let_` (lowercase) is a `Fixpoint` that walks the
+  expression, not a constructor; the walker's `LowM.Let` arm
+  does NOT match it.
+
+If your unfold list at proof entry is only
+`unfold M.strong_let_, M.generic_let, M.pure, M.call.`, nested-call
+sites leave `M.let_` in the goal and the walker stalls. Add `M.let_`
+to the unfold list:
+
+```coq
+unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+```
+
+After this, both top-level `let~` and nested `M.let_` expose their
+underlying `LowM.let_ ...` form which then steps under `s` (which
+runs `simpl_goal` and reduces the Fixpoint).
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v` Phase E. The check for
+  `checked_mul ~(| (now - lastUpdated), convert_t_rational_…_to_t_uint256
+  ~(| FIX_ONE |) |)` was leaving an unwalked `let* v := … in …` until
+  `M.let_` was added to the unfold list.
+
+## R029: Checked-arithmetic preconditions — `>=` vs `<=` direction matters
+
+The upstream's checked-arithmetic leaves take their no-underflow /
+no-overflow preconditions as `<=` (or `<`) inequalities:
+
+```coq
+Lemma run_checked_sub_t_uint256 codes env state (x y : U256.t)
+    (H_x : 0 <= x < 2^256)
+    (H_y : 0 <= y < 2^256)
+    (H_no_underflow : y <= x) :
+  …
+```
+
+If your context hypothesis is `now >= lastUpdated` (i.e., `Z.ge`),
+`exact H_now_geq` against `lastUpdated <= now` FAILS even though the
+two are definitionally equal (`Z.ge x y := y <= x`). Coq's `exact`
+requires syntactic-after-conversion identity, and the `Z.ge`
+wrapper doesn't unfold during unification.
+
+### Workaround
+
+Use `lia` instead of `exact` for the no-underflow / no-overflow
+precondition slot — `lia` understands both directions and discharges
+either way:
+
+```coq
+c; [ apply ThrottleLibLeaves.run_checked_sub_t_uint256;
+     [ exact H_x_validity
+     | exact H_y_validity
+     | lia ] | ]
+```
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v` Phase E checked_sub arm. The
+  diagnostic trail showed all preconditions reaching their idtac
+  markers, but the third (`exact H_now_geq`) silently failed —
+  `lia` closes it cleanly.
+
+The same trap likely applies to checked_mul, checked_div,
+checked_add arms with `<` / `>=` preconditions sourced from a
+context hypothesis written in the opposite direction.
