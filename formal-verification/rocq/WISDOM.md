@@ -808,3 +808,78 @@ Closing a substantive body (Phase E shape, not thin wrapper) needs
 additional arms for memory-writing primitives (mstore + keccak +
 CanonizeState.execute) and storage reads. Those are documented in
 R024 (canonical step-through pattern).
+
+## R027: `eapply RunO.Call` two-subgoal split — pose-once, dispatch separately
+
+When a function-body walker hits a `LowM.Call e LowM.Pure` (the
+`M.call e` shape, which is how every shallow `f ~(| args |)` desugars
+after R026's unfold), `eapply RunO.Call` produces two subgoals:
+
+1. `e ⇓ ?out_inter | ?st_inter`           — the call premise
+2. `LowM.Pure ?out_inter ⇓ ?out | ?st`    — the continuation, which
+                                              is just the `M.call`
+                                              wrapper's identity pass
+
+The right move is `eapply RunO.Call; [ <call-closer> | apply RunO.Pure ]`.
+The continuation subgoal is closed by `RunO.Pure` because Pure's
+constructor signature `Pure state : LowM.Pure output ⇓ output | state`
+makes it pattern-match-only: it unifies `?out := ?out_inter` and
+`?st := ?st_inter` automatically, propagating the call's post-state.
+
+A prior session attempted `eapply RunO.Call; [ apply Hmia | apply Hmia ]`
+where `Hmia` was the helper-lemma instance for the call. This fails on
+the second subgoal because Hmia's conclusion is about the call (i.e.,
+`mapping_index_access ⇓ ...`), not about `LowM.Pure`. The deferred
+"state-threading issue" in commit `a6f8007` was just a misidentified
+second subgoal — the closure pattern above resolves it cleanly.
+
+### Anti-pattern: pose-inside-the-arm
+
+A failed earlier shape posed the helper lemma *inside* the lazymatch
+arm:
+
+```coq
+| |- {{? _ | LowM.Call (mapping_index_access _ _) _ ⇓ _ | _ ?}} =>
+    pose proof (run_mapping_index_access ...) as Hmia;
+    destruct Hmia as [mp Hmia];
+    eapply RunO.Call; [ apply Hmia | ]   (* missing 2nd dispatch *)
+```
+
+Three issues:
+- `pose proof` + `destruct` repeats on every walker iteration
+- `mp` (the existential witness) gets re-introduced and shadowed
+- single-bracket dispatch leaves the second subgoal open, which the
+  `try (repeat ...)` then absorbs silently — looks like progress but
+  isn't.
+
+### Correct shape: pose-once outside the walker
+
+Pose the lemma **once** at the top of the proof, destruct the
+existential once, then dispatch both subgoals in the lazymatch arm:
+
+```coq
+Proof.
+  pose proof (run_mapping_index_access codes env state_base
+                <slot> <key> <storage> <memory>
+                <H_key> <H_mem>) as Hmia.
+  destruct Hmia as [mp Hmia].
+  ...
+  repeat (lazymatch goal with
+    ...
+    | |- {{? _ | LowM.Call (mapping_index_access_t_... _ _) _ ⇓ _ | _ ?}} =>
+        eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
+    ...
+    end).
+```
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v` Phase E
+  (`run_getProposalsAvailable_equivalent_make_state`) — unblocked the
+  walker past the keccak/memory write step, which now threads the
+  `keccak256_tuple2 account (Pure.add 0 1)` result through to the
+  subsequent storage reads.
+
+The same pattern applies for any non-leaf helper that returns an
+existential (memory-mutating helpers, scratch-using helpers,
+struct-field accessors).

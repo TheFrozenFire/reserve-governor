@@ -1089,20 +1089,32 @@ Module MakeStateForm.
   Proof.
     destruct H_no_overflow as (H_now_geq & H_charge_ok & H_capacity_ok).
     destruct H_memory_scratch as (w0 & w1 & rest & H_mem_eq). subst memory.
+    (** Pose the Phase C mapping_index_access closure upfront with the
+        slot/key it'll be called at in the function body:
+          slot = Stdlib.add(base_slot, 1) = Pure.add 0 1
+          key  = account.
+        Then destruct the existential so [Hmia] is the ⇓-judgment we
+        can apply directly. *)
+    pose proof (MappingIndexAccess.run_mapping_index_access codes env state_base
+                  (Pure.add 0 1) account (proj_sim sim)
+                  (w0 :: w1 :: rest)
+                  H_valid_account
+                  (ex_intro _ w0 (ex_intro _ w1
+                     (ex_intro _ rest eq_refl)))) as Hmia.
+    destruct Hmia as [mp Hmia].
     eexists.
     unfold ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152.
     unfold M.strong_let_, M.generic_let, M.pure, M.call.
     (** Aggressive walker — closes the trivial Yul let-bindings, the
-        zero-init, cleanup, convert, and constant calls automatically.
-        Leaves open: the mapping_index_access call (needs Phase C
-        composition with state threading), the timestamp primitive,
-        the three storage sloads (need apply_run_sload_struct_field
-        and apply_run_sload_u256), the checked arithmetic ops, and
-        the Shallow.if_ clamp.
+        zero-init, cleanup, convert, constant calls, and the
+        mapping_index_access call automatically.
 
-        The walker's structure is the template for follow-up: each
-        new arm covers one call site. The current shape demonstrates
-        a working `lazymatch + s` chain for the simple parts. *)
+        Leaves open: the timestamp primitive, the three storage sloads
+        (need [apply_run_sload_struct_field] / [apply_run_sload_u256]),
+        the checked arithmetic ops, and the Shallow.if_ clamp.
+
+        The walker's structure is the template for follow-up: each new
+        arm covers one call site. *)
     try
       (repeat
       (lazymatch goal with
@@ -1169,10 +1181,21 @@ Module MakeStateForm.
            c; [ apply ThrottleLibLeaves.run_constant_PROPOSAL_THROTTLE_PERIOD_349 | ]
        | |- {{? _, _, _ | LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
            c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
-       (** mapping_index_access arm: state-threading issue (refine/exact
-           Hmia leaves a LowM.Pure (Result.Ok keccak256...) ⇓ ?out
-           subgoal that's definitionally closed but the unification
-           doesn't go through). Deferred — fall through to [s]. *)
+       (** mapping_index_access arm — the previously-deferred case.
+           [M.call (mapping_index_access slot key)] desugars to
+           [LowM.Call (mapping_index_access slot key) LowM.Pure], so
+           [eapply RunO.Call] splits into:
+             (1) [mapping_index_access slot key ⇓ ?out_inter | ?st_inter]
+                 closed by [exact Hmia] (Phase C's lemma instantiated
+                 above; slot=[Pure.add 0 1], key=[account] match).
+             (2) [LowM.Pure ?out_inter ⇓ ?out | ?st_final]
+                 closed by [apply RunO.Pure] — Pure's reflexivity
+                 unifies the two output positions and propagates
+                 [?st_final := ?st_inter] from Hmia's post-state. *)
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.mapping_index_access_t_mappingₓ_t_address_ₓ_t_structₓ_ProposalThrottle_ₓ18_storage_ₓ_of_t_address _ _) _
+             ⇓ _ | _ ?}} =>
+           eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
        | |- _ => s
        end)).
