@@ -1146,6 +1146,38 @@ Module MakeStateForm.
     repeat (lu || cu || p).
   Qed.
 
+  (** sload of the capacity slot (slot 0 in the top-level storage layout)
+      against [proj_sim sim]. Uses [run_sload_u256] with the existing
+      [proj_sim_capacity] sanity lemma. *)
+  Lemma run_sload_capacity_from_make_state
+      codes env state_base memory sim :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+       Stdlib.sload (Pure.add 0 0) ⇓
+         Result.Ok sim.(ThrottleLibStorage.capacity)
+     | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    change (Pure.add 0 0) with (Z.of_nat 0).
+    apply (Storage.run_sload_u256 (proj_sim sim) 0
+             sim.(ThrottleLibStorage.capacity)).
+    - apply State.get_current_storage_with_current_storage_eq.
+    - exact (proj_sim_capacity sim).
+  Qed.
+
+  Lemma run_read_capacity_from_make_state
+      codes env state_base memory sim :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+       ThrottleLib_153.ThrottleLib_153_deployed.read_from_storage_split_offset_0_t_uint256
+         (Pure.add 0 0) ⇓
+         Result.Ok sim.(ThrottleLibStorage.capacity)
+     | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    unfold ThrottleLib_153.ThrottleLib_153_deployed.read_from_storage_split_offset_0_t_uint256.
+    lu. l. { c. { apply run_sload_capacity_from_make_state. }
+             c. { apply ThrottleLibLeaves.run_extract_from_storage_value_offset_0_t_uint256. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
   (** ----- get_throttle field-validity lemmas -----
 
       [Valid.state sim] guarantees every throttle in [sim.(throttles)]
@@ -1361,7 +1393,8 @@ Module MakeStateForm.
              LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.read_from_storage_split_offset_0_t_uint256 _) _
              ⇓ _ | _ ?}} =>
            c; [ first [ apply run_read_lastUpdated_from_make_state
-                      | apply run_read_currentCharge_from_make_state ] | ]
+                      | apply run_read_currentCharge_from_make_state
+                      | apply run_read_capacity_from_make_state ] | ]
        | |- {{? _, _, _ |
              LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.checked_sub_t_uint256 _ _) _
              ⇓ _ | _ ?}} =>
@@ -1484,6 +1517,25 @@ Module MakeStateForm.
         These need a structural refactor to close — see the closure
         plan above for the next steps. *)
     throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account.
+    (** The walker exits with two focused goals: the let_state's body
+        (containing the [Shallow.if_] reduced form) and the outer
+        continuation. Handle them via [all:] dispatch — destruct the
+        clamp condition, re-expose [LowM.Let] heads via the M-monad
+        unfold list, then resume the walker. The walker then reaches
+        the final [checked_mul(capacity, charge)] computation. *)
+    all: try (destruct (Pure.gt
+       ((ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+        (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated))
+          * 1000000000000000000 / PROPOSAL_THROTTLE_PERIOD) 1000000000000000000 =? 0)
+      eqn:Hclamp;
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+      throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account).
+    (** Open after this: the final [checked_mul(capacity, charge)]
+        in each branch (preconditions are branch-specific: in the
+        unclamped branch we need [Hclamp] to derive [charge <=
+        FIX_ONE], in the clamped branch [H_capacity_ok] discharges
+        directly), the final [checked_div(_, FIX_ONE)], and the
+        tuple repackaging. *)
   Admitted.
 
   (** ----- Phase F: public-wrapper equivalence -----
