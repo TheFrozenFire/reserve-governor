@@ -198,15 +198,44 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
     the load-bearing chain (sentinel -> state() short-circuit ->
     Defeated) and is VIOLATED-as-designed.
 
-    Caveat-5 (Yul equivalence is sketched, not mechanized).
+    Caveat-5 (Yul equivalence is sketched, partially mechanized).
     ---------------------------------------------------------------
     Every audit_* claim about Solidity-source behavior is stated
     against the hand-written Gallina simulation, not the emitted
     Yul bytecode. The bridge sketch in
     [../../notes/yul_equivalence_upgrade_authorized.md] identifies
-    the work needed for one example. Until the bridge is
-    mechanized, divergence between simulation and bytecode is not
-    audited.
+    the work needed for one example.
+
+    Equivalence-tier progress (commit e6e8269, May 2026):
+
+      - The upstream apparatus has been extended for governor's
+        struct-mapping storage: [StorableValue.MapStruct] variant +
+        [Storage.run_sload_struct_field] + [apply_run_sload_struct_field]
+        Ltac. Pushed to TheFrozenFire/rocq-of-solidity:feat/env-block-context.
+
+      - Per-contract equivalence proofs land under
+        [proofs/equivalence/]. ThrottleLib.v is the proof-of-method
+        target: full storage projection, 20+ leaf lemmas closed (memory
+        + keccak + per-storage-field via the new struct sloads),
+        public-wrapper and main-internal theorem statements present
+        but Admitted under R022 typeclass-projection blockers (cf.
+        WISDOM.md R022).
+
+      - Sandbox.v exercises the upstream's [Stdlib.timestamp /
+        block_number] (R020) and [RunO.CallContract] (R021) — both
+        end-to-end resolved.
+
+    Status by contract:
+
+      ThrottleLib       Phase A-F scaffolded. Closed leaves cover
+                        the entire helper-call tree; theorem
+                        statements present; main body Admitted.
+      Other contracts   Untouched. Will land under proofs/equivalence/
+                        once R022 is resolved upstream.
+
+    Until each contract's equivalence file is fully closed (no
+    Admits in the body), the divergence between that contract's
+    simulation and its bytecode is still trust-only.
 
     Caveat-6 (Sim/contract precondition gap on several operations).
     ---------------------------------------------------------------

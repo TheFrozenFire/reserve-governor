@@ -203,11 +203,18 @@ proofs/EndToEnd_standard_flow.v
 
 Audit.v
 
-# --- Equivalence tier (parked) ---
+# --- Equivalence tier ---
 # Files under proofs/equivalence/ close the "hand-written sim vs
 # generated Yul IR" gap (Audit.v Caveat-5). Each file requires the
 # corresponding rocq/generated/<Name>.v to be present, which is
-# produced by `scripts/ir-rocq-coverage`. Until any equivalence
-# proofs land, this tier is empty — add new entries here as they
-# come online, smallest contracts first (ThrottleLib is the
-# proof-of-method target). See proofs/equivalence/README.md.
+# produced by `scripts/ir-rocq-coverage`. Equivalence proofs are
+# added smallest contracts first; ThrottleLib is the proof-of-method
+# target whose apparatus (storage projection, leaf lemmas, theorem
+# shape) unblocks the rest. See proofs/equivalence/README.md.
+#
+# Status: Sandbox.v is a working toy; ThrottleLib.v carries the full
+# Phase A-F scaffold (Phase C closed, Phases B/D/E/F Admitted under
+# R022-family blockers — see WISDOM R022 and the Audit.v Caveat-5
+# update for current coverage).
+proofs/equivalence/Sandbox.v
+proofs/equivalence/ThrottleLib.v
