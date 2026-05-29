@@ -527,12 +527,43 @@ Module ThrottleLibLeaves.
 
   (** [checked_mul x y] returns [x * y] when the product doesn't overflow.
       The shallow form uses [iszero (or (iszero x) (eq y (div product x)))]
-      to detect overflow.
+      to detect overflow:
 
-      The proof needs deeper EVM-boolean-arithmetic reduction (nested
-      iszero/or/eq with the (if then 1 else 0)-style branching that the
-      shallow form bakes in). Admitted pending a more involved tactic
-      development. *)
+        - panic iff [x != 0 AND y != div product x]
+        - when [x * y < 2^256], [product = x*y] (cleanup is identity in
+          range), so [div product x = y] for [x != 0]: no panic.
+        - when [x = 0], [iszero x = 1], or-result is 1, outer iszero = 0:
+          no panic. [product = 0 * y = 0]. *)
+  (** Proof sketch (Admitted — WISDOM follow-up to R022):
+
+      Closure requires walking through
+
+        unfold checked_mul_t_uint256.
+        lu. repeat (lu || cu || p).
+        s. unfold Pure.iszero, Pure.or, Pure.eq, Pure.div, Pure.mul, Shallow.if_.
+        rewrite (Z.mod_small (x*y) (2^256)) by lia.
+        destruct (x =? 0) eqn:Hx0.
+        - apply Z.eqb_eq in Hx0; subst x.
+          destruct (y =? 0) eqn:Hyb.
+          (* Both subcases need: Z.lor 1 (if y=?0 then 1 else 0) =? 0 = false *)
+          (* outer iszero/Shallow.if_ takes the no-panic branch *)
+          ...
+        - apply Z.eqb_neq in Hx0.
+          assert (Hdiv : (x*y)/x = y) by (rewrite Z.mul_comm; apply Z.div_mul; lia).
+          rewrite Hdiv, Z.eqb_refl.
+          (* Z.lor 0 1 =? 0 = false; no-panic branch *)
+          ...
+
+      The blocker: Coq 8.20's `simpl`/`cbn`/`change` cannot reduce
+      [Z.lor 1 (if y =? 0 then 1 else 0)] to a constant under the goal
+      shape, even after destructing [y =? 0]. The reduction is
+      mathematically obvious (Z.lor 1 v != 0 for v ∈ {0,1}) but
+      tactically blocked. Same family of issues as R022.
+
+      Workaround tracked under task #185 (WISDOM updates). Until then,
+      this lemma is the one Admit in Phase D; Phase E proceeds either
+      by axiomatising it as a known-leaf or by walking through the
+      single use-site inline. *)
   Lemma run_checked_mul_t_uint256 codes env state (x y : U256.t)
       (H_x : 0 <= x < 2^256)
       (H_y : 0 <= y < 2^256)
