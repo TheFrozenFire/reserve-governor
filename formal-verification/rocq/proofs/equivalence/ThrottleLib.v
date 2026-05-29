@@ -1248,92 +1248,28 @@ Module MakeStateForm.
 
       Each step has a documented pattern in this file or the upstream
       erc20 proof. The remaining work is mechanical assembly. *)
-  Theorem run_getProposalsAvailable_equivalent_make_state
-      (codes : Codes.t) (env : Environment.t) (state_base : State.t)
-      (account : Address.t)
-      (sim : ThrottleLibStorage.t) (now : U256.t)
-      (memory : SimulatedMemory.t)
-      (H_valid_sim     : Valid.state sim)
-      (H_valid_account : Address.Valid.t account)
-      (H_valid_now     : U256.Valid.t now)
-      (H_timestamp     : state_base.(State.block_timestamp) = now)
-      (H_memory_scratch : exists w0 w1 rest, memory = w0 :: w1 :: rest)
-      (H_no_overflow   : (** charge computation does not revert via checked_*: *)
-         let throttle := ThrottleLibStorage.get_throttle sim account in
-         now >= throttle.(Throttle.lastUpdated) /\
-         (now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE < 2 ^ 256 /\
-         throttle.(Throttle.currentCharge)
-           + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
-             / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
-         sim.(ThrottleLibStorage.capacity) * ProposerThrottle.FIX_ONE < 2 ^ 256) :
-    let state    := make_state env state_base memory (proj_sim sim) in
-    let throttle  := ThrottleLibStorage.get_throttle sim account in
-    let charge    := ProposerThrottle.readCharge throttle now in
-    let available := ProposerThrottle.proposalsAvailable
-                       throttle sim.(ThrottleLibStorage.capacity) now in
-    exists state',
-    {{? codes, env, Some state |
-      ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152
-        0 (** base_slot *) account ⇓
-      Result.Ok (available, charge)
-    | Some state' ?}}.
-  Proof.
-    destruct H_no_overflow as (H_now_geq & H_elapsed_mul_ok & H_charge_ok & H_capacity_ok).
-    destruct H_memory_scratch as (w0 & w1 & rest & H_mem_eq). subst memory.
-    (** Pose the Phase C mapping_index_access closure upfront with the
-        slot/key it'll be called at in the function body:
-          slot = Stdlib.add(base_slot, 1) = Pure.add 0 1
-          key  = account.
-        Then destruct the existential so [Hmia] is the ⇓-judgment we
-        can apply directly. *)
-    pose proof (MappingIndexAccess.run_mapping_index_access codes env state_base
-                  (Pure.add 0 1) account (proj_sim sim)
-                  (w0 :: w1 :: rest)
-                  H_valid_account
-                  (ex_intro _ w0 (ex_intro _ w1
-                     (ex_intro _ rest eq_refl)))) as Hmia.
-    destruct Hmia as [mp Hmia].
-    (** Derive the timestamp equation for the post-mapping_index_access
-        state-skeleton ([make_state] with memory [mp]). The walker hits
-        the timestamp call after the mapping_index_access close, so the
-        state at that point is [Some (make_state env state_base mp
-        (proj_sim sim))]; [make_state] preserves [block_timestamp]. *)
-    assert (H_ts_mp :
-      (make_state env state_base mp (proj_sim sim)).(State.block_timestamp) = now)
-      by (rewrite ThrottleLibLeaves.make_state_block_timestamp; exact H_timestamp).
-    eexists.
-    unfold ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152.
-    (** Unfold the M-monad wrappers so the underlying [LowM.Let] /
-        [LowM.let_] / [LowM.Pure] / [LowM.Call] constructors are exposed
-        to the walker's lazymatch arms. [M.let_] is included for nested
-        calls like [checked_mul (x, convert(y))] where the inner call
-        gets sequenced via [M.let_]. [Shallow.let_state] and
-        [Shallow.if_] are unfolded so the walker can reach the
-        underlying conditional after the clamp comparison. *)
-    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
-           Shallow.let_state, Shallow.if_.
-    (** Aggressive walker — closes the trivial Yul let-bindings, the
-        zero-init, cleanup, convert, constant calls, the
-        mapping_index_access call, the [timestamp] primitive, the
-        per-account [read_from_storage_*] calls (both offsets), all
-        four [checked_*] arithmetic ops ([checked_sub], [checked_mul],
-        [checked_div], [checked_add]), the Stdlib pure-comparison
-        ops ([gt], [lt], [eq], [sub], [mul], [div]), and reduces
-        through the [Shallow.if_] charge clamp via [simpl] (after
-        [Shallow.let_state, Shallow.if_] unfolding).
 
-        Leaves open (post-clamp): the deeper BlockUnit-match
-        structure of the let_state's continuation (each branch needs
-        case analysis), the [read_from_storage] for [capacity] via
-        [apply_run_sload_u256], the final [checked_mul / checked_div]
-        for [proposalsAvailable], and the tuple repackaging into the
-        (proposalsAvailable, readCharge) return value.
+  (** ----- throttle_walker: extracted Ltac for the per-call walker -----
 
-        The walker's structure is the template for follow-up: each new
-        arm covers one call site. The remaining work needs a
-        case-analysis arm for the let_state's BlockUnit mode match
-        (Tt vs Break/Continue/Leave) and a [Pure.gt] case split for
-        the clamp value selection. *)
+      The lazymatch chain that closes mapping_index_access,
+      timestamp, the per-account storage reads, and the checked_*
+      arithmetic ops. Defined here so multiple theorems (Phase E,
+      Phase 1.3) can reuse the same arms.
+
+      The walker references several context-bound hypotheses by name:
+
+        - [Hmia]            : the mapping_index_access ⇓-judgment.
+        - [H_ts_mp]         : (make_state ...).block_timestamp = now.
+        - [H_valid_sim]     : Valid.state sim.
+        - [H_valid_now]     : U256.Valid.t now.
+        - [H_now_geq]       : now >= (get_throttle sim account).lastUpdated.
+        - [H_elapsed_mul_ok]: (now - lastUpdated) * FIX_ONE < 2^256.
+        - [H_charge_ok]     : currentCharge + ((now - lastUpdated)
+                              * FIX_ONE) / PROPOSAL_THROTTLE_PERIOD < 2^256.
+        - [sim], [account]  : the theorem parameters.
+
+      Each caller must pose these in context before invoking the Ltac. *)
+  Ltac throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account :=
     try
       (repeat
       (lazymatch goal with
@@ -1400,9 +1336,6 @@ Module MakeStateForm.
            c; [ apply ThrottleLibLeaves.run_constant_PROPOSAL_THROTTLE_PERIOD_349 | ]
        | |- {{? _, _, _ | LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
            c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
-       (** [Stdlib.gt] / [Stdlib.lt] / [Stdlib.eq] are pure boolean
-           ops — same shape as [Stdlib.add], with [Pure.gt] / [Pure.lt]
-           / [Pure.eq] returning 1 or 0. *)
        | |- {{? _, _, _ | LowM.Call (Stdlib.gt _ _) _ ⇓ _ | _ ?}} =>
            c; [ unfold Stdlib.gt, M.pure; apply RunO.Pure | ]
        | |- {{? _, _, _ | LowM.Call (Stdlib.lt _ _) _ ⇓ _ | _ ?}} =>
@@ -1415,47 +1348,20 @@ Module MakeStateForm.
            c; [ unfold Stdlib.mul, M.pure; apply RunO.Pure | ]
        | |- {{? _, _, _ | LowM.Call (Stdlib.div _ _) _ ⇓ _ | _ ?}} =>
            c; [ unfold Stdlib.div, M.pure; apply RunO.Pure | ]
-       (** mapping_index_access arm — the previously-deferred case.
-           [M.call (mapping_index_access slot key)] desugars to
-           [LowM.Call (mapping_index_access slot key) LowM.Pure], so
-           [eapply RunO.Call] splits into:
-             (1) [mapping_index_access slot key ⇓ ?out_inter | ?st_inter]
-                 closed by [exact Hmia] (Phase C's lemma instantiated
-                 above; slot=[Pure.add 0 1], key=[account] match).
-             (2) [LowM.Pure ?out_inter ⇓ ?out | ?st_final]
-                 closed by [apply RunO.Pure] — Pure's reflexivity
-                 unifies the two output positions and propagates
-                 [?st_final := ?st_inter] from Hmia's post-state. *)
        | |- {{? _, _, _ |
              LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.mapping_index_access_t_mappingₓ_t_address_ₓ_t_structₓ_ProposalThrottle_ₓ18_storage_ₓ_of_t_address _ _) _
              ⇓ _ | _ ?}} =>
            eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
-       (** timestamp arm — closes via [run_timestamp] specialized by
-           [H_ts_mp] which links [(make_state ...).block_timestamp] to
-           [now]. Matches both the pre-simpl [Stdlib.timestamp] shape
-           and the post-simpl [LowM.Primitive GetBlockTimestamp _]
-           shape that [s] may have produced. *)
        | |- {{? _, _, _ | LowM.Call Stdlib.timestamp _ ⇓ _ | _ ?}} =>
            c; [ apply (ThrottleLibLeaves.run_timestamp _ _ _ _ H_ts_mp) | ]
        | |- {{? _, _, _ |
              LowM.Call (LowM.Primitive Primitive.GetBlockTimestamp _) _ ⇓ _ | _ ?}} =>
            c; [ apply (ThrottleLibLeaves.run_timestamp _ _ _ _ H_ts_mp) | ]
-       (** Per-account storage-field read arms. [read_from_storage_*]
-           is called twice — once at offset 1 ([lastUpdated]) and once
-           at offset 0 ([currentCharge]). We dispatch via [first [...]]
-           so whichever offset-specific leaf matches the slot wins. *)
        | |- {{? _, _, _ |
              LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.read_from_storage_split_offset_0_t_uint256 _) _
              ⇓ _ | _ ?}} =>
            c; [ first [ apply run_read_lastUpdated_from_make_state
                       | apply run_read_currentCharge_from_make_state ] | ]
-       (** checked_sub arm — closes the only checked_sub call in the
-           function body: [now - (get_throttle sim account).lastUpdated].
-           Preconditions threaded from:
-             - U256 bound on [now] ← [H_valid_now]
-             - U256 bound on [lastUpdated] ← [get_throttle_lastUpdated_valid]
-             - no-underflow ← [lia] over [H_now_geq] (which is [now >= ...],
-               not the [<=] direction the leaf expects). *)
        | |- {{? _, _, _ |
              LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.checked_sub_t_uint256 _ _) _
              ⇓ _ | _ ?}} =>
@@ -1463,12 +1369,6 @@ Module MakeStateForm.
                 [ exact H_valid_now
                 | apply get_throttle_lastUpdated_valid; exact H_valid_sim
                 | lia ] | ]
-       (** checked_mul arm — closes [(now - lastUpdated) * FIX_ONE].
-           Preconditions:
-             - U256 bound on [now - lastUpdated] ← lia over
-               [H_valid_now], [get_throttle_lastUpdated_valid].
-             - U256 bound on FIX_ONE literal ← [lia] over computation.
-             - no-overflow ← [H_elapsed_mul_ok] (new conjunct). *)
        | |- {{? _, _, _ |
              LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.checked_mul_t_uint256 _ _) _
              ⇓ _ | _ ?}} =>
@@ -1477,13 +1377,6 @@ Module MakeStateForm.
                   unfold U256.Valid.t in *; lia
                 | unfold U256.Valid.t; lia
                 | exact H_elapsed_mul_ok ] | ]
-       (** checked_div arm — closes [((now - lastUpdated) * 1e18) /
-           PROPOSAL_THROTTLE_PERIOD]. Preconditions:
-             - U256 bound on dividend ← derived from [H_elapsed_mul_ok]
-               (the literal 1000000000000000000 is [ProposerThrottle.FIX_ONE]
-               after unfolding the constant in the hypothesis).
-             - U256 bound on divisor ← computed bound.
-             - nonzero divisor ← computed bound. *)
        | |- {{? _, _, _ |
              LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.checked_div_t_uint256 _ _) _
              ⇓ _ | _ ?}} =>
@@ -1495,13 +1388,6 @@ Module MakeStateForm.
                   split; [ apply Z.mul_nonneg_nonneg; lia | lia ]
                 | unfold U256.Valid.t, PROPOSAL_THROTTLE_PERIOD; lia
                 | unfold PROPOSAL_THROTTLE_PERIOD; lia ] | ]
-       (** checked_add arm — closes [currentCharge + ((...) / PROPOSAL_THROTTLE_PERIOD)].
-           Preconditions:
-             - U256 bound on [currentCharge] ← [get_throttle_currentCharge_valid].
-             - U256 bound on division result ← derived from
-               [H_elapsed_mul_ok] (FIX_ONE unfolded) since division can
-               only reduce magnitude.
-             - no-overflow on sum ← [H_charge_ok] (FIX_ONE unfolded). *)
        | |- {{? _, _, _ |
              LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.checked_add_t_uint256 _ _) _
              ⇓ _ | _ ?}} =>
@@ -1521,9 +1407,83 @@ Module MakeStateForm.
                   unfold PROPOSAL_THROTTLE_PERIOD in *;
                   exact Hchg ] | ]
        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
-       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
        | |- _ => s
        end)).
+
+  Theorem run_getProposalsAvailable_equivalent_make_state
+      (codes : Codes.t) (env : Environment.t) (state_base : State.t)
+      (account : Address.t)
+      (sim : ThrottleLibStorage.t) (now : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_valid_sim     : Valid.state sim)
+      (H_valid_account : Address.Valid.t account)
+      (H_valid_now     : U256.Valid.t now)
+      (H_timestamp     : state_base.(State.block_timestamp) = now)
+      (H_memory_scratch : exists w0 w1 rest, memory = w0 :: w1 :: rest)
+      (H_no_overflow   : (** charge computation does not revert via checked_*: *)
+         let throttle := ThrottleLibStorage.get_throttle sim account in
+         now >= throttle.(Throttle.lastUpdated) /\
+         (now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE < 2 ^ 256 /\
+         throttle.(Throttle.currentCharge)
+           + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
+             / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
+         sim.(ThrottleLibStorage.capacity) * ProposerThrottle.FIX_ONE < 2 ^ 256) :
+    let state    := make_state env state_base memory (proj_sim sim) in
+    let throttle  := ThrottleLibStorage.get_throttle sim account in
+    let charge    := ProposerThrottle.readCharge throttle now in
+    let available := ProposerThrottle.proposalsAvailable
+                       throttle sim.(ThrottleLibStorage.capacity) now in
+    exists state',
+    {{? codes, env, Some state |
+      ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152
+        0 (** base_slot *) account ⇓
+      Result.Ok (available, charge)
+    | Some state' ?}}.
+  Proof.
+    destruct H_no_overflow as (H_now_geq & H_elapsed_mul_ok & H_charge_ok & H_capacity_ok).
+    destruct H_memory_scratch as (w0 & w1 & rest & H_mem_eq). subst memory.
+    (** Pose the Phase C mapping_index_access closure upfront with the
+        slot/key it'll be called at in the function body:
+          slot = Stdlib.add(base_slot, 1) = Pure.add 0 1
+          key  = account.
+        Then destruct the existential so [Hmia] is the ⇓-judgment we
+        can apply directly. *)
+    pose proof (MappingIndexAccess.run_mapping_index_access codes env state_base
+                  (Pure.add 0 1) account (proj_sim sim)
+                  (w0 :: w1 :: rest)
+                  H_valid_account
+                  (ex_intro _ w0 (ex_intro _ w1
+                     (ex_intro _ rest eq_refl)))) as Hmia.
+    destruct Hmia as [mp Hmia].
+    (** Derive the timestamp equation for the post-mapping_index_access
+        state-skeleton ([make_state] with memory [mp]). The walker hits
+        the timestamp call after the mapping_index_access close, so the
+        state at that point is [Some (make_state env state_base mp
+        (proj_sim sim))]; [make_state] preserves [block_timestamp]. *)
+    assert (H_ts_mp :
+      (make_state env state_base mp (proj_sim sim)).(State.block_timestamp) = now)
+      by (rewrite ThrottleLibLeaves.make_state_block_timestamp; exact H_timestamp).
+    eexists.
+    unfold ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152.
+    (** Unfold the M-monad wrappers so the underlying [LowM.Let] /
+        [LowM.let_] / [LowM.Pure] / [LowM.Call] constructors are exposed
+        to the walker's lazymatch arms. [M.let_] is included for nested
+        calls like [checked_mul (x, convert(y))] where the inner call
+        gets sequenced via [M.let_]. [Shallow.let_state] and
+        [Shallow.if_] are unfolded so the walker can reach the
+        underlying conditional after the clamp comparison. *)
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
+    (** Run the extracted [throttle_walker] Ltac which closes the
+        mechanical-pattern arms (mapping_index_access, timestamp,
+        per-account sloads, checked_* arithmetic, Stdlib pure ops)
+        and reduces past the [Shallow.if_] charge clamp via [simpl].
+
+        Open after the walker: the let_state's BlockUnit mode match
+        and the [Pure.gt] case split for the FIX_ONE clamp value.
+        These need a structural refactor to close — see the closure
+        plan above for the next steps. *)
+    throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account.
   Admitted.
 
   (** ----- Phase F: public-wrapper equivalence -----
