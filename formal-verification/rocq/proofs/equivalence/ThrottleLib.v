@@ -474,24 +474,87 @@ Module ThrottleLibLeaves.
 
   (** [read_from_storage_split_offset_0_t_uint256 slot] sloads the slot
       and pipes through [extract_from_storage_value_offset_0_t_uint256]
-      (which is identity).
-
-      NOTE: this lemma's proof hit a goal-shape issue with the M.call
-      wrapper around extract_from_storage. After [c { sload sub-proof }]
-      and [s], the goal contains [LowM.let_ (extract_* v) LowM.Pure]
-      which doesn't directly unify with the [extract_* v ⇓ Result.Ok v]
-      shape of [run_extract_from_storage_value_offset_0_t_uint256].
-      Closing it cleanly likely needs either a fold-step tactic to
-      bridge [LowM.let_]/[LowM.Let] in the recovery direction, or a
-      switch to the upstream's [make_state + StorableValue.t] form
-      (which requires resolving the struct-mapping encoding question
-      from Phase 1.1). Land in a follow-up. *)
+      (which is identity). *)
   Lemma run_read_from_storage_split_offset_0_t_uint256
       codes env state slot account :
     Dict.get state.(State.accounts) env.(Environment.address) = Some account ->
     {{? codes, env, Some state |
       read_from_storage_split_offset_0_t_uint256 slot ⇓
         Result.Ok (account.(Account.storage) slot)
+    | Some state ?}}.
+  Proof.
+    intros H. unfold read_from_storage_split_offset_0_t_uint256.
+    lu. l. { c. { apply run_sload_returns_storage with (account := account). exact H. }
+             c. { apply run_extract_from_storage_value_offset_0_t_uint256. } p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** ----- Checked arithmetic — success cases ----- *)
+
+  (** [checked_add x y] returns [x + y] when the sum doesn't overflow uint256. *)
+  Lemma run_checked_add_t_uint256 codes env state (x y : U256.t)
+      (H_x : 0 <= x < 2^256)
+      (H_y : 0 <= y < 2^256)
+      (H_no_overflow : x + y < 2^256) :
+    {{? codes, env, Some state |
+      checked_add_t_uint256 x y ⇓ Result.Ok (x + y)
+    | Some state ?}}.
+  Proof.
+    unfold checked_add_t_uint256.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.gt, Pure.add.
+    destruct (_ >? _) eqn:?; s.
+    { lia. }
+    { pe; f_equal. lia. }
+  Qed.
+
+  (** [checked_sub x y] returns [x - y] when [y <= x] (no underflow). *)
+  Lemma run_checked_sub_t_uint256 codes env state (x y : U256.t)
+      (H_x : 0 <= x < 2^256)
+      (H_y : 0 <= y < 2^256)
+      (H_no_underflow : y <= x) :
+    {{? codes, env, Some state |
+      checked_sub_t_uint256 x y ⇓ Result.Ok (x - y)
+    | Some state ?}}.
+  Proof.
+    unfold checked_sub_t_uint256.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.gt, Pure.sub.
+    destruct (_ >? _) eqn:?; s.
+    { lia. }
+    { pe; f_equal. lia. }
+  Qed.
+
+  (** [checked_mul x y] returns [x * y] when the product doesn't overflow.
+      The shallow form uses [iszero (or (iszero x) (eq y (div product x)))]
+      to detect overflow — i.e., either x is zero (product = 0, no overflow)
+      or the round-trip [(x*y)/x = y] holds.
+
+      The proof body needs more case splitting than checked_add — the
+      round-trip via division surfaces both [Z.mod_small] and [Z.div_mul]
+      obligations. Leaving Admitted for the moment so the simpler ones
+      land first; closes with [Z.mod_small + Z.div_mul + Z.eqb_refl]. *)
+  Lemma run_checked_mul_t_uint256 codes env state (x y : U256.t)
+      (H_x : 0 <= x < 2^256)
+      (H_y : 0 <= y < 2^256)
+      (H_no_overflow : x * y < 2^256) :
+    {{? codes, env, Some state |
+      checked_mul_t_uint256 x y ⇓ Result.Ok (x * y)
+    | Some state ?}}.
+  Admitted.
+
+  (** [checked_div x y] returns [x / y] when [y > 0].
+
+      Same goal-shape issue as checked_mul — the false branch of the
+      iszero check leaves the goal in a partially-reduced form that
+      pe doesn't directly close. Admitted pending further apparatus
+      work. *)
+  Lemma run_checked_div_t_uint256 codes env state (x y : U256.t)
+      (H_x : 0 <= x < 2^256)
+      (H_y : 0 <= y < 2^256)
+      (H_nonzero : y > 0) :
+    {{? codes, env, Some state |
+      checked_div_t_uint256 x y ⇓ Result.Ok (x / y)
     | Some state ?}}.
   Admitted.
 
