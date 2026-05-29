@@ -328,6 +328,173 @@ Module ThrottleLibLeaves.
     lu. repeat (lu || cu || p).
   Qed.
 
+  (** The cleanup-from-storage helper is also identity. *)
+  Lemma run_cleanup_from_storage_t_uint256 codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      cleanup_from_storage_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_from_storage_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** [cleanup_t_rational_*_by_1] are all identity (the rational has
+      denominator 1, so cleanup just passes through). *)
+  Lemma run_cleanup_t_rational_1000000000000000000_by_1 codes env state v :
+    {{? codes, env, Some state |
+      cleanup_t_rational_1000000000000000000_by_1 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof. unfold cleanup_t_rational_1000000000000000000_by_1.
+         lu. repeat (lu || cu || p). Qed.
+
+  Lemma run_cleanup_t_rational_1_by_1 codes env state v :
+    {{? codes, env, Some state |
+      cleanup_t_rational_1_by_1 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof. unfold cleanup_t_rational_1_by_1.
+         lu. repeat (lu || cu || p). Qed.
+
+  Lemma run_cleanup_t_rational_43200_by_1 codes env state v :
+    {{? codes, env, Some state |
+      cleanup_t_rational_43200_by_1 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof. unfold cleanup_t_rational_43200_by_1.
+         lu. repeat (lu || cu || p). Qed.
+
+  Lemma run_identity codes env state v :
+    {{? codes, env, Some state |
+      identity v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof. unfold identity. lu. repeat (lu || cu || p). Qed.
+
+  (** [shr 0 v = v] in EVM arithmetic. *)
+  Lemma Pure_shr_0 (v : U256.t) : Pure.shr 0 v = v.
+  Proof.
+    unfold Pure.shr. cbn. apply Z.div_1_r.
+  Qed.
+
+  (** [shift_right_0_unsigned v] returns [v]. Stepping through Stdlib.shr
+      gives [Pure.shr 0 v] which reduces to [v] by [Pure_shr_0]. *)
+  Lemma run_shift_right_0_unsigned codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      shift_right_0_unsigned v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_right_0_unsigned.
+    lu. repeat (lu || cu).
+    pe.
+    - rewrite Pure_shr_0. reflexivity.
+    - reflexivity.
+  Qed.
+
+  (** [extract_from_storage_value_offset_0_t_uint256 v = v]
+      (storage values for uint256 fields are stored unshifted, and the
+      cleanup-from-storage is identity for U256.t in range). *)
+  Lemma run_extract_from_storage_value_offset_0_t_uint256 codes env state v :
+    {{? codes, env, Some state |
+      extract_from_storage_value_offset_0_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold extract_from_storage_value_offset_0_t_uint256.
+    lu. l. { c. { apply run_shift_right_0_unsigned. }
+             c. { apply run_cleanup_from_storage_t_uint256. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** [convert_t_uint256_to_t_uint256] is identity (cleanup ∘ identity ∘ cleanup). *)
+  Lemma run_convert_t_uint256_to_t_uint256 codes env state v :
+    {{? codes, env, Some state |
+      convert_t_uint256_to_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_uint256_to_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** Rational-to-uint256 conversions are all identity. *)
+  Lemma run_convert_t_rational_1000000000000000000_by_1_to_t_uint256 codes env state v :
+    {{? codes, env, Some state |
+      convert_t_rational_1000000000000000000_by_1_to_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_rational_1000000000000000000_by_1_to_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_rational_1_by_1_to_t_uint256 codes env state v :
+    {{? codes, env, Some state |
+      convert_t_rational_1_by_1_to_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_rational_1_by_1_to_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_rational_43200_by_1_to_t_uint256 codes env state v :
+    {{? codes, env, Some state |
+      convert_t_rational_43200_by_1_to_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_rational_43200_by_1_to_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** The PROPOSAL_THROTTLE_PERIOD constant returns 43200 = 0xa8c0. *)
+  Lemma run_constant_PROPOSAL_THROTTLE_PERIOD_349 codes env state :
+    {{? codes, env, Some state |
+      constant_PROPOSAL_THROTTLE_PERIOD_349 ⇓
+        Result.Ok ProposerThrottle.PROPOSAL_THROTTLE_PERIOD
+    | Some state ?}}.
+  Proof.
+    unfold constant_PROPOSAL_THROTTLE_PERIOD_349.
+    change ProposerThrottle.PROPOSAL_THROTTLE_PERIOD with 0xa8c0.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** ----- Storage-reading helpers -----
+
+      [Stdlib.sload slot] is a [Primitive.SLoad slot] step. The
+      [eval_primitive] semantics for SLoad reads
+      [account.(Account.storage) slot] where [account] is the contract
+      at [env.(Environment.address)]. The lemma below pulls a runtime
+      account into a storage-read result. *)
+
+  Lemma run_sload_returns_storage codes env state slot account :
+    Dict.get state.(State.accounts) env.(Environment.address) = Some account ->
+    {{? codes, env, Some state |
+      Stdlib.sload slot ⇓ Result.Ok (account.(Account.storage) slot)
+    | Some state ?}}.
+  Proof.
+    intros H. unfold Stdlib.sload.
+    eapply RunO.Primitive.
+    - simpl. rewrite H. reflexivity.
+    - apply RunO.Pure.
+  Qed.
+
+  (** [read_from_storage_split_offset_0_t_uint256 slot] sloads the slot
+      and pipes through [extract_from_storage_value_offset_0_t_uint256]
+      (which is identity).
+
+      NOTE: this lemma's proof hit a goal-shape issue with the M.call
+      wrapper around extract_from_storage. After [c { sload sub-proof }]
+      and [s], the goal contains [LowM.let_ (extract_* v) LowM.Pure]
+      which doesn't directly unify with the [extract_* v ⇓ Result.Ok v]
+      shape of [run_extract_from_storage_value_offset_0_t_uint256].
+      Closing it cleanly likely needs either a fold-step tactic to
+      bridge [LowM.let_]/[LowM.Let] in the recovery direction, or a
+      switch to the upstream's [make_state + StorableValue.t] form
+      (which requires resolving the struct-mapping encoding question
+      from Phase 1.1). Land in a follow-up. *)
+  Lemma run_read_from_storage_split_offset_0_t_uint256
+      codes env state slot account :
+    Dict.get state.(State.accounts) env.(Environment.address) = Some account ->
+    {{? codes, env, Some state |
+      read_from_storage_split_offset_0_t_uint256 slot ⇓
+        Result.Ok (account.(Account.storage) slot)
+    | Some state ?}}.
+  Admitted.
+
 End ThrottleLibLeaves.
 
 (** ----- The main equivalence theorem (Admitted; see header note) ----- *)
