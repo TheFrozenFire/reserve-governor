@@ -749,28 +749,23 @@ Theorem run_getProposalsAvailable_equivalent
   | Some (state <| State.memory := Memory.of_u256_list memory' |>) ?}}.
 Proof.
   (** Proof body: walks the shallow body of
-      [fun__getProposalsAvailable_152] (445 lines into
-      [generated/ThrottleLib_shallow.v]) with the named tactics:
+      [fun__getProposalsAvailable_152]. The named tactic chain
+      [unfold + lu; repeat (lu || cu || p)] handles the trivial let-
+      bindings; sub-call discharge via apply on leaf lemmas; Shallow.if_
+      via destruct on the clamp condition.
 
-        unfold fun__getProposalsAvailable_152.
-        repeat (l || c || cu).
-        - The [_27 := mapping_index_access_*] call writes to memory
-          and keccaks; discharge via [apply_run_mstore],
-          [apply_run_mstore], [apply_run_keccak256_tuple2], then
-          [CanonizeState.execute].
-        - The [_31 := read_from_storage_split_offset_0_t_uint256] call
-          unfolds to [sload] composed with [cleanup_*]; discharge via
-          [H_storage (SlotKind.LastUpdated account)] etc.
-        - The [checked_sub_t_uint256] and [checked_mul_*] calls reduce
-          to [Z] arithmetic guarded by [H_no_overflow]; each path
-          terminates with [p] in the no-revert branch and [lia] in
-          the revert branch.
-        - The [Shallow.if_] at the clamp branch case-splits on whether
-          the raw charge exceeds [FIX_ONE]; the sim's [Z.min FIX_ONE
-          raw] matches by case analysis.
+      Closure of this theorem requires:
+        - Phase 1 leaves: all closed (no Admits in the leaf layer).
+        - Memory + keccak: apply [run_mapping_index_access]
+          (Phase C) once at the right spot.
+        - Storage reads: discharge via [H_storage] specialized to
+          each [SlotKind.t].
+        - Arithmetic: [run_checked_*] leaves close each step.
 
-      Estimated ~200 lines of mechanical proof. Land as part of
-      Phase 1.3 since [consumeProposalCharge] reuses the same body. *)
+      The proof body is mechanically tractable but consists of ~150
+      lines of l/c/CanonizeState.execute plumbing. Until that is
+      written out, Admitted. The dependent theorems (Phase E/F,
+      Phase 1.3) carry the same shape. *)
 Admitted.
 
 (** ----- Phase B: [make_state] form (task #187) -----
