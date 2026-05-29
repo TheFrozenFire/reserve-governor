@@ -660,6 +660,35 @@ Module ThrottleLibLeaves.
     lu. repeat (lu || cu || p).
   Qed.
 
+  (** [Stdlib.timestamp] reads [State.block_timestamp] via the
+      [Primitive.GetBlockTimestamp] primitive (R020 — resolved upstream
+      via dev clone). State is unchanged across the call. *)
+  Lemma run_timestamp codes env state x :
+    state.(State.block_timestamp) = x ->
+    {{? codes, env, Some state |
+      Stdlib.timestamp ⇓ Result.Ok x
+    | Some state ?}}.
+  Proof.
+    intros H. unfold Stdlib.timestamp.
+    eapply RunO.Primitive.
+    - simpl. rewrite H. reflexivity.
+    - apply RunO.Pure.
+  Qed.
+
+  (** [make_state] preserves [State.block_timestamp]. The function only
+      writes [State.memory] (via record update) and [State.accounts]
+      (via [State.with_current_storage]); both update operations are
+      record-field-targeted, so the timestamp field is unchanged. *)
+  Local Transparent State.with_current_storage.
+  Lemma make_state_block_timestamp env state memory storage :
+    (make_state env state memory storage).(State.block_timestamp)
+    = state.(State.block_timestamp).
+  Proof.
+    unfold make_state, State.with_current_storage.
+    destruct (Dict.assign_function _ _ _); reflexivity.
+  Qed.
+  Local Opaque State.with_current_storage.
+
 End ThrottleLibLeaves.
 
 (** ----- Phase C: mapping_index_access (memory + keccak) -----
@@ -1102,16 +1131,27 @@ Module MakeStateForm.
                   (ex_intro _ w0 (ex_intro _ w1
                      (ex_intro _ rest eq_refl)))) as Hmia.
     destruct Hmia as [mp Hmia].
+    (** Derive the timestamp equation for the post-mapping_index_access
+        state-skeleton ([make_state] with memory [mp]). The walker hits
+        the timestamp call after the mapping_index_access close, so the
+        state at that point is [Some (make_state env state_base mp
+        (proj_sim sim))]; [make_state] preserves [block_timestamp]. *)
+    assert (H_ts_mp :
+      (make_state env state_base mp (proj_sim sim)).(State.block_timestamp) = now)
+      by (rewrite ThrottleLibLeaves.make_state_block_timestamp; exact H_timestamp).
     eexists.
     unfold ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152.
     unfold M.strong_let_, M.generic_let, M.pure, M.call.
     (** Aggressive walker — closes the trivial Yul let-bindings, the
-        zero-init, cleanup, convert, constant calls, and the
-        mapping_index_access call automatically.
+        zero-init, cleanup, convert, constant calls, the
+        mapping_index_access call, and the [timestamp] primitive
+        automatically.
 
-        Leaves open: the timestamp primitive, the three storage sloads
-        (need [apply_run_sload_struct_field] / [apply_run_sload_u256]),
-        the checked arithmetic ops, and the Shallow.if_ clamp.
+        Leaves open (post-timestamp): the three storage sloads (need
+        [apply_run_sload_struct_field] / [apply_run_sload_u256] plus
+        a storage-tying hypothesis like [proj_sim_throttles_packed]),
+        the checked arithmetic ops (each needs its no-overflow
+        precondition threaded), and the [Shallow.if_] charge clamp.
 
         The walker's structure is the template for follow-up: each new
         arm covers one call site. *)
@@ -1196,6 +1236,16 @@ Module MakeStateForm.
              LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.mapping_index_access_t_mappingₓ_t_address_ₓ_t_structₓ_ProposalThrottle_ₓ18_storage_ₓ_of_t_address _ _) _
              ⇓ _ | _ ?}} =>
            eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
+       (** timestamp arm — closes via [run_timestamp] specialized by
+           [H_ts_mp] which links [(make_state ...).block_timestamp] to
+           [now]. Matches both the pre-simpl [Stdlib.timestamp] shape
+           and the post-simpl [LowM.Primitive GetBlockTimestamp _]
+           shape that [s] may have produced. *)
+       | |- {{? _, _, _ | LowM.Call Stdlib.timestamp _ ⇓ _ | _ ?}} =>
+           c; [ apply (ThrottleLibLeaves.run_timestamp _ _ _ _ H_ts_mp) | ]
+       | |- {{? _, _, _ |
+             LowM.Call (LowM.Primitive Primitive.GetBlockTimestamp _) _ ⇓ _ | _ ?}} =>
+           c; [ apply (ThrottleLibLeaves.run_timestamp _ _ _ _ H_ts_mp) | ]
        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
        | |- _ => s
        end)).
