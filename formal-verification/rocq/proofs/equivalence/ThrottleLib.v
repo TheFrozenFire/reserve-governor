@@ -1181,7 +1181,7 @@ Module MakeStateForm.
                          (ex_intro _ w0 (ex_intro _ w1
                             (ex_intro _ rest eq_refl)))) as Hmia;
            destruct Hmia as [mp Hmia];
-           eapply RunO.Call; [ exact Hmia | ]
+           eapply RunO.Call; [ apply Hmia | ]
        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
        | |- _ => s
        end)).
