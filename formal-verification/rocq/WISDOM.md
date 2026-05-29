@@ -569,3 +569,122 @@ blacklist to `Dict.Eq.eqb`.
   will hit this same pattern. Closing R022 once unblocks all of them.
 
 Tracked as part of task #185 (Ongoing WISDOM.md updates).
+
+## R023: Z.lor on if-then-else arguments resists tactical reduction
+
+After unfolding [Pure.or], [Pure.iszero], [Pure.eq], [Pure.div], a
+goal like
+
+```coq
+Pure.iszero (Z.lor (if x =? 0 then 1 else 0)
+                   (if y =? d then 1 else 0))
+```
+
+does not reduce via `cbn` / `simpl` / `vm_compute` to a single
+0-or-1 value. The issue: `Z.lor` is defined via positional bit-level
+case analysis that does NOT pattern-match on `if-then-else` results
+cleanly. Even after case-splitting on `x =? 0` and `y =? d` so both
+arguments are concrete 0 or 1, `cbn [Z.lor]` exposes the
+`Pos.lor`/`N.ldiff` recursion machinery rather than reducing to 0
+or 1 outright.
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v`:
+  `run_checked_mul_t_uint256` Admitted under this. The shallow
+  body has the overflow-detection pattern
+  `iszero (or (iszero x) (eq y (div product x)))` which expands to
+  the shape above; closure stuck on reducing the boolean disjunction.
+
+### Workaround sketch (not yet implemented)
+
+Manually prove a lemma
+
+```coq
+Lemma Z_lor_bool_unfold (a b : bool) :
+  Z.lor (if a then 1 else 0) (if b then 1 else 0) =
+    (if a || b then 1 else 0).
+Proof. destruct a, b; reflexivity. Qed.
+```
+
+so the head reduces to a single `if-then-else`. Then chain
+`destruct (a || b) eqn:?` to dispatch the outer iszero.
+
+Untested; not in scope of the current pass. Tracked alongside R022
+as the typeclass-anomaly family.
+
+## R024: `l. { c. { apply leaf } ... }` pattern is the canonical step-through
+
+The upstream's erc20 body proof uses a uniform pattern for stepping
+through a Yul `do~ [[ ... ]]` block that contains nested `M.call`s:
+
+```coq
+l. {                              (* one Yul let-step *)
+  c. { apply run_inner_thing. }   (* first M.call *)
+  c. { apply_run_mstore. }        (* next M.call uses prior result *)
+  CanonizeState.execute.          (* normalize make_state shape *)
+  p.                              (* close with Pure for the let RHS *)
+}
+```
+
+Key insights:
+
+1. `l.` (eapply RunO.Let) breaks the `LowM.Let` head into call-step +
+   continuation. One `l.` per Yul let-step (each `let~ ... :=` or
+   `do~ [[ ... ]]`).
+2. Inside the `l. { ... }` block, sequential `c. { apply leaf. }`
+   discharge each nested `M.call` in the RHS in order. The
+   continuation of one `c.` feeds the next.
+3. `CanonizeState.execute` is mandatory after any mstore — it folds
+   the post-state back into [make_state env state mem storage] form
+   so subsequent applications match.
+4. Conclude the inner block with `p.` (apply RunO.Pure).
+
+A different shape — `lu. cu. apply_run_mstore` — also works for
+some simpler bodies but doesn't compose with `CanonizeState.execute`
+the same way. When in doubt, copy erc20's pattern.
+
+### Anti-pattern
+
+A bare
+
+```coq
+unfold f. lu. l. { c. { apply leaf. } ... } repeat (lu || cu || p).
+```
+
+leaves intermediate state-shapes that the next `l.` cannot match
+against. Always interleave `CanonizeState.execute` after each
+mstore in a let-block.
+
+## R025: `pe` (PureEq) leaves two subgoals
+
+`pe := apply RunO.PureEq` is the goto for closing a `LowM.Pure e1 ⇓ Result.Ok e2`
+goal when `e1 = e2` is the obligation. It splits the goal into:
+
+  1. The value equality (`e1 = e2`).
+  2. The state-equality (`state_after = state_before`).
+
+So the canonical close is:
+
+```coq
+pe.
+- f_equal. lia.      (* value equality *)
+- reflexivity.       (* state equality *)
+```
+
+OR chain with `;` to dispatch both:
+
+```coq
+pe; f_equal. lia.    (* hope both subgoals close uniformly *)
+```
+
+The chaining form works when both subgoals reduce by the same
+tactic. Trying `pe. rewrite ... reflexivity.` without splitting will
+hit "Expected a single focused goal but 2 goals are focused."
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v`:
+  `run_cleanup_t_uint160_on_address` uses the two-subgoal split form.
+- `run_checked_add_t_uint256` (upstream pattern) uses
+  `pe; f_equal. lia.` chaining.
