@@ -1309,10 +1309,14 @@ Module MakeStateForm.
     }
 
     1: { (* Goal 4: clamped-branch closure.
-            See note below: the structure closes goals 1-3 fully; goals
-            4 and 5 hit an algebraic-equivalence gap between the
-            function's clamped output and [Z.min FIX_ONE raw] from the
-            sim. *)
+            Walker leaves checked_div + tuple emit. Closing the
+            tuple emit hits the R032 algebraic-vs-syntactic gap: the
+            clamped emit (FIX_ONE, cap*FIX_ONE/FIX_ONE) must unify
+            with the OUTER goal-5 swap's expected (Z.min FIX_ONE raw,
+            cap*Z.min FIX_ONE raw / FIX_ONE) — these are equal in the
+            clamped branch (raw > FIX_ONE ⇒ Z.min = FIX_ONE) but
+            need [replace] + Z.min_l to bridge. Goal 5 must be
+            re-destructed on the same condition to close. Deferred. *)
       unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
       throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account.
       all: admit.
