@@ -219,3 +219,6 @@ Audit.v
 proofs/equivalence/Sandbox.v
 proofs/equivalence/ThrottleLib.v
 proofs/equivalence/UnstakingManager.v
+proofs/equivalence/VersionRegistry.v
+proofs/equivalence/RewardTokenRegistry.v
+proofs/equivalence/Guardian.v
