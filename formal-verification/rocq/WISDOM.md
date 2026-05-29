@@ -729,3 +729,82 @@ hit "Expected a single focused goal but 2 goals are focused."
   `run_cleanup_t_uint160_on_address` uses the two-subgoal split form.
 - `run_checked_add_t_uint256` (upstream pattern) uses
   `pe; f_equal. lia.` chaining.
+
+## R026: `let~ '` desugars to M.strong_let_, not LowM.Let directly
+
+The generated shallow form uses `let~ ' (a, b) := e in k` notation
+which desugars to `M.strong_let_ e (fun '(a, b) => k)`. The
+`M.strong_let_` is
+
+```coq
+Definition strong_let_ {A B : Set} : t A -> (A -> t B) -> t B :=
+  generic_let (fun A B => @LowM.Let B A).
+```
+
+where `generic_let f e1 e2 = f e1 (fun result => match result with
+| Ok v => e2 v | Return p s => LowM.Pure (Return p s) | Revert ...
+end)`.
+
+So `let~ ' pat := e in k` desugars to
+
+```coq
+LowM.Let e (fun result =>
+  match result with
+  | Ok pat => k
+  | Return p s => LowM.Pure (Result.Return p s)
+  | Revert p s => LowM.Pure (Result.Revert p s)
+  end)
+```
+
+This means **immediately after `unfold f`, the goal head is NOT
+`LowM.Let` directly** — it's `M.strong_let_` (or `M.let_` / `M.pure`
+/ `M.call`). The `l` / `c` / `p` tactics from RunO.* won't match
+until you unfold these wrapper definitions.
+
+### Workaround
+
+Add this unfolding step right after `unfold <function>`:
+
+```coq
+unfold M.strong_let_, M.generic_let, M.pure, M.call.
+```
+
+After this, the underlying `LowM.Let` / `LowM.Pure` / `LowM.Call`
+shapes are exposed and `l` / `p` / `c` apply. The continuation
+introduced by `generic_let` (the `match result with | Ok ... |
+Return ... | Revert ... end` wrap) needs `s` (named tactic for
+`fold @LowM.let_; simpl_goal`) to reduce after each call discharge.
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v`: Phase F closure uses this
+  pattern in `run_getProposalsAvailable_public_make_state`.
+
+### Closure template (works for thin wrappers)
+
+```coq
+Proof.
+  pose proof <inner_theorem> as HE.
+  destruct HE as [state' HE].
+  eexists state'.
+  unfold <wrapper_function>.
+  unfold M.strong_let_, M.generic_let, M.pure, M.call.
+  repeat
+    (lazymatch goal with
+     | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+     | |- {{? _, _, _ | LowM.Call <leaf1> _ ⇓ _ | _ ?}} =>
+         c; [ apply <leaf1_lemma> | ]
+     | ...one arm per leaf...
+     | |- {{? _, _, _ | LowM.Call <inner_fn _ _> _ ⇓ _ | _ ?}} =>
+         c; [ exact HE | ]
+     | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+         apply RunO.Pure
+     | |- _ => s
+     end).
+Qed.
+```
+
+Closing a substantive body (Phase E shape, not thin wrapper) needs
+additional arms for memory-writing primitives (mstore + keccak +
+CanonizeState.execute) and storage reads. Those are documented in
+R024 (canonical step-through pattern).
