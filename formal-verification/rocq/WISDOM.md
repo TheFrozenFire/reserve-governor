@@ -376,7 +376,33 @@ Will apply to every storage-projection proof in
 lemmas. Prefer `hauto`; fall back to manual unfolds only when
 `hauto` exhausts its depth bound.
 
-## R020: `Stdlib.timestamp` (and friends) are `LowM.Impossible` upstream
+## R020: `Stdlib.timestamp` (and friends) — RESOLVED in dev clone
+
+**Resolution status**: solved upstream as of the
+`~/git/reserve/formal-verification/rocq-of-solidity` dev clone
+(commit `10387d00 doc: update`, ahead of the older
+`~/git/reserve/_tools/rocq-of-solidity` checkout). Our
+`scripts/rocq-build` now defaults `ROCQ_TREE` to the dev clone.
+
+In the dev clone:
+
+```coq
+Definition timestamp : M.t U256.t :=
+  LowM.Primitive Primitive.GetBlockTimestamp M.pure.
+
+Definition number : M.t U256.t :=
+  LowM.Primitive Primitive.GetBlockNumber M.pure.
+```
+
+and `eval_primitive` (line 1518–1532) has clauses that read from
+`State.block_timestamp` and `State.block_number`. Verified end-to-end
+by `proofs/equivalence/Sandbox.v::R020VerificationCheck` — both
+`timestamp_returns_block_timestamp` and `number_returns_block_number`
+close in three tactic steps.
+
+The original blocker text follows for archival.
+
+---
 
 The rocq-of-solidity upstream defines several `Stdlib.*` primitives
 as `LowM.Impossible "<name>"` rather than giving them real
@@ -405,7 +431,48 @@ or supply a governor-side `Stdlib`-shim. See
 `notes/equivalence_proof_methodology.md` § Phase 1.2 outcome for the
 full treatment.
 
-## R021: `RunO.t` has no `CallContract` constructor — cross-contract calls unprovable
+## R021: `RunO.t` has no `CallContract` constructor — RESOLVED via upstream patch
+
+**Resolution status**: solved by upstream patch
+`TheFrozenFire/rocq-of-solidity:feat/env-block-context` commit
+`51f4e4cff2` ("Add RunO.CallContract proof rule + cc tactic").
+The patch adds a permissive `RunO.CallContract` constructor and a
+matching single-letter tactic `cc`.
+
+The new rule:
+
+```coq
+| CallContract (address : U256.t) (value : U256.t) (input : list Z)
+    (is_static : bool) (is_delegate : bool)
+    (k : U256.t -> LowM.t A)
+    (call_result : U256.t)
+    (state state_inter state' : option State.t) :
+  {{? codes, environment, state_inter | k call_result ⇓ output | state' ?}} ->
+  {{? codes, environment, state |
+    LowM.CallContract address value input is_static is_delegate k ⇓ output
+  | state' ?}}
+```
+
+The rule is intentionally permissive — the proof author picks
+`call_result` and `state_inter` freely. **Soundness shifts to the
+proof-author level**: the choice must be justified by a separate
+callee-spec axiom (matches how Certora handles cross-contract
+calls via spec-level interface contracts). The fully-sound
+alternative — a meta-theorem connecting `eval` to `RunO` for
+CallContract — is substantial work and remains open.
+
+For our governor proofs, the workflow is: each external call site
+needs a paired axiom (or sub-lemma) tying the callee's address +
+input bytes to a `call_result` value and the storage delta. The
+audit-time obligation is reviewing those axioms.
+
+Verified end-to-end by
+`proofs/equivalence/Sandbox.v::R021VerificationCheck::callcontract_can_be_discharged`
+— closes in `cc. apply RunO.Pure.`
+
+The original blocker text follows for archival.
+
+---
 
 `LowM.t` has a `CallContract` constructor for `staticcall` /
 `delegatecall` / `call` to other contracts. But `RunO.t` (the

@@ -119,3 +119,28 @@ Module R020VerificationCheck.
   Qed.
 
 End R020VerificationCheck.
+
+(** ----- R021 verification: RunO.CallContract now exists -----
+
+    The upstream patch adds a CallContract constructor (and matching
+    [cc] tactic) to [RunO.t]. It's intentionally permissive — the
+    proof author picks [call_result] and [state_inter] freely — so
+    soundness shifts to the proof-author level (the choice must be
+    justified by a separate callee-spec axiom).
+
+    The check below exercises the new constructor end-to-end: prove
+    that *some* [(call_result, final_state)] discharges a CallContract
+    followed by a Pure. This is the minimum bar — if it doesn't close,
+    the constructor or the tactic is broken. *)
+
+Module R021VerificationCheck.
+
+  Lemma callcontract_can_be_discharged codes env state addr value input :
+    {{? codes, env, Some state |
+      LowM.CallContract addr value input false false (fun r => LowM.Pure r) ⇓ 0
+    | Some state ?}}.
+  Proof.
+    cc. apply RunO.Pure.
+  Qed.
+
+End R021VerificationCheck.

@@ -1406,3 +1406,94 @@ Phase 4 (#184 — heavyweight decision) is moot — it presumed the
 small/medium contracts would close first; they won't.
 
 Decision needed: pursue (B-narrow), (B-wide), or (D)?
+
+## Resolution — both blockers cleared (Phase 1.2 follow-up)
+
+User chose: bring rocq-of-solidity work into scope and resolve
+systemically. The path actually taken splits across both blockers:
+
+### R020 — already solved upstream
+
+The blocker analysis above was based on the
+`~/git/reserve/_tools/rocq-of-solidity` checkout, which was stale.
+The dev clone at `~/git/reserve/formal-verification/rocq-of-solidity`
+(pointed at `TheFrozenFire/rocq-of-solidity` fork) is ahead of that
+checkout and already has `Stdlib.timestamp` /  `Stdlib.number` wired
+to `Primitive.GetBlockTimestamp` / `Primitive.GetBlockNumber`, plus
+the corresponding `eval_primitive` clauses reading from
+`State.block_timestamp` / `State.block_number`. No upstream patch
+required.
+
+The action taken was switching `scripts/rocq-build` to default
+`ROCQ_TREE` at the dev clone. All 65 governor `.v` files rebuild
+against the new runtime; the verification lemmas
+`R020VerificationCheck.timestamp_returns_block_timestamp` and
+`R020VerificationCheck.number_returns_block_number` in
+`proofs/equivalence/Sandbox.v` confirm operationally that
+`Stdlib.timestamp` evaluates to `State.block_timestamp`.
+
+### R021 — fixed via upstream patch
+
+The `RunO.t` judgment really did lack a `CallContract` constructor.
+Added one in `TheFrozenFire/rocq-of-solidity:feat/env-block-context`
+(commit `51f4e4cff2`):
+
+```coq
+| CallContract (address : U256.t) (value : U256.t) (input : list Z)
+    (is_static : bool) (is_delegate : bool)
+    (k : U256.t -> LowM.t A)
+    (call_result : U256.t)
+    (state state_inter state' : option State.t) :
+  {{? codes, environment, state_inter | k call_result ⇓ output | state' ?}} ->
+  {{? codes, environment, state |
+    LowM.CallContract address value input is_static is_delegate k ⇓ output
+  | state' ?}}
+```
+
+Plus the matching tactic `cc := eapply RunO.CallContract.`. The
+constructor is intentionally permissive — the proof author picks
+`call_result` and `state_inter` and is responsible for justifying
+those values via a separate callee-spec axiom. This shifts soundness
+to audit-time review rather than apparatus-level enforcement.
+
+Verified end-to-end by
+`R021VerificationCheck.callcontract_can_be_discharged` in
+`proofs/equivalence/Sandbox.v`. Tutorial proofs in the upstream still
+build.
+
+### Updated work plan (after both resolutions)
+
+Tasks #173–#179 (Phase 1.3 → Phase 2.4 — ThrottleLib mutator,
+UnstakingManager) are **unblocked**. Tasks #180–#182 (Phase 3 —
+Guardian, VersionRegistry, RewardTokenRegistry) are **unblocked**.
+Phase 4 (heavyweight decision) re-opens.
+
+The proof workflow is now:
+
+1. For each contract, generate the shallow form via
+   `scripts/shallow-embed-sweep`.
+2. Define `<Name>Storage.t` + per-slot projection helpers in
+   `proofs/equivalence/<Name>.v` (Phase 1.1 pattern).
+3. Write the equivalence theorem with preconditions:
+   - `Valid.state sim`
+   - `storage_matches_sim` (per-slot sloads return projected values)
+   - For each external call site, an axiom hypothesis tying the
+     call signature to the callee-sim's behaviour.
+4. Prove with the named tactics + `cc` at call sites.
+5. Audit.v Caveat-5 transitions to "documents per-contract axioms
+   the equivalence proof inherits."
+
+### Caveat-5 trust path (revised)
+
+Equivalence proofs now establish:
+
+> Audit.v theorems hold over the Solidity contract, assuming:
+> (a) solc-rocq emits a faithful deep embedding;
+> (b) `shallow_embed.py` preserves operational semantics;
+> (c) the upstream RocqOfSolidity Stdlib axioms capture EVM semantics;
+> (d) the per-contract callee-spec axioms supplied at each external
+>     call site capture the callee's actual behaviour.
+
+(d) is the new audit obligation introduced by R021's permissive rule.
+For governor contracts the callee specs are bounded — IERC20, IGovernor,
+ITimelock, AccessControl — and can each be axiom-listed in Audit.v.
