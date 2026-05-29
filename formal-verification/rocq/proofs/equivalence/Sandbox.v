@@ -75,3 +75,47 @@ Module SandboxToyProof.
   Qed.
 
 End SandboxToyProof.
+
+(** ----- R020 verification: Stdlib.timestamp now has real semantics -----
+
+    With the dev-clone of rocq-of-solidity (which we've now wired in
+    via scripts/rocq-build pointing at
+    ~/git/reserve/formal-verification/rocq-of-solidity), Stdlib.timestamp
+    is defined as
+
+      Definition timestamp : M.t U256.t :=
+        LowM.Primitive Primitive.GetBlockTimestamp M.pure.
+
+    and eval_primitive has a clause that returns state.(State.block_timestamp).
+
+    Sanity-check that we can actually prove it returns the expected value
+    from a state with a chosen block_timestamp. If this lemma closes, R020
+    is operationally unblocked. *)
+
+Module R020VerificationCheck.
+
+  Lemma timestamp_returns_block_timestamp codes env state x :
+    state.(State.block_timestamp) = x ->
+    {{? codes, env, Some state |
+      Stdlib.timestamp ⇓ Result.Ok x
+    | Some state ?}}.
+  Proof.
+    intros H. unfold Stdlib.timestamp.
+    eapply RunO.Primitive.
+    - simpl. rewrite H. reflexivity.
+    - apply RunO.Pure.
+  Qed.
+
+  Lemma number_returns_block_number codes env state x :
+    state.(State.block_number) = x ->
+    {{? codes, env, Some state |
+      Stdlib.number ⇓ Result.Ok x
+    | Some state ?}}.
+  Proof.
+    intros H. unfold Stdlib.number.
+    eapply RunO.Primitive.
+    - simpl. rewrite H. reflexivity.
+    - apply RunO.Pure.
+  Qed.
+
+End R020VerificationCheck.

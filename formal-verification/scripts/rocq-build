@@ -22,8 +22,16 @@
 
 set -euo pipefail
 
-# Default to a sibling layout under $HOME/git/reserve/, but accept overrides.
-ROCQ_TREE="${ROCQ_TREE:-$HOME/git/reserve/_tools/rocq-of-solidity}"
+# Default to the in-tree dev clone under $HOME/git/reserve/formal-verification/.
+# That clone tracks our TheFrozenFire/rocq-of-solidity fork; it carries our
+# patches (incl. the std::length_error fix, macOS build fixes, and any
+# pending env/Stdlib semantic extensions) and is rebuilt by the same `make`
+# the upstream uses.
+#
+# The older $HOME/git/reserve/_tools/rocq-of-solidity checkout was kept
+# around as the build target for early sessions and is now stale; do not
+# point ROCQ_TREE at it.
+ROCQ_TREE="${ROCQ_TREE:-$HOME/git/reserve/formal-verification/rocq-of-solidity}"
 # REPO_TREE defaults to two levels up from this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_TREE="${REPO_TREE:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
