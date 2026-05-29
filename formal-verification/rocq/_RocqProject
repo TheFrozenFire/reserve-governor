@@ -79,6 +79,13 @@ proofs/StakingVaultRewards.v
 proofs/StakingVaultRewards_xcheck.v
 proofs/StakingVaultRewards_conservation.v
 
+# --- StakingVault: rewards × ERC20 (claim-faithfulness binding) ---
+# Layers ERC20 mock onto StakingVaultRewards. Conservation theorem
+# stated against the actual external ERC20 balance, not against
+# internal counters. Closes notes/external_dependencies.md Priority 2.
+simulations/StakingVaultRewardsERC20.v
+proofs/StakingVaultRewardsERC20.v
+
 # --- StakingVault: dual delegation ---
 simulations/StakingVaultDelegation.v
 proofs/StakingVaultDelegation.v

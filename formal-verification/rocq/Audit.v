@@ -835,6 +835,47 @@ Notation audit_checkpointed_empty_returns_zero :=
 
 
 (** ============================================================
+    === Section 6d: StakingVault — rewards × ERC20 binding ===
+    ============================================================
+
+    [StakingVaultRewardsERC20] layers the ERC20 mock onto the
+    rewards simulation. Closes notes/external_dependencies.md
+    Priority 2 (rewards conservation against external balance).
+
+    The base [StakingVaultRewards] sim treats [balanceAccounted]
+    and [totalClaimed] as plain [U256.t] fields, so
+    [audit_rewards_conservation] is a property of internal
+    counters — a tautology on a pure-function model. The
+    Certora-side analog (RewardConservation.spec) fails because
+    its NONDET-summarized [balanceOf] is too loose. This file
+    bridges by binding the ERC20 mock state into the claim flow:
+    after [claimUser_with_erc20], the vault's external ERC20
+    balance has decreased by exactly the claimable amount.
+
+    Two audit notations:
+
+      - [audit_rewards_claim_external_conservation] : the
+        full-strength conservation theorem stated against the
+        actual ERC20 balance map. Vault balance decreases by
+        claimable; recipient balance increases by exactly the
+        same amount. No fee-on-transfer, no rounding loss.
+      - [audit_rewards_claim_internal_consistency] : bridges
+        the new theorem to the existing internal-form
+        [audit_rewards_claim_returns_and_zeros] —
+        accruedRewards still zeroes, totalClaimed still
+        increments.
+*)
+
+Require ReserveGovernor.proofs.StakingVaultRewardsERC20.
+
+Notation audit_rewards_claim_external_conservation :=
+  ReserveGovernor.proofs.StakingVaultRewardsERC20.StakingVaultRewardsERC20Proofs.claim_external_conservation.
+
+Notation audit_rewards_claim_internal_consistency :=
+  ReserveGovernor.proofs.StakingVaultRewardsERC20.StakingVaultRewardsERC20Proofs.claim_internal_consistency.
+
+
+(** ============================================================
     === Section 7: ProposalLib ===
     ============================================================
 
