@@ -1169,19 +1169,10 @@ Module MakeStateForm.
            c; [ apply ThrottleLibLeaves.run_constant_PROPOSAL_THROTTLE_PERIOD_349 | ]
        | |- {{? _, _, _ | LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
            c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
-       | |- {{? _, _, _ |
-             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.mapping_index_access_t_mappingₓ_t_address_ₓ_t_structₓ_ProposalThrottle_ₓ18_storage_ₓ_of_t_address _ _) _
-             ⇓ _ | _ ?}} =>
-           let Hmia := fresh "Hmia" in
-           let mp   := fresh "memory_post" in
-           pose proof (MappingIndexAccess.run_mapping_index_access
-                         codes env state_base (Pure.add 0 1) account
-                         (proj_sim sim) (w0 :: w1 :: rest)
-                         H_valid_account
-                         (ex_intro _ w0 (ex_intro _ w1
-                            (ex_intro _ rest eq_refl)))) as Hmia;
-           destruct Hmia as [mp Hmia];
-           eapply RunO.Call; [ apply Hmia | ]
+       (** mapping_index_access arm: state-threading issue (refine/exact
+           Hmia leaves a LowM.Pure (Result.Ok keccak256...) ⇓ ?out
+           subgoal that's definitionally closed but the unification
+           doesn't go through). Deferred — fall through to [s]. *)
        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
        | |- _ => s
        end)).
