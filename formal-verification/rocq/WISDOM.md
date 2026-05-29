@@ -1094,27 +1094,57 @@ won't reduce `Z.min` without an explicit case-split. The unclamped
 branch has the inverse problem: `(raw, cap*raw/FIX_ONE)` vs
 `(Z.min FIX_ONE raw, ...)` where `raw ≤ FIX_ONE ⇒ Z.min = raw`.
 
-### Working pattern (next step for Goal 4 closure)
+### Partial-closure pattern that works (Goal 2.B unclamped)
+
+The unclamped branch closes with `Z.min_r` because there's a single
+`raw` expression to substitute, and the substitution propagates
+naturally:
 
 ```coq
-(* Unclamped branch: charge_raw ≤ FIX_ONE *)
-- replace (readCharge throttle now) with charge_raw
-    by (unfold readCharge; rewrite Z.min_r; lia).
-  replace (proposalsAvailable throttle cap now)
-    with ((cap * charge_raw) / FIX_ONE)
-    by (unfold proposalsAvailable, readCharge;
-        rewrite Z.min_r; [reflexivity | lia]).
-  l. { apply RunO.Pure. }
-  ...
+(* Goal 2.B final emit: LowM.Pure (Result.Ok (BlockUnit.Tt,
+   (raw, cap*raw/FIX_ONE))). raw <= FIX_ONE from Hclamp = true. *)
+replace raw with (Z.min FIX_ONE raw)
+  by (apply Z.min_r; exact Hle_raw).
+apply RunO.Pure.
 ```
 
-The `Z.min_r : Z.min a b = b ↔ b ≤ a` (or the `Z.min_l` variant for
-the other direction) bridges the gap. Each branch needs the
-corresponding `Z.min_r`/`Z.min_l` discharge.
+The result: shared metavariable picks up `(Z.min FIX_ONE raw,
+cap*Z.min FIX_ONE raw/FIX_ONE)` — Goal 2 closes cleanly.
+
+### Why the symmetric Goal 4 closure fails
+
+The clamped branch has `(FIX_ONE, cap*FIX_ONE/FIX_ONE)`. The literal
+`FIX_ONE` appears in three positions: charge value, multiplier in
+`cap*FIX_ONE`, and divisor in `/FIX_ONE`. We want positions 1 and 2
+to become `Z.min FIX_ONE raw` but position 3 to stay as `FIX_ONE`.
+
+Naive `replace FIX_ONE with (Z.min FIX_ONE raw)` substitutes all
+three. Targeted `rewrite H_eq at 1` / `rewrite at 1` doesn't work
+because each rewrite changes occurrence indices, and Coq's
+unification engine accumulates *nested* `Z.min` wrappers as it tries
+to match the goal's `FIX_ONE` against the already-set metavariable
+form.
+
+After several `rewrite at 1`, the expected form ends up with
+`Z.min (Z.min (Z.min FIX_ONE raw) ...) ...` — algebraically the
+same as `Z.min FIX_ONE raw` (idempotence), but syntactically
+different so `apply RunO.Pure` still fails.
+
+### Better approach (Goals 4 + 5 coordinated closure)
+
+The fundamental cause is the shared metavariable between the
+if-then-else's two branches. Closing branch 1 with one form fixes
+the metavariable; branch 2 then has to match that exact form.
+
+The clean fix: restructure so the if-then-else's destruct happens at
+an *outer* level (around Goals 4 and 5 together), so each branch
+gets its own fresh metavariable for the OUTER goal. Then Goal 5's
+swap handles algebraic equivalence (`Z.min FIX_ONE raw = raw` for
+true branch, `= FIX_ONE` for false branch) inside a single goal.
 
 ### Touchpoints
 
 - `proofs/equivalence/ThrottleLib.v`:
-  `run_getProposalsAvailable_equivalent_make_state` Goals 4, 5 — open
-  under `all: admit`; closure plan documented inline next to the
-  admit.
+  `run_getProposalsAvailable_equivalent_make_state` Goal 2.B uses
+  the working Z.min_r pattern. Goal 4 + 5 deferred per the analysis
+  above.

@@ -1289,12 +1289,42 @@ Module MakeStateForm.
         + unfold U256.Valid.t, FIX_ONE; lia.
         + unfold FIX_ONE; lia.
       - (* Goal 2.B: tuple-emit cascade. cbn match reduces the outer
-           match; then walk through the LowM.Let pass-throughs. *)
+           match; walker handles the LowM.Let pass-throughs; then we
+           bridge the syntactic emit to the [Z.min FIX_ONE raw] form
+           so Goal 5's expected output unifies on both branches. *)
         cbn match.
         l. { apply RunO.Pure. }
         cbn match.
         l. { apply RunO.Pure. }
         cbn match.
+        (* Derive raw <= FIX_ONE from Hclamp. *)
+        unfold Pure.gt in Hclamp.
+        apply Z.eqb_eq in Hclamp.
+        unfold PROPOSAL_THROTTLE_PERIOD in *.
+        set (b := (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+          (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+          1000000000000000000 / (12 * 3600) >? 1000000000000000000) in *.
+        destruct b eqn:Hgt; [discriminate|].
+        unfold b in Hgt.
+        assert (Hle_raw :
+          (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+          (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+          1000000000000000000 / (12 * 3600) <= 1000000000000000000).
+        { destruct (Z.gtb_spec
+            ((ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+             (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+             1000000000000000000 / (12 * 3600))
+            1000000000000000000) as [Hlt|HleX];
+            [congruence | exact HleX]. }
+        (* Rewrite raw to Z.min FIX_ONE raw via Z.min_r, then close. *)
+        replace ((ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+          (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+          1000000000000000000 / (12 * 3600))
+        with (Z.min 1000000000000000000
+          ((ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+           (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+           1000000000000000000 / (12 * 3600)))
+          by (apply Z.min_r; exact Hle_raw).
         apply RunO.Pure.
     }
 
@@ -1309,14 +1339,18 @@ Module MakeStateForm.
     }
 
     1: { (* Goal 4: clamped-branch closure.
-            Walker leaves checked_div + tuple emit. Closing the
-            tuple emit hits the R032 algebraic-vs-syntactic gap: the
-            clamped emit (FIX_ONE, cap*FIX_ONE/FIX_ONE) must unify
-            with the OUTER goal-5 swap's expected (Z.min FIX_ONE raw,
-            cap*Z.min FIX_ONE raw / FIX_ONE) — these are equal in the
-            clamped branch (raw > FIX_ONE ⇒ Z.min = FIX_ONE) but
-            need [replace] + Z.min_l to bridge. Goal 5 must be
-            re-destructed on the same condition to close. Deferred. *)
+            Goal 2.B's Z.min_r bridge sets the shared metavariable to
+            the form (Z.min FIX_ONE raw, cap * Z.min FIX_ONE raw / FIX_ONE).
+            Goal 4 needs to produce the SAME form via Z.min_l from
+            its clamped emit (FIX_ONE, cap*FIX_ONE/FIX_ONE).
+
+            Naive [rewrite ... at N] doesn't work — each rewrite shifts
+            occurrence indices, and Coq's unification engine
+            accumulates nested Z.min wrappers when matching against the
+            already-set metavariable. A clean closure requires either
+            an outer-level destruct that splits Goal 5 too, or a more
+            targeted rewrite primitive that can match by syntactic
+            position. Deferred to a focused session. *)
       unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
       throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account.
       all: admit.
@@ -1325,33 +1359,34 @@ Module MakeStateForm.
     (* Goal 5 (outer tuple-swap, plus any walker residual): closes
        symbolically once the branch outputs are pinned to the sim form. *)
 
-    (** ----- Phase E closure status (this commit) -----
+    (** ----- Phase E closure status -----
 
-        Goals 1, 2, 3 close fully with no remaining [admit]. The
-        closure tactics are concrete and follow the established walker
-        + checked_mul / checked_div preconditions pattern.
+        Closed: Goals 1, 2, 3.
+          - Goal 1: unclamped checked_mul(cap, charge_raw) preconditions
+            via set + destruct b eqn + Z.gtb_spec (R031).
+          - Goal 2: unclamped checked_div + tuple cascade. Goal 2.B's
+            final emit uses the Z.min_r bridge — [replace raw with
+            Z.min FIX_ONE raw] discharged by [Z.min_r Hle_raw] — so
+            the shared metavariable picks up the abstract form rather
+            than the concrete raw expression.
+          - Goal 3: clamped checked_mul(cap, FIX_ONE) preconditions
+            directly via H_capacity_ok.
 
-        Goal 4 (clamped-branch tuple-emit) and Goal 5 (outer tuple
-        swap, plus any walker residual) are admitted under [all:
-        admit] because they hit the algebraic-vs-syntactic bridge:
+        Open: Goal 4 (clamped tuple-emit), Goal 5 (outer swap).
 
-          The function emits [(FIX_ONE, cap*FIX_ONE/FIX_ONE)] in the
-          clamped branch. The theorem expects this to equal
-          [(readCharge throttle now, proposalsAvailable throttle cap now)].
-          In the clamped branch, [readCharge = Z.min FIX_ONE raw =
-          FIX_ONE] (because [raw > FIX_ONE]) and [proposalsAvailable =
-          (cap * Z.min FIX_ONE raw) / FIX_ONE = cap * FIX_ONE / FIX_ONE].
-          These are algebraically equal, but Coq's [apply RunO.Pure]
-          uses syntactic unification and won't see the equivalence
-          without a manual [destruct] on [raw <=? FIX_ONE] to reduce
-          [Z.min] case-by-case, plus the corresponding [replace] or
-          [rewrite] to bridge the forms.
+        The clamped-branch closure has to match the *same* metavariable
+        form set by Goal 2's Z.min_r bridge. Naive [rewrite H at N]
+        accumulates nested Z.min wrappers because each rewrite shifts
+        occurrence indices and the unification picks up partially
+        rewritten terms.
 
-        Next step: replace [all: admit] in Goal 4 with the
-        case-analysis on [Z.min FIX_ONE raw], discharging via
-        [Hclamp = false] (which implies [raw > FIX_ONE]) to reduce
-        [Z.min] to [FIX_ONE], then close with the explicit [l. p.]
-        chain (proven to work in Goal 2.B's unclamped form). *)
+        Possible next approach: instead of rewriting Goal 4's emit
+        post-hoc, restructure the proof to handle the if-then-else at
+        an outer level — destruct on Hclamp BEFORE the walker exits,
+        then both branches close independently against fresh
+        metavariables, and Goal 5 (the swap) handles the algebraic
+        equivalence via Z.min case analysis in a single coordinated
+        step. *)
   Admitted.
 
   (** ----- Phase F: public-wrapper equivalence -----
