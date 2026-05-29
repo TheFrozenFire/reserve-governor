@@ -1316,50 +1316,93 @@ shape* for capturing "timestamp is constant within a call", but it
 presumed `eval_primitive` would give `timestamp` some value at the
 primitive layer. It doesn't.
 
-### Resolution paths
+### Second blocker discovered while investigating the pivot — R021
 
-Three paths forward, in order of feasibility:
+While checking whether Guardian / VersionRegistry / RewardTokenRegistry
+(the time-free pivot targets) would be unblocked, I found a second
+upstream apparatus gap. The `RunO.t` judgment
+(`simulations/RocqOfSolidity.v:1462–1530`) has constructors for
+`Pure`, `PureNone`, `Primitive`, `PrimitiveNone`, `CallFunction`
+(within-contract), `Let`, `LetUnfold`, `Call`, `CallUnfold`,
+`LoopOngoing`, `LoopTerminating`. **No constructor for
+`LowM.CallContract`** (the `staticcall`/`delegatecall`/`call`
+cross-contract case).
 
-**(A) Pivot Phase 1 to a time-free contract.** Guardian
-(two-tier role-gated cancel) and VersionRegistry (owner-gated
-registry) are both pure functions of storage + environment, no
-time. Either one would validate the methodology end-to-end on
-real governor code without needing upstream changes. Cost: zero
-upstream work; ~1-2 days per contract for the full proof.
+Cross-contract calls are unprovable under the current apparatus.
 
-**(B) Patch the upstream's `Stdlib.timestamp`.** Add a
-`timestamp : U256.t` field to `Environment.t` (or to a new record
-threaded through `RunO`), redefine `Stdlib.timestamp` as
-`Primitive (GetBlockTimestamp) M.pure` returning that field,
-add `GetBlockTimestamp` semantics to `eval_primitive`, rebuild
-`RocqOfSolidity.vo`. Cost: ~half a day of upstream changes plus
-the rebuild; potentially upstream-PR-able. The same change would
-unblock `block.number` and most of the other time/env primitives.
+Per the Yul output:
 
-**(C) Build a governor-side `Stdlib` shim.** Create a parallel
-`ReserveGovernor.Stdlib` module that overrides `timestamp`,
-`number`, etc., with `Environment.t`-driven semantics, and have
-all our `proofs/equivalence/*.v` files import the shim instead of
-the upstream's `Stdlib`. Cost: similar to (B) but doesn't reach
-upstream; we own the divergence indefinitely.
+| Contract | R020 (time) | R021 (CallContract) |
+|---|---|---|
+| ThrottleLib | YES | no |
+| UnstakingManager | YES | YES (IERC20 transfer) |
+| Governor | YES | YES |
+| Timelock | YES | YES (target.call) |
+| StakingVault | YES | YES (IERC20) |
+| VersionRegistry | no | YES (isOwner, version()) |
+| RewardTokenRegistry | likely no | YES (isOwner) |
+| Guardian | no | YES (cancel chain) |
 
-(B) is the right move long-term — it's the only path that lets us
-verify the time-dependent contracts (which are most of them) and
-contributes back to the ecosystem. (A) is the right move
-short-term — it gets us a real equivalence proof closed within
-days while (B) is in flight.
+**ThrottleLib is the only governor contract that's blocked only on
+R020, not on R021.** Every other contract makes external calls.
+The "pivot to a time-free target" plan from §Resolution paths (A)
+above doesn't survive contact with R021.
 
-## Updated work plan
+### Updated resolution paths
 
-Tasks #172-#179 (Phase 1 / Phase 2 — ThrottleLib + UnstakingManager)
-are **blocked** until path (B) lands. Pivot Phase 1 / 2 to:
+**(B-narrow) Patch only `Stdlib.timestamp`.** Add a `timestamp`
+field to `Environment.t`, redefine `Stdlib.timestamp` to read it
+(matching the existing `caller`/`callvalue` pattern). Cost: ~half
+a day of upstream changes plus a rebuild. **Unblocks ThrottleLib
+alone.** Closes one equivalence proof — the demonstration that
+Caveat-5 *can* be partially closed for a single contract — but
+doesn't change the picture for any other contract.
 
-- **New Phase 1**: Guardian equivalence proof-of-method (was task #182).
-- **New Phase 2**: VersionRegistry / RewardTokenRegistry (was tasks
-  #180, #181).
-- **Old Phase 1 / 2 (ThrottleLib, UnstakingManager)**: deferred,
-  resumed once path (B) ships.
+**(B-wide) Patch timestamp AND add a CallContract proof
+apparatus.** The hard part is the cross-contract semantics: the
+`eval_contract_call` model has to either inline the called
+contract's semantics (requires `codes : Codes.t` carrying the
+callee) or use an uninterpreted-function-style trust model
+("assume the callee returns this output for that input"). Either
+way it's substantial — multiple weeks of upstream proof
+engineering, plus a re-design of how `RunO.t` threads the inter-
+contract context. Cost: high. Unblocks the remaining seven
+contracts.
 
-Phase 3 (heavyweight + integration) and Phase 4 (decision) likewise
-shift: Governor / Timelock / StakingVault are all time-dependent
-and stay parked until (B) is in.
+**(D) Park the equivalence-proof tier.** Acknowledge that with the
+current upstream apparatus, Caveat-5 cannot be closed for governor
+contracts. Document the gap; redirect effort to the protocol-fix
+backlog (#99–#126). Cost: zero new work; lose the equivalence
+guarantee.
+
+### Honest assessment
+
+The original Phase 0–3 plan assumed the upstream apparatus
+supported time-dependent contracts and within-contract calls
+only. Both assumptions failed empirically. Closing the
+equivalence-proof tier as originally scoped is not feasible
+without substantial upstream investment.
+
+A defensible compromise: (B-narrow) → close ThrottleLib's
+equivalence as a demonstration that Caveat-5 *can* be closed for
+a chosen contract; leave the rest of Caveat-5 documented as
+permanently partial pending upstream-side semantic support for
+cross-contract calls. Audit.v retains its existing simulation
+correctness theorems and adds one transferred theorem
+(`audit_throttle_consume_storage_delta_transferred`) annotated
+with which axioms it inherits.
+
+## Updated work plan (after R021)
+
+Tasks #176–#179 (Phase 2 — UnstakingManager): **BLOCKED on R020 + R021**
+(uses both block.timestamp and IERC20.transfer).
+Tasks #180–#182 (Phase 3 — VersionRegistry, RewardTokenRegistry,
+Guardian): **BLOCKED on R021** alone (no time, but heavy on
+external calls).
+Tasks #173–#175 (Phase 1.3–1.5 — ThrottleLib mutator + transfer):
+**BLOCKED on R020 only**. Unblocks if (B-narrow) lands.
+
+Phase 4 (#184 — heavyweight decision) is moot — it presumed the
+small/medium contracts would close first; they won't.
+
+Decision needed: pursue (B-narrow), (B-wide), or (D)?

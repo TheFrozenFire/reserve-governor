@@ -404,3 +404,44 @@ field; the workaround for any specific proof is to skip the contract
 or supply a governor-side `Stdlib`-shim. See
 `notes/equivalence_proof_methodology.md` § Phase 1.2 outcome for the
 full treatment.
+
+## R021: `RunO.t` has no `CallContract` constructor — cross-contract calls unprovable
+
+`LowM.t` has a `CallContract` constructor for `staticcall` /
+`delegatecall` / `call` to other contracts. But `RunO.t` (the
+upstream's proof judgment, defined at
+`rocq-of-solidity/rocq/RocqOfSolidity/simulations/RocqOfSolidity.v:1462–1530`)
+has no inference rule for `LowM.CallContract`. Available
+constructors: `Pure`, `PureNone`, `Primitive`, `PrimitiveNone`,
+`CallFunction` (within-contract function calls), `Let`,
+`LetUnfold`, `Call`, `CallUnfold`, `LoopOngoing`,
+`LoopTerminating`. Cross-contract is absent.
+
+This is broader than R020. R020 blocks contracts that read
+`block.timestamp`; R021 blocks contracts that make any external
+call (`staticcall`/`delegatecall`/`call`). For the governor
+codebase:
+
+| Contract | Time blocker (R020) | CallContract blocker (R021) |
+|---|---|---|
+| ThrottleLib | YES | no |
+| UnstakingManager | YES | YES (IERC20 transfer) |
+| Governor | YES | YES |
+| Timelock | YES | YES (target.call) |
+| StakingVault | YES | YES (IERC20) |
+| VersionRegistry | no | YES (isOwner, version()) |
+| RewardTokenRegistry | likely no | YES (isOwner) |
+| Guardian | no | YES (cancel chain) |
+
+ThrottleLib is the **only** governor contract that's blocked only
+on R020 and not on R021. Patching just R020 unblocks it alone;
+unblocking the others additionally needs an upstream `CallContract`
+proof apparatus (much bigger effort — model the called contract's
+semantics in some bounded way, or trust the caller's expectation
+via uninterpreted-function-style axioms).
+
+For our workstream this means: either patch upstream both ways
+(weeks of work, not days), or park the equivalence-proof tier
+entirely. The intermediate option is to close ONLY ThrottleLib
+(after R020 patch) as a demonstration target and leave Caveat-5
+permanently partial for the rest.
