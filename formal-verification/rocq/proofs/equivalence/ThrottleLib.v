@@ -1174,4 +1174,49 @@ Module MakeStateForm.
         Total ~150 lines of mechanical proof once R022 unblocks. *)
   Admitted.
 
+  (** ----- Phase 1.4: audit transfer through the equivalence -----
+
+      The sim-side audit lemma [audit_throttle_consume_storage_delta]
+      states: given a throttle [t] with [consume t capacity now =
+      Result.Success t'], the post-throttle has [t'.lastUpdated = now]
+      and [t'.currentCharge = readCharge t now - FIX_ONE / capacity].
+
+      The contract-side equivalence is captured by
+      [run_consumeProposalCharge_make_state] (above): given the same
+      preconditions, the Yul runtime produces a post-state whose
+      storage equals [proj_sim (set_throttle sim account new_throttle)]
+      where new_throttle has exactly that delta.
+
+      Composing the two gives a contract-level audit theorem:
+
+        audit_throttle_consume_storage_delta_at_contract:
+          forall codes env state_base account sim now memory
+                 (H_*: <preconditions>),
+            exists state',
+              run fun_consumeProposalCharge_72 ⇓ Result.Ok tt
+            in pre-state := make_state env state_base memory (proj_sim sim)
+            and post-state state' has storage = proj_sim (sim with
+              throttle account updated to:
+                lastUpdated := now;
+                currentCharge := readCharge_old - FIX_ONE/capacity).
+
+      The transfer is by construction once Phase 1.3 closes — the
+      consumeProposalCharge equivalence theorem above is precisely
+      the transfer. No new lemma needed; the lifted form is the same
+      theorem with the post-state spelled out per
+      audit_throttle_consume_storage_delta's spec.
+
+      So this task closes when Phase 1.3 closes. The sim-side
+      audit_throttle_consume_storage_delta currently holds the
+      delta claim; the contract-level claim is the run_consumeProposalCharge_make_state
+      conclusion. They state the same delta at two abstraction
+      levels — one proves the other once the equivalence is sealed. *)
+
+  (** [audit_throttle_consume_storage_delta_contract] is a notation
+      pointing at the contract-level equivalence theorem. Until
+      Phase 1.3's body closes (Admitted under R022), this notation
+      depends on the same Admit. *)
+  Notation audit_throttle_consume_storage_delta_contract :=
+    run_consumeProposalCharge_make_state.
+
 End MakeStateForm.
