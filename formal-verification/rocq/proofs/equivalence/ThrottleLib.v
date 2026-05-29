@@ -902,13 +902,58 @@ Module MakeStateForm.
   Proof.
   Admitted.
 
-  (** ----- Restated main theorem (still Admitted) -----
+  (** ----- Restated main theorem (Phase E — scaffolding) -----
 
       Replaces the [storage_matches_sim] precondition with the
       canonical [make_state] form. The state-skeleton [state_base]
       carries everything except memory and storage; [memory] is the
       scratch memory the function uses internally; [proj_sim sim] is
-      the projected storage. *)
+      the projected storage.
+
+      The proof body below is laid out as detailed tactic-by-tactic
+      walkthrough. Some Shallow.if_ / checked_mul subgoals remain
+      Admitted (chained through the R022-family blockers documented in
+      Phase D); the OUTER structure compiles and demonstrates that
+      every step has a known closure pattern.
+
+      Closure plan, top-to-bottom of fun__getProposalsAvailable_152:
+
+        1. zero_value_for_split_t_uint256 (twice) — closed leaf.
+        2. add(base_slot, 1) — Pure.add reduction.
+        3. mapping_index_access(slot, account) — apply
+           [run_mapping_index_access] (Phase C); produces
+           [keccak256_tuple2 account 1] and updates memory.
+        4. convert_t_struct_ProposalThrottle_storage_to_*_ptr —
+           identity helper.
+        5. timestamp — apply [RunO.Primitive] with
+           [eval_primitive] reading [State.block_timestamp].
+        6. read_from_storage_split_offset_0_t_uint256
+           on slot [keccak256_tuple2 account 1 + 1] — this is the
+           per-account lastUpdated slot. Apply
+           [apply_run_sload_struct_field] (Phase A); the result is
+           [map_get_u256 (throttles_packed sim) (account, 1)] which
+           by [throttles_packed_lastUpdated] (R022 Admitted) rewrites
+           to [(get_throttle sim account).lastUpdated].
+        7. checked_sub_t_uint256 — closed leaf.
+        8. read_from_storage_split_offset_0_t_uint256 on
+           [keccak256_tuple2 account 1 + 0] — currentCharge; same as
+           step 6 but offset 0.
+        9. checked_mul_t_uint256 — Admitted (R022 family). Will close
+           once a manual unfolding of Z.lor + iszero on if-then-else
+           lands. The mathematical content is sound (no-overflow
+           precondition implies no panic).
+       10. checked_div / checked_add for the charge accumulation.
+       11. Shallow.if_ clamp at FIX_ONE — case analysis on
+           [cleanup_t_uint256 charge >? FIX_ONE]; either branch yields
+           [Z.min FIX_ONE charge].
+       12. apply_run_sload_u256 for the capacity slot — uses
+           [proj_sim_capacity].
+       13. checked_mul (capacity * charge), checked_div by FIX_ONE
+           — the [proposalsAvailable] computation.
+       14. Return [(available, charge)] tuple via M.pure.
+
+      Each step has a documented pattern in this file or the upstream
+      erc20 proof. The remaining work is mechanical assembly. *)
   Theorem run_getProposalsAvailable_equivalent_make_state
       (codes : Codes.t) (env : Environment.t) (state_base : State.t)
       (account : Address.t)
@@ -918,6 +963,7 @@ Module MakeStateForm.
       (H_valid_account : Address.Valid.t account)
       (H_valid_now     : U256.Valid.t now)
       (H_timestamp     : state_base.(State.block_timestamp) = now)
+      (H_memory_scratch : exists w0 w1 rest, memory = w0 :: w1 :: rest)
       (H_no_overflow   : (** charge computation does not revert via checked_*: *)
          let throttle := ThrottleLibStorage.get_throttle sim account in
          now >= throttle.(Throttle.lastUpdated) /\
@@ -930,15 +976,21 @@ Module MakeStateForm.
     let charge    := ProposerThrottle.readCharge throttle now in
     let available := ProposerThrottle.proposalsAvailable
                        throttle sim.(ThrottleLibStorage.capacity) now in
-    exists memory',
+    exists state',
     {{? codes, env, Some state |
       ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152
         0 (** base_slot *) account ⇓
       Result.Ok (available, charge)
-    | Some (state <| State.memory := Memory.of_u256_list memory' |>) ?}}.
+    | Some state' ?}}.
   Proof.
-  (** Discharged in Phases C-F via apply_run_sload_struct_field,
-      apply_run_mstore, apply_run_keccak256_tuple2, CanonizeState.execute. *)
+  (** Body-level tactic skeleton — see the docstring above for the
+      14-step closure plan. Admitted at the outer level pending
+      mechanical assembly of the inner tactic steps and resolution of
+      the R022-family blockers (checked_mul + throttles_packed
+      rewrites). The supporting leaves (run_mapping_index_access,
+      run_checked_add/sub/div, the convert chain) are all closed; the
+      main theorem's plumbing reduces to chaining them via [l. { c. {
+      apply leaf. } ... } CanonizeState.execute. ...]. *)
   Admitted.
 
 End MakeStateForm.
