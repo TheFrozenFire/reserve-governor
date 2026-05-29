@@ -1435,10 +1435,11 @@ Module MakeStateForm.
       underscore). It delegates to the inner function and returns just
       the first component of the [(available, charge)] tuple.
 
-      The proof composes via the inner theorem (still Admitted).
+      Now that the inner theorem (Phase E) closes with [Qed], this
+      wrapper proof depends on a real proof rather than an Admit.
       Closure pattern: discharge the inner call by
-      [apply run_getProposalsAvailable_equivalent_make_state], extract
-      the first component, return. *)
+      [exact HE] where [HE] is the inner theorem instance, then walk
+      the trivial wrapper code to project the first component. *)
   Theorem run_getProposalsAvailable_public_make_state
       (codes : Codes.t) (env : Environment.t) (state_base : State.t)
       (account : Address.t)

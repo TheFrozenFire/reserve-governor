@@ -215,11 +215,14 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
 
       - Per-contract equivalence proofs land under
         [proofs/equivalence/]. ThrottleLib.v is the proof-of-method
-        target: full storage projection, 20+ leaf lemmas closed (memory
-        + keccak + per-storage-field via the new struct sloads),
-        public-wrapper and main-internal theorem statements present
-        but Admitted under R022 typeclass-projection blockers (cf.
-        WISDOM.md R022).
+        target: full storage projection, 20+ leaf lemmas closed,
+        AND the main-internal + public-wrapper theorems
+        ([run_getProposalsAvailable_equivalent_make_state] and its
+        wrapper) NOW CLOSE WITH Qed — see WISDOM R032 for the
+        RunO.PureEq pattern that bridged the syntactic-vs-algebraic
+        gap on Z.min FIX_ONE raw. Phase 1.3 (consumeProposalCharge
+        mutator) is still Admitted pending the per-account proj_sim
+        update equivalence work.
 
       - Sandbox.v exercises the upstream's [Stdlib.timestamp /
         block_number] (R020) and [RunO.CallContract] (R021) — both
@@ -227,15 +230,19 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
 
     Status by contract:
 
-      ThrottleLib       Phase A-F scaffolded. Closed leaves cover
-                        the entire helper-call tree; theorem
-                        statements present; main body Admitted.
+      ThrottleLib       View functions (_getProposalsAvailable and
+                        its public wrapper) close with Qed via
+                        the RunO.PureEq + Z.min_l/Z.min_r pattern.
+                        Mutator (consumeProposalCharge) Admitted —
+                        depends on sstore + per-account projection
+                        update equivalence.
       Other contracts   Untouched. Will land under proofs/equivalence/
                         once R022 is resolved upstream.
 
-    Until each contract's equivalence file is fully closed (no
+    For contracts whose equivalence files are fully closed (no
     Admits in the body), the divergence between that contract's
-    simulation and its bytecode is still trust-only.
+    simulation and its bytecode is mechanically ruled out.
+    ThrottleLib's view functions are the first to reach that bar.
 
     Caveat-6 (Sim/contract precondition gap on several operations).
     ---------------------------------------------------------------
