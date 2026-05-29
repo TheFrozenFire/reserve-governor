@@ -1146,6 +1146,56 @@ Module MakeStateForm.
     repeat (lu || cu || p).
   Qed.
 
+  (** ----- get_throttle field-validity lemmas -----
+
+      [Valid.state sim] guarantees every throttle in [sim.(throttles)]
+      satisfies [ProposerThrottle.Valid.throttle], which gives U256.t
+      bounds on [lastUpdated] / [currentCharge] and an upper-bound on
+      [currentCharge] of [FIX_ONE].
+
+      For accounts NOT in the dict, [get_throttle] returns
+      [default_throttle] whose fields are zero — trivially U256.t
+      valid and trivially below FIX_ONE.
+
+      The lemmas below derive per-field validity from [Valid.state]
+      via [Dict.get_is_valid], packaging the case analysis. *)
+  Lemma get_throttle_lastUpdated_valid sim account :
+    Valid.state sim ->
+    U256.Valid.t (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated).
+  Proof.
+    intros [_ Hthr]. unfold ThrottleLibStorage.get_throttle.
+    pose proof (Dict.get_is_valid
+                  Address.Valid.t ProposerThrottle.Valid.throttle
+                  sim.(ThrottleLibStorage.throttles) account Hthr) as H.
+    destruct (Dict.get _ _) as [t|]; [|unfold U256.Valid.t; cbn; lia].
+    destruct H. assumption.
+  Qed.
+
+  Lemma get_throttle_currentCharge_valid sim account :
+    Valid.state sim ->
+    U256.Valid.t (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge).
+  Proof.
+    intros [_ Hthr]. unfold ThrottleLibStorage.get_throttle.
+    pose proof (Dict.get_is_valid
+                  Address.Valid.t ProposerThrottle.Valid.throttle
+                  sim.(ThrottleLibStorage.throttles) account Hthr) as H.
+    destruct (Dict.get _ _) as [t|]; [|unfold U256.Valid.t; cbn; lia].
+    destruct H. assumption.
+  Qed.
+
+  Lemma get_throttle_currentCharge_capped sim account :
+    Valid.state sim ->
+    (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge)
+      <= ProposerThrottle.FIX_ONE.
+  Proof.
+    intros [_ Hthr]. unfold ThrottleLibStorage.get_throttle.
+    pose proof (Dict.get_is_valid
+                  Address.Valid.t ProposerThrottle.Valid.throttle
+                  sim.(ThrottleLibStorage.throttles) account Hthr) as H.
+    destruct (Dict.get _ _) as [t|];
+      [destruct H; assumption | unfold ProposerThrottle.FIX_ONE; cbn; lia].
+  Qed.
+
   (** ----- Restated main theorem (Phase E — scaffolding) -----
 
       Replaces the [storage_matches_sim] precondition with the
@@ -1252,18 +1302,27 @@ Module MakeStateForm.
       by (rewrite ThrottleLibLeaves.make_state_block_timestamp; exact H_timestamp).
     eexists.
     unfold ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152.
-    unfold M.strong_let_, M.generic_let, M.pure, M.call.
+    (** Unfold the M-monad wrappers so the underlying [LowM.Let] /
+        [LowM.let_] / [LowM.Pure] / [LowM.Call] constructors are exposed
+        to the walker's lazymatch arms. [M.let_] is included for nested
+        calls like [checked_mul (x, convert(y))] where the inner call
+        gets sequenced via [M.let_]. *)
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
     (** Aggressive walker — closes the trivial Yul let-bindings, the
         zero-init, cleanup, convert, constant calls, the
-        mapping_index_access call, the [timestamp] primitive, and the
+        mapping_index_access call, the [timestamp] primitive, the
         per-account [read_from_storage_*] calls (both [lastUpdated]
-        and [currentCharge] offsets) automatically.
+        and [currentCharge] offsets), and the [checked_sub] call
+        ([now - lastUpdated]) automatically.
 
-        Leaves open (post-read): the four [checked_*] arithmetic ops
-        (each needs its no-overflow precondition threaded), the
-        single [read_from_storage] for [capacity] (needs the
-        single-U256 sload arm using [apply_run_sload_u256]), and the
-        [Shallow.if_] charge clamp at FIX_ONE.
+        Leaves open (post-checked_sub): the three remaining
+        [checked_*] arithmetic ops ([checked_mul], [checked_div],
+        [checked_add]) each need their no-overflow preconditions
+        threaded — the existing [H_no_overflow] is not strong enough,
+        so the theorem statement needs strengthening (or per-op asserts
+        within the proof). Also open: the single [read_from_storage]
+        for [capacity] via [apply_run_sload_u256], the [Shallow.if_]
+        charge clamp at FIX_ONE, and the final tuple repackaging.
 
         The walker's structure is the template for follow-up: each new
         arm covers one call site. *)
@@ -1367,6 +1426,20 @@ Module MakeStateForm.
              ⇓ _ | _ ?}} =>
            c; [ first [ apply run_read_lastUpdated_from_make_state
                       | apply run_read_currentCharge_from_make_state ] | ]
+       (** checked_sub arm — closes the only checked_sub call in the
+           function body: [now - (get_throttle sim account).lastUpdated].
+           Preconditions threaded from:
+             - U256 bound on [now] ← [H_valid_now]
+             - U256 bound on [lastUpdated] ← [get_throttle_lastUpdated_valid]
+             - no-underflow ← [lia] over [H_now_geq] (which is [now >= ...],
+               not the [<=] direction the leaf expects). *)
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.checked_sub_t_uint256 _ _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_checked_sub_t_uint256;
+                [ exact H_valid_now
+                | apply get_throttle_lastUpdated_valid; exact H_valid_sim
+                | lia ] | ]
        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
        | |- _ => s
        end)).
