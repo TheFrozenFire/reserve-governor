@@ -1124,32 +1124,36 @@ Module MakeStateForm.
       Result.Ok available
     | Some state' ?}}.
   Proof.
-    (** Body-level skeleton:
-
-          unfold fun_getProposalsAvailable_91.
-          l. {
-            l. { c. { apply run_zero_value_for_split_t_uint256. } p. }
-            l. { p. }   (* trivial assignment of zero *)
-            l. { p. }   (* slot copy *)
-            l. { p. }   (* account copy *)
-            l. {
-              c. { apply run_getProposalsAvailable_equivalent_make_state;
-                   try assumption.  (* discharges the inner call *)
-                 }
-              p.   (* extract first component *)
-            }
-            p.
-          }
-          p.
-
-        The first component of the inner call's [(available, charge)]
-        pair is [available], which is what the wrapper returns —
-        cleanly matches the sim's [proposalsAvailable].
-
-        Like the inner theorem, this body's mechanical assembly is
-        deferred under the R022-family pending blockers; the
-        composition is correct by construction. *)
-  Admitted.
+    pose proof (run_getProposalsAvailable_equivalent_make_state
+                  codes env state_base account sim now memory
+                  H_valid_sim H_valid_account H_valid_now
+                  H_timestamp H_memory_scratch H_no_overflow) as HE.
+    destruct HE as [state' HE].
+    eexists state'.
+    unfold ThrottleLib_153.ThrottleLib_153_deployed.fun_getProposalsAvailable_91.
+    (** Walk through the trivial outer/inner zero-init bindings; when
+        we hit the inner [fun__getProposalsAvailable_152] call,
+        discharge via [exact HE]. *)
+    unfold ThrottleLib_153.ThrottleLib_153_deployed.fun_getProposalsAvailable_91.
+    (** Strip the [M.strong_let_] / [M.pure] / [M.call] wrappers so
+        the underlying [LowM.Let] / [LowM.Pure] / [LowM.Call] heads
+        are exposed. Then the [l]/[c]/[p]/[s] tactics apply. *)
+    unfold M.strong_let_, M.generic_let, M.pure, M.call.
+    repeat
+      (lazymatch goal with
+       | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+       | |- {{? _, _, _ |
+             LowM.Call ThrottleLib_153.ThrottleLib_153_deployed.zero_value_for_split_t_uint256 _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_zero_value_for_split_t_uint256 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152 _ _) _
+             ⇓ _ | _ ?}} =>
+           c; [ exact HE | ]
+       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+       | |- _ => s
+       end).
+  Qed.
 
   (** ----- Phase 1.3: consumeProposalCharge mutator equivalence -----
 
