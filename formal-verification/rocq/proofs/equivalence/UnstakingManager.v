@@ -37,10 +37,12 @@
 Require Import RocqOfSolidity.RocqOfSolidity.
 Require Import simulations.RocqOfSolidity.
 Require Import RocqOfSolidity.proofs.RocqOfSolidity.
+Require Import ReserveGovernor.proofs.equivalence.Common.
 Require Import ReserveGovernor.simulations.UnstakingManager.
 
 Import Stdlib.
 Import RunO.
+Import EquivalenceCommon.
 
 Module UnstakingManagerEquivalence.
 

@@ -904,22 +904,103 @@ Module MakeStateForm.
     = andb (Z.eqb a1 a2) (Z.eqb b1 b2).
   Proof. reflexivity. Qed.
 
-  (** The Dict_Eq_eqb_ZZ_pair_unfold rewrite is the R022 unblocker, but
-      threading it through the proof requires careful coordination
-      with [cbn] reduction. The two lemmas below are Admitted with
-      the unblocker in place; closure pending one more refinement
-      pass on the tactic structure. *)
+  (** ----- One-step map_get_u256 unfolding (R022 workaround) -----
+
+      Manually expose the [Dict.get] Fixpoint's cons-step via [change]
+      (the Fixpoint body is definitionally equal to the [if]-form
+      below), then use [Dict_Eq_eqb_ZZ_pair_unfold] to reach the
+      [Z.eqb] form. No [simpl] / [cbn] / [hauto] needed, so no
+      typeclass-projection anomaly. *)
+  Lemma map_get_u256_pair_cons
+      (rest : Dict.t (U256.t * U256.t) U256.t)
+      (a c b d v : U256.t) :
+    StorableValue.map_get_u256 (((c, d), v) :: rest) (a, b)
+    = if andb (Z.eqb a c) (Z.eqb b d) then v
+      else StorableValue.map_get_u256 rest (a, b).
+  Proof.
+    unfold StorableValue.map_get_u256.
+    change (Dict.get (((c, d), v) :: rest) (a, b))
+      with (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (a, b) (c, d)
+            then Some v else Dict.get rest (a, b)).
+    rewrite Dict_Eq_eqb_ZZ_pair_unfold.
+    destruct (Z.eqb a c && Z.eqb b d); reflexivity.
+  Qed.
+
+  (** Per-throttle 2-entry unfolding: each sim throttle contributes
+      a 2-element pair to the front of the packed list. Composing two
+      [map_get_u256_pair_cons] calls handles one induction step. *)
+
   Lemma throttles_packed_currentCharge (sim : ThrottleLibStorage.t) (account : Address.t) :
     StorableValue.map_get_u256 (throttles_packed sim) (account, 0)
     = (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge).
   Proof.
-  Admitted.
+    unfold throttles_packed, ThrottleLibStorage.get_throttle,
+           ThrottleLibStorage.default_throttle.
+    induction sim.(ThrottleLibStorage.throttles) as [|[k v] dict IH].
+    - reflexivity.
+    - change (List.flat_map _ ((k, v) :: dict))
+        with (((k, 0), v.(Throttle.currentCharge))
+              :: ((k, 1), v.(Throttle.lastUpdated))
+              :: List.flat_map (fun (entry : Address.t * Throttle.t) =>
+                    let '(account0, t) := entry in
+                    [((account0, 0), t.(Throttle.currentCharge));
+                     ((account0, 1), t.(Throttle.lastUpdated))]) dict).
+      rewrite map_get_u256_pair_cons.
+      replace (0 =? 0) with true by reflexivity.
+      rewrite Bool.andb_true_r.
+      destruct (account =? k) eqn:Hak.
+      + (* match in the first entry: account = k *)
+        apply Z.eqb_eq in Hak. subst k.
+        change (Dict.get ((account, v) :: dict) account)
+          with (if @Dict.Eq.eqb _ Dict.Eq.IZ account account
+                then Some v else Dict.get dict account).
+        change (@Dict.Eq.eqb _ Dict.Eq.IZ account account) with (Z.eqb account account).
+        rewrite Z.eqb_refl. reflexivity.
+      + (* no match in first entry: rewrite second entry then chain to IH *)
+        rewrite map_get_u256_pair_cons.
+        replace (0 =? 1) with false by reflexivity.
+        rewrite Bool.andb_false_r.
+        change (Dict.get ((k, v) :: dict) account)
+          with (if @Dict.Eq.eqb _ Dict.Eq.IZ account k
+                then Some v else Dict.get dict account).
+        change (@Dict.Eq.eqb _ Dict.Eq.IZ account k) with (Z.eqb account k).
+        rewrite Hak. exact IH.
+  Qed.
 
   Lemma throttles_packed_lastUpdated (sim : ThrottleLibStorage.t) (account : Address.t) :
     StorableValue.map_get_u256 (throttles_packed sim) (account, 1)
     = (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated).
   Proof.
-  Admitted.
+    unfold throttles_packed, ThrottleLibStorage.get_throttle,
+           ThrottleLibStorage.default_throttle.
+    induction sim.(ThrottleLibStorage.throttles) as [|[k v] dict IH].
+    - reflexivity.
+    - change (List.flat_map _ ((k, v) :: dict))
+        with (((k, 0), v.(Throttle.currentCharge))
+              :: ((k, 1), v.(Throttle.lastUpdated))
+              :: List.flat_map (fun (entry : Address.t * Throttle.t) =>
+                    let '(account0, t) := entry in
+                    [((account0, 0), t.(Throttle.currentCharge));
+                     ((account0, 1), t.(Throttle.lastUpdated))]) dict).
+      rewrite map_get_u256_pair_cons.
+      replace (1 =? 0) with false by reflexivity.
+      rewrite Bool.andb_false_r.
+      rewrite map_get_u256_pair_cons.
+      replace (1 =? 1) with true by reflexivity.
+      rewrite Bool.andb_true_r.
+      destruct (account =? k) eqn:Hak.
+      + apply Z.eqb_eq in Hak. subst k.
+        change (Dict.get ((account, v) :: dict) account)
+          with (if @Dict.Eq.eqb _ Dict.Eq.IZ account account
+                then Some v else Dict.get dict account).
+        change (@Dict.Eq.eqb _ Dict.Eq.IZ account account) with (Z.eqb account account).
+        rewrite Z.eqb_refl. reflexivity.
+      + change (Dict.get ((k, v) :: dict) account)
+          with (if @Dict.Eq.eqb _ Dict.Eq.IZ account k
+                then Some v else Dict.get dict account).
+        change (@Dict.Eq.eqb _ Dict.Eq.IZ account k) with (Z.eqb account k).
+        rewrite Hak. exact IH.
+  Qed.
 
   (** ----- Restated main theorem (Phase E — scaffolding) -----
 
