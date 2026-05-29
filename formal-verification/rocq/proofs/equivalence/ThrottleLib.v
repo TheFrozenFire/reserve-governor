@@ -227,3 +227,150 @@ Module Valid.
     state (ThrottleLibStorage.init cap).
   Proof. constructor; [exact H_cap | constructor]. Qed.
 End Valid.
+
+(** ----- Phase 1.2: equivalence of [_getProposalsAvailable] (view) -----
+
+    States the per-function equivalence between the shallow Yul body
+    [ThrottleLib_153.deployed.fun__getProposalsAvailable_152] (generated
+    by [bash formal-verification/scripts/shallow-embed-sweep]) and the
+    sim's [ProposerThrottle.proposalsAvailable] + [readCharge].
+
+    The theorem statement is the deliverable for this phase. The proof
+    body is [Admitted] — the closing tactic dance walks through ~30
+    primitive steps ([sload]/[keccak256]/[checked_*]/[Shallow.if_])
+    and is mechanical but lengthy. It will close as a side-effect of
+    Phase 1.3, which needs all of the same apparatus for the mutator.
+
+    Per the methodology doc's D2 refinement (per-slot hypotheses
+    rather than [SimulatedStorage.t] encoding), the preconditions
+    parameterise over the relevant sloads instead of asserting a
+    [storage = of_storable_values …] equation. The
+    [storage_slot_value] projection (defined above) names the
+    expected [sload] result for each [SlotKind.t].
+
+    Two design choices deliberately taken in the statement:
+
+      1. The theorem targets the *private* [fun__getProposalsAvailable_152]
+         (note double underscore) which returns the tuple
+         [(proposalsAvailable, charge)]. The public-facing
+         [fun_getProposalsAvailable_91] is a thin wrapper returning
+         just the first component; once 1.2 closes, the public-facing
+         lemma falls out in ~5 lines.
+
+      2. The post-state's memory is existentially quantified — the
+         function writes to memory slots 0 and 0x20 to compute the
+         [keccak256(account, baseSlot+1)] mapping-derivation, then
+         leaves that scratch behind. No caller cares about it; the
+         sim is memory-free; we don't constrain the post-memory.
+         (Matches the upstream's [Erc20_403.run_body] pattern.) *)
+
+Require Import RocqOfSolidity.proofs.RocqOfSolidity.
+Require Import ReserveGovernor.generated.ThrottleLib_shallow.
+
+Import Stdlib.
+Import RunO.
+
+(** Aggregated per-slot equivalence — the shape every storage-touching
+    equivalence lemma in this file will take as a hypothesis. Says:
+    "the runtime's storage at each kind-relevant slot returns the
+    [storage_slot_value sim] projection at that slot." *)
+Definition storage_matches_sim
+    (codes : Codes.t) (env : Environment.t) (state : State.t)
+    (base_slot : U256.t) (sim : ThrottleLibStorage.t) : Prop :=
+  forall (k : SlotKind.t),
+    {{? codes, env, Some state |
+      Stdlib.sload (slot_address base_slot k) ⇓
+      Result.Ok (storage_slot_value sim k)
+    | Some state ?}}.
+
+(** Memory layout precondition. The mapping-index-access helper writes
+    [account] at memory[0..0x20] and [base_slot+1] at memory[0x20..0x40],
+    then keccaks those 64 bytes. We require enough scratch in the
+    pre-state's memory (32-byte word at indices 0 and 1) to model this
+    cleanly. *)
+Definition memory_has_scratch
+    (memory : SimulatedMemory.t) : Prop :=
+  exists w0 w1 rest, memory = w0 :: w1 :: rest.
+
+(** Convenience: assert [block.timestamp] returns the given [now].
+
+    NOTE — BLOCKER: the upstream's [Stdlib.timestamp] is defined as
+    [LowM.Impossible "timestamp"] (see
+    [rocq-of-solidity/rocq/RocqOfSolidity/simulations/RocqOfSolidity.v:911]).
+    The [RunO.t] judgment has no inference rule for [LowM.Impossible],
+    so this convenience predicate cannot be discharged against the
+    current upstream apparatus for ANY concrete [now] value. The same
+    blocker applies to [Stdlib.number], [Stdlib.balance],
+    [Stdlib.chainid], [Stdlib.origin], [Stdlib.gasprice],
+    [Stdlib.coinbase], [Stdlib.difficulty], [Stdlib.prevrandao],
+    [Stdlib.gaslimit], and [Stdlib.blobhash].
+
+    This predicate is stated for theorem-shape clarity; closing
+    [run_getProposalsAvailable_equivalent] below requires either
+    patching the upstream's [Stdlib.timestamp] to read from a new
+    [Environment.timestamp] field, or building a governor-side
+    Stdlib-shim that overrides the [Impossible] stub. See
+    [notes/equivalence_proof_methodology.md] § Phase 1.2 outcome. *)
+Definition timestamp_is
+    (codes : Codes.t) (env : Environment.t) (state : State.t)
+    (now : U256.t) : Prop :=
+  {{? codes, env, Some state |
+    Stdlib.timestamp ⇓ Result.Ok now
+  | Some state ?}}.
+
+(** ----- The main equivalence theorem (Admitted; see header note) ----- *)
+
+Theorem run_getProposalsAvailable_equivalent
+    (codes : Codes.t) (env : Environment.t) (state : State.t)
+    (base_slot : U256.t) (account : Address.t)
+    (sim : ThrottleLibStorage.t) (now : U256.t)
+    (memory : SimulatedMemory.t)
+    (H_valid_sim     : Valid.state sim)
+    (H_valid_account : Address.Valid.t account)
+    (H_valid_now     : U256.Valid.t now)
+    (H_storage       : storage_matches_sim codes env state base_slot sim)
+    (H_timestamp     : forall st, timestamp_is codes env st now)
+    (H_memory        : state.(State.memory) = Memory.of_u256_list memory)
+    (H_scratch       : memory_has_scratch memory)
+    (H_no_overflow   : (** charge computation does not revert via checked_*: *)
+       let throttle := ThrottleLibStorage.get_throttle sim account in
+       now >= throttle.(Throttle.lastUpdated) /\
+       throttle.(Throttle.currentCharge)
+         + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
+           / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
+       sim.(ThrottleLibStorage.capacity) * ProposerThrottle.FIX_ONE < 2 ^ 256) :
+  let throttle  := ThrottleLibStorage.get_throttle sim account in
+  let charge    := ProposerThrottle.readCharge throttle now in
+  let available := ProposerThrottle.proposalsAvailable
+                     throttle sim.(ThrottleLibStorage.capacity) now in
+  exists memory',
+  {{? codes, env, Some state |
+    ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152
+      base_slot account ⇓
+    Result.Ok (available, charge)
+  | Some (state <| State.memory := Memory.of_u256_list memory' |>) ?}}.
+Proof.
+  (** Proof body: walks the shallow body of
+      [fun__getProposalsAvailable_152] (445 lines into
+      [generated/ThrottleLib_shallow.v]) with the named tactics:
+
+        unfold fun__getProposalsAvailable_152.
+        repeat (l || c || cu).
+        - The [_27 := mapping_index_access_*] call writes to memory
+          and keccaks; discharge via [apply_run_mstore],
+          [apply_run_mstore], [apply_run_keccak256_tuple2], then
+          [CanonizeState.execute].
+        - The [_31 := read_from_storage_split_offset_0_t_uint256] call
+          unfolds to [sload] composed with [cleanup_*]; discharge via
+          [H_storage (SlotKind.LastUpdated account)] etc.
+        - The [checked_sub_t_uint256] and [checked_mul_*] calls reduce
+          to [Z] arithmetic guarded by [H_no_overflow]; each path
+          terminates with [p] in the no-revert branch and [lia] in
+          the revert branch.
+        - The [Shallow.if_] at the clamp branch case-splits on whether
+          the raw charge exceeds [FIX_ONE]; the sim's [Z.min FIX_ONE
+          raw] matches by case analysis.
+
+      Estimated ~200 lines of mechanical proof. Land as part of
+      Phase 1.3 since [consumeProposalCharge] reuses the same body. *)
+Admitted.

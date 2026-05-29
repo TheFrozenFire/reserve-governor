@@ -1238,3 +1238,128 @@ the methodology.
 Phase 0 of the equivalence-proof workstream is complete. The
 methodology is settled, end-to-end validated, and documented for
 Phase 1+ to cite.
+
+## Phase 1.2 outcome — pipeline works, blocker discovered
+
+Two substantive deliverables, plus one substantive blocker.
+
+### Pipeline (works)
+
+`scripts/shallow-embed-sweep` (new) drives the
+`solc --ir-ast-json | grep '^{' | jq strip | shallow_embed.py`
+pipeline for each contract in the `SHALLOW_TARGETS` array. Outputs
+go to `rocq/generated/<Name>_shallow.v` (gitignored — regenerable).
+Verified end-to-end against ThrottleLib:
+`bash scripts/shallow-embed-sweep --only=ThrottleLib` produces a
+724-line shallow form that compiles under `coqc`.
+
+### Theorem statement (lands; Admitted)
+
+`rocq/proofs/equivalence/ThrottleLib.v` now contains
+`run_getProposalsAvailable_equivalent` — the equivalence shape for
+`fun__getProposalsAvailable_152` against the sim's
+`proposalsAvailable` + `readCharge`. Preconditions enumerated:
+`Valid.state sim`, `Address.Valid.t account`, `U256.Valid.t now`,
+`storage_matches_sim` (the per-slot equivalence shape per D2's
+refinement), `timestamp_is` (block.timestamp = now), memory scratch
+predicate, and three `checked_*` overflow-free preconditions.
+
+The proof body is `Admitted` with a roadmap comment for the
+closing tactics. The theorem statement is the deliverable; closing
+the body becomes a side-effect of Phase 1.3 once the harder
+mutator forces the full apparatus.
+
+### Blocker — `Stdlib.timestamp` is `LowM.Impossible`
+
+Discovered while drafting `run_getProposalsAvailable_equivalent`'s
+preconditions: the upstream defines
+
+```coq
+(* rocq-of-solidity/rocq/RocqOfSolidity/simulations/RocqOfSolidity.v:911 *)
+Definition timestamp : M.t U256.t :=
+  LowM.Impossible "timestamp".
+```
+
+— and the same for `number` (block.number), `balance`, `chainid`,
+`origin`, `gasprice`, `coinbase`, `difficulty`, `prevrandao`,
+`gaslimit`, `blobhash`. **The `RunO.t` Hoare-triple judgment has no
+inference rule for `LowM.Impossible`** — it's a "this term cannot
+reduce" marker — so any proof that reaches a `timestamp` call
+gets stuck.
+
+What works: `address`, `caller`, `callvalue`, `calldataload`,
+`gas` (returns hardcoded 1000). These read from `Environment.t`
+which is fully modeled. So contracts whose semantics depend only
+on the immutable environment + storage are provable.
+
+What doesn't: any contract that reads `block.timestamp` or
+`block.number` cannot have its equivalence proved against the
+current upstream apparatus.
+
+Affected governor contracts:
+
+| Contract | Time-dependent? | Status |
+|---|---|---|
+| ThrottleLib | yes (charge refill) | blocked |
+| UnstakingManager | yes (lock startTime / endTime) | blocked |
+| ReserveOptimisticGovernor | yes (snapshot, votingDelay, vetoDelay) | blocked |
+| TimelockControllerOptimistic | yes (operation ready time) | blocked |
+| StakingVault rewards | yes (per-second accrual rate) | blocked |
+| VersionRegistry | no (owner-gated address registry) | clear |
+| RewardTokenRegistry | no (owner-gated, address+bytes32 only) | clear |
+| Guardian | no (role-gated cancel) | clear |
+
+This was not visible at Phase 0 — the methodology survey didn't
+inspect each `Stdlib.*` primitive's body. The `EnvConstants`
+predicate the methodology doc designed (decision D6) is the *right
+shape* for capturing "timestamp is constant within a call", but it
+presumed `eval_primitive` would give `timestamp` some value at the
+primitive layer. It doesn't.
+
+### Resolution paths
+
+Three paths forward, in order of feasibility:
+
+**(A) Pivot Phase 1 to a time-free contract.** Guardian
+(two-tier role-gated cancel) and VersionRegistry (owner-gated
+registry) are both pure functions of storage + environment, no
+time. Either one would validate the methodology end-to-end on
+real governor code without needing upstream changes. Cost: zero
+upstream work; ~1-2 days per contract for the full proof.
+
+**(B) Patch the upstream's `Stdlib.timestamp`.** Add a
+`timestamp : U256.t` field to `Environment.t` (or to a new record
+threaded through `RunO`), redefine `Stdlib.timestamp` as
+`Primitive (GetBlockTimestamp) M.pure` returning that field,
+add `GetBlockTimestamp` semantics to `eval_primitive`, rebuild
+`RocqOfSolidity.vo`. Cost: ~half a day of upstream changes plus
+the rebuild; potentially upstream-PR-able. The same change would
+unblock `block.number` and most of the other time/env primitives.
+
+**(C) Build a governor-side `Stdlib` shim.** Create a parallel
+`ReserveGovernor.Stdlib` module that overrides `timestamp`,
+`number`, etc., with `Environment.t`-driven semantics, and have
+all our `proofs/equivalence/*.v` files import the shim instead of
+the upstream's `Stdlib`. Cost: similar to (B) but doesn't reach
+upstream; we own the divergence indefinitely.
+
+(B) is the right move long-term — it's the only path that lets us
+verify the time-dependent contracts (which are most of them) and
+contributes back to the ecosystem. (A) is the right move
+short-term — it gets us a real equivalence proof closed within
+days while (B) is in flight.
+
+## Updated work plan
+
+Tasks #172-#179 (Phase 1 / Phase 2 — ThrottleLib + UnstakingManager)
+are **blocked** until path (B) lands. Pivot Phase 1 / 2 to:
+
+- **New Phase 1**: Guardian equivalence proof-of-method (was task #182).
+- **New Phase 2**: VersionRegistry / RewardTokenRegistry (was tasks
+  #180, #181).
+- **Old Phase 1 / 2 (ThrottleLib, UnstakingManager)**: deferred,
+  resumed once path (B) ships.
+
+Phase 3 (heavyweight + integration) and Phase 4 (decision) likewise
+shift: Governor / Timelock / StakingVault are all time-dependent
+and stay parked until (B) is in.

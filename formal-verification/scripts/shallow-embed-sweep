@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# shallow-embed-sweep — produce the shallow-embedded Rocq form for
+# governor contracts. Companion to scripts/ir-rocq-coverage, but at
+# the next pipeline stage: invokes solc --ir-ast-json to obtain the
+# Yul AST, then rocq-of-solidity's shallow_embed.py to translate it
+# to Gallina-monadic form usable by the equivalence-proof tier.
+#
+# Output goes to formal-verification/rocq/generated/<Name>_shallow.v
+# (gitignored, same as the deep --ir-rocq output).
+#
+# The pipeline for one contract is:
+#
+#   solc-rocq --experimental --ir-ast-json --optimize <input.sol> \
+#     | grep '^{' \
+#     | jq 'walk(if type == "object" then del(.nativeSrc, .src, .type) else . end)' \
+#     | python3 shallow_embed.py /dev/stdin \
+#     > <output>_shallow.v
+#
+# Why the `grep '^{'`: solc prints a "Warning: pre-release..." header
+# plus an "IR AST:" line before the actual JSON; the upstream uses
+# `tail -1` which fails when a trailing blank newline shifts the count.
+# Selecting the line that starts with `{` is more robust.
+#
+# Why the `jq walk(del(.nativeSrc, .src, .type))`: those fields are
+# source-position annotations that shallow_embed.py ignores; stripping
+# them keeps the JSON small and the downstream more deterministic.
+#
+# Usage:
+#   bash formal-verification/scripts/shallow-embed-sweep \
+#       [--only=<Name1>,<Name2>,...] \
+#       [--keep-json]
+#
+# Flags:
+#   --only=<comma-list>   only regenerate the named contracts (basenames,
+#                         no .sol/.v extension). Default: regenerate the
+#                         set listed in the SHALLOW_TARGETS array below.
+#   --keep-json           keep the intermediate <Name>.json files in
+#                         $GENERATED_DIR (default: stripped after use).
+#
+# Env:
+#   ROCQ_TREE      Default: $HOME/git/reserve/_tools/rocq-of-solidity
+#                  (needs scripts/shallow_embed.py present)
+#   SOLC_ROCQ      Default: <repo>/formal-verification/scripts/solc-rocq
+#   GENERATED_DIR  Default: <repo>/formal-verification/rocq/generated
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_TREE="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ROCQ_TREE="${ROCQ_TREE:-$HOME/git/reserve/_tools/rocq-of-solidity}"
+SOLC_ROCQ="${SOLC_ROCQ:-$REPO_TREE/formal-verification/scripts/solc-rocq}"
+GENERATED_DIR="${GENERATED_DIR:-$REPO_TREE/formal-verification/rocq/generated}"
+SHALLOW_EMBED="$ROCQ_TREE/rocq/scripts/shallow_embed.py"
+
+# Contracts to sweep by default. The list is intentionally tighter than
+# ir-rocq-coverage: shallow_embed produces ~500 KB outputs from medium
+# contracts and the script's Yul-AST-walking time grows non-linearly,
+# so add new entries only after confirming each one is needed.
+SHALLOW_TARGETS=(
+  # Phase 1: ThrottleLib (proof-of-method target).
+  "contracts/governance/lib/ThrottleLib.sol:ThrottleLib"
+  # Phase 2: UnstakingManager (per-lock state machine).
+  "contracts/staking/UnstakingManager.sol:UnstakingManager"
+  # Phase 3: VersionRegistry, RewardTokenRegistry, Guardian.
+  "contracts/VersionRegistry.sol:VersionRegistry"
+  "contracts/staking/RewardTokenRegistry.sol:RewardTokenRegistry"
+  "contracts/Guardian.sol:Guardian"
+)
+
+keep_json=0
+only=""
+for arg in "$@"; do
+  case "$arg" in
+    --only=*)   only="${arg#--only=}" ;;
+    --keep-json) keep_json=1 ;;
+    *) echo "unknown flag: $arg" >&2; exit 2 ;;
+  esac
+done
+
+if [[ ! -x "$SOLC_ROCQ" ]]; then
+  echo "error: solc-rocq wrapper not executable at: $SOLC_ROCQ" >&2
+  exit 3
+fi
+if [[ ! -f "$SHALLOW_EMBED" ]]; then
+  echo "error: shallow_embed.py not found at: $SHALLOW_EMBED" >&2
+  echo "       set ROCQ_TREE to a built rocq-of-solidity checkout." >&2
+  exit 4
+fi
+for cmd in jq python3; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "error: '$cmd' not found on PATH" >&2
+    exit 5
+  fi
+done
+
+mkdir -p "$GENERATED_DIR"
+
+cd "$REPO_TREE"
+
+filter_only=""
+if [[ -n "$only" ]]; then
+  filter_only=",${only},"
+fi
+
+pass=0
+fail=0
+for entry in "${SHALLOW_TARGETS[@]}"; do
+  src="${entry%%:*}"
+  name="${entry##*:}"
+
+  if [[ -n "$filter_only" && "$filter_only" != *",$name,"* ]]; then
+    continue
+  fi
+
+  echo "==> $name"
+
+  json="$GENERATED_DIR/${name}.json"
+  out="$GENERATED_DIR/${name}_shallow.v"
+
+  set +e
+  "$SOLC_ROCQ" --experimental --ir-ast-json --optimize "$src" 2>/dev/null \
+    | grep '^{' \
+    | jq 'walk(if type == "object" then del(.nativeSrc, .src, .type) else . end)' \
+    > "$json"
+  rc_json=$?
+  set -e
+  if [[ $rc_json -ne 0 || ! -s "$json" ]]; then
+    echo "  FAIL: could not generate Yul AST JSON for $src"
+    rm -f "$json"
+    fail=$((fail + 1))
+    continue
+  fi
+
+  set +e
+  python3 "$SHALLOW_EMBED" "$json" > "$out"
+  rc_shallow=$?
+  set -e
+  if [[ $rc_shallow -ne 0 ]]; then
+    echo "  FAIL: shallow_embed.py exited $rc_shallow"
+    rm -f "$out"
+    [[ $keep_json -eq 0 ]] && rm -f "$json"
+    fail=$((fail + 1))
+    continue
+  fi
+
+  lines=$(wc -l < "$out" | tr -d ' ')
+  printf "  ok %s_shallow.v (%s lines)\n" "$name" "$lines"
+  pass=$((pass + 1))
+
+  [[ $keep_json -eq 0 ]] && rm -f "$json"
+done
+
+echo "---"
+echo "PASS: $pass ; FAIL: $fail"
+echo "Generated outputs: $GENERATED_DIR/*_shallow.v"
+
+[[ $fail -eq 0 ]]

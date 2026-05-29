@@ -375,3 +375,32 @@ Will apply to every storage-projection proof in
 `proofs/equivalence/` since each one needs Dict.get-after-set
 lemmas. Prefer `hauto`; fall back to manual unfolds only when
 `hauto` exhausts its depth bound.
+
+## R020: `Stdlib.timestamp` (and friends) are `LowM.Impossible` upstream
+
+The rocq-of-solidity upstream defines several `Stdlib.*` primitives
+as `LowM.Impossible "<name>"` rather than giving them real
+semantics:
+
+- `timestamp`, `number`, `coinbase`, `difficulty`, `prevrandao`,
+  `gaslimit`, `blobhash` (block context)
+- `balance`, `selfbalance` (account context)
+- `chainid`, `origin`, `gasprice` (transaction context)
+
+What works (Environment-driven): `address`, `caller`, `callvalue`,
+`calldataload`, `gas` (hardcoded as 1000).
+
+The `RunO.t` Hoare-triple judgment has no inference rule for
+`LowM.Impossible` — any proof that reaches one of these calls gets
+stuck. Symptom: equivalence proofs for contracts that read
+`block.timestamp` or `block.number` cannot close against the
+current upstream apparatus.
+
+For governor work this is a substantive blocker — ThrottleLib,
+UnstakingManager, Governor, Timelock, StakingVault rewards all read
+`block.timestamp`. The clean fix is patching the upstream's
+`Stdlib.timestamp` to read from a new `Environment.timestamp`
+field; the workaround for any specific proof is to skip the contract
+or supply a governor-side `Stdlib`-shim. See
+`notes/equivalence_proof_methodology.md` § Phase 1.2 outcome for the
+full treatment.
