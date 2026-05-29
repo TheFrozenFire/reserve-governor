@@ -1,0 +1,27 @@
+# rocq-of-solidity outputs are produced by
+# `bash scripts/ir-rocq-coverage` and dropped here. They are
+# regenerable from current contract sources; we commit the
+# directory and its docs but not the outputs themselves.
+#
+# Equivalence proofs under proofs/equivalence/ reference these
+# files by stable path (rocq/generated/<ContractName>.v); the
+# regen step is a prereq before building that tier.
+
+# Generated Yul IR
+*.v
+
+# Compiled Coq artifacts that show up here if files are built
+*.vo
+*.vos
+*.vok
+*.glob
+*.aux
+.*.aux
+
+# Per-file diagnostic logs the sweep script may drop here
+*.log
+*.out
+
+# Keep these
+!.gitignore
+!README.md

@@ -224,9 +224,20 @@ source <certora env>
 certoraRun.py formal-verification/certora/<Contract>/<Contract>.conf
 ```
 
-A minimal end-to-end smoke check of the `--ir-rocq` toolchain
-lives at `contracts/Smoke.sol` → `rocq/generated/Smoke.v` and is
-exercised by the default Rocq build.
+`rocq/generated/` is the canonical landing path for `--ir-rocq`
+output of every governor contract — the Rocq encoding of each
+contract's Yul-translated semantics. The directory is checked in,
+the outputs are gitignored: regenerate locally via
+
+```sh
+bash formal-verification/scripts/ir-rocq-coverage
+```
+
+The path being stable lets equivalence proofs under
+`proofs/equivalence/` `Require` generated modules by name
+(`ReserveGovernor.generated.<ContractName>`) without conditional
+logic, while the outputs themselves remain local working artefacts
+that don't decay the repository on every contract source change.
 
 `solc-rocq` selects the fastest available path automatically
 (native binary where one exists, container fallback otherwise);

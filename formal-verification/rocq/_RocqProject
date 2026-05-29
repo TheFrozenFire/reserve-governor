@@ -5,12 +5,19 @@
 -arg -w
 -arg -stdlib-vector
 
-# Generated Yul-translation IR — produced by
-# `bash scripts/solc-rocq --ir-rocq <contract.sol>`, captured under
-# rocq/generated/. The smoke target below verifies the end-to-end
-# toolchain (rocq-of-solidity library + amd64-on-arm64 solc fork) is
-# wired correctly.
-generated/Smoke.v
+# Generated Yul-translation IR lands under rocq/generated/ when the
+# regen sweep is run (`bash scripts/ir-rocq-coverage`). Those files
+# are gitignored — local working artefacts whose canonical path is
+# stable so equivalence proofs can `Require` them by name. They are
+# NOT listed below: each generated file emits multiple top-level
+# `Definition codes` declarations that collide under coqc when fed
+# raw, so they are not part of the main Rocq build.
+#
+# Once equivalence proofs land under proofs/equivalence/, they are
+# added at the bottom of this file as their own tier. Each
+# equivalence proof presumes the corresponding generated IR has been
+# produced — running scripts/ir-rocq-coverage is a prerequisite for
+# that tier. See proofs/equivalence/README.md.
 
 # --- Project conventions ---
 # Cross-cutting documented assumptions that proofs can cite by name.
@@ -195,3 +202,12 @@ proofs/EndToEnd_optimistic_flow.v
 proofs/EndToEnd_standard_flow.v
 
 Audit.v
+
+# --- Equivalence tier (parked) ---
+# Files under proofs/equivalence/ close the "hand-written sim vs
+# generated Yul IR" gap (Audit.v Caveat-5). Each file requires the
+# corresponding rocq/generated/<Name>.v to be present, which is
+# produced by `scripts/ir-rocq-coverage`. Until any equivalence
+# proofs land, this tier is empty — add new entries here as they
+# come online, smallest contracts first (ThrottleLib is the
+# proof-of-method target). See proofs/equivalence/README.md.
