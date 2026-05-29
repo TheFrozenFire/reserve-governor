@@ -86,6 +86,13 @@ proofs/StakingVaultRewards_conservation.v
 simulations/StakingVaultRewardsERC20.v
 proofs/StakingVaultRewardsERC20.v
 
+# --- StakingVault: rewards reentrancy guard ---
+# Explicit interleaving model of the zero-first defense in
+# claimRewards. Closes OWASP SC08 — the asserted "zero-first pattern
+# is safe" comment becomes a machine-checked theorem.
+simulations/StakingVaultRewardsReentrancy.v
+proofs/StakingVaultRewardsReentrancy.v
+
 # --- StakingVault: dual delegation ---
 simulations/StakingVaultDelegation.v
 proofs/StakingVaultDelegation.v

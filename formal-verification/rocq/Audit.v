@@ -915,6 +915,51 @@ Notation audit_flash_loan_vetoDelay_positive_separates_blocks :=
 
 
 (** ============================================================
+    === Section 6f: Rewards reentrancy guard (OWASP SC08) ===
+    ============================================================
+
+    [StakingVaultRewardsReentrancy] makes the zero-first defense
+    in [claimRewards] (StakingVault.sol:359) a machine-checked
+    theorem rather than a code comment.
+
+    The contract orders writes as:
+      read accrued -> totalClaimed += -> accrued = 0 -> safeTransfer
+
+    A malicious reward token reentering [claimRewards] from the
+    safeTransfer callback observes [accrued = 0] (the outer call
+    already zeroed it), so the inner claim is a no-op.
+
+    Five audit notations:
+
+      audit_reentrancy_inner_extracts_zero       — REN-1 load-bearing
+      audit_reentrancy_outer_unchanged           — REN-2 outer integrity
+      audit_reentrancy_total_bounded             — REN-3 structural form
+      audit_reentrancy_user_zeroed_after         — REN-4 post-state
+      audit_reentrancy_totalClaimed_consistent   — REN-5 bookkeeping
+
+    Together they close the only remaining gap in the OWASP-2026
+    coverage matrix (notes/owasp_2026_coverage.md SC08).
+*)
+
+Require ReserveGovernor.proofs.StakingVaultRewardsReentrancy.
+
+Notation audit_reentrancy_inner_extracts_zero :=
+  ReserveGovernor.proofs.StakingVaultRewardsReentrancy.StakingVaultRewardsReentrancyProofs.no_double_claim_inner_zero.
+
+Notation audit_reentrancy_outer_unchanged :=
+  ReserveGovernor.proofs.StakingVaultRewardsReentrancy.StakingVaultRewardsReentrancyProofs.no_double_claim_outer_unchanged.
+
+Notation audit_reentrancy_total_bounded :=
+  ReserveGovernor.proofs.StakingVaultRewardsReentrancy.StakingVaultRewardsReentrancyProofs.no_double_claim_total_bounded.
+
+Notation audit_reentrancy_user_zeroed_after :=
+  ReserveGovernor.proofs.StakingVaultRewardsReentrancy.StakingVaultRewardsReentrancyProofs.reentrancy_zeroes_user.
+
+Notation audit_reentrancy_totalClaimed_consistent :=
+  ReserveGovernor.proofs.StakingVaultRewardsReentrancy.StakingVaultRewardsReentrancyProofs.reentrancy_totalClaimed_consistent.
+
+
+(** ============================================================
     === Section 7: ProposalLib ===
     ============================================================
 
