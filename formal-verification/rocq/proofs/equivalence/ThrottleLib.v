@@ -1261,6 +1261,7 @@ Module MakeStateForm.
       (H_no_overflow   : (** charge computation does not revert via checked_*: *)
          let throttle := ThrottleLibStorage.get_throttle sim account in
          now >= throttle.(Throttle.lastUpdated) /\
+         (now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE < 2 ^ 256 /\
          throttle.(Throttle.currentCharge)
            + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
              / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
@@ -1277,7 +1278,7 @@ Module MakeStateForm.
       Result.Ok (available, charge)
     | Some state' ?}}.
   Proof.
-    destruct H_no_overflow as (H_now_geq & H_charge_ok & H_capacity_ok).
+    destruct H_no_overflow as (H_now_geq & H_elapsed_mul_ok & H_charge_ok & H_capacity_ok).
     destruct H_memory_scratch as (w0 & w1 & rest & H_mem_eq). subst memory.
     (** Pose the Phase C mapping_index_access closure upfront with the
         slot/key it'll be called at in the function body:
@@ -1311,18 +1312,16 @@ Module MakeStateForm.
     (** Aggressive walker — closes the trivial Yul let-bindings, the
         zero-init, cleanup, convert, constant calls, the
         mapping_index_access call, the [timestamp] primitive, the
-        per-account [read_from_storage_*] calls (both [lastUpdated]
-        and [currentCharge] offsets), and the [checked_sub] call
-        ([now - lastUpdated]) automatically.
+        per-account [read_from_storage_*] calls (both offsets), all
+        four [checked_*] arithmetic ops ([checked_sub], [checked_mul],
+        [checked_div], [checked_add]), and the Stdlib pure-comparison
+        ops ([gt], [lt], [eq], [sub], [mul], [div]) automatically.
 
-        Leaves open (post-checked_sub): the three remaining
-        [checked_*] arithmetic ops ([checked_mul], [checked_div],
-        [checked_add]) each need their no-overflow preconditions
-        threaded — the existing [H_no_overflow] is not strong enough,
-        so the theorem statement needs strengthening (or per-op asserts
-        within the proof). Also open: the single [read_from_storage]
-        for [capacity] via [apply_run_sload_u256], the [Shallow.if_]
-        charge clamp at FIX_ONE, and the final tuple repackaging.
+        Leaves open (post-arithmetic): the [Shallow.if_] charge clamp
+        at FIX_ONE (needs case analysis on the [charge > FIX_ONE]
+        comparison result), the [read_from_storage] for [capacity]
+        via [apply_run_sload_u256], the final [checked_mul / checked_div]
+        for [proposalsAvailable], and the tuple repackaging.
 
         The walker's structure is the template for follow-up: each new
         arm covers one call site. *)
@@ -1392,6 +1391,21 @@ Module MakeStateForm.
            c; [ apply ThrottleLibLeaves.run_constant_PROPOSAL_THROTTLE_PERIOD_349 | ]
        | |- {{? _, _, _ | LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
            c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+       (** [Stdlib.gt] / [Stdlib.lt] / [Stdlib.eq] are pure boolean
+           ops — same shape as [Stdlib.add], with [Pure.gt] / [Pure.lt]
+           / [Pure.eq] returning 1 or 0. *)
+       | |- {{? _, _, _ | LowM.Call (Stdlib.gt _ _) _ ⇓ _ | _ ?}} =>
+           c; [ unfold Stdlib.gt, M.pure; apply RunO.Pure | ]
+       | |- {{? _, _, _ | LowM.Call (Stdlib.lt _ _) _ ⇓ _ | _ ?}} =>
+           c; [ unfold Stdlib.lt, M.pure; apply RunO.Pure | ]
+       | |- {{? _, _, _ | LowM.Call (Stdlib.eq _ _) _ ⇓ _ | _ ?}} =>
+           c; [ unfold Stdlib.eq, M.pure; apply RunO.Pure | ]
+       | |- {{? _, _, _ | LowM.Call (Stdlib.sub _ _) _ ⇓ _ | _ ?}} =>
+           c; [ unfold Stdlib.sub, M.pure; apply RunO.Pure | ]
+       | |- {{? _, _, _ | LowM.Call (Stdlib.mul _ _) _ ⇓ _ | _ ?}} =>
+           c; [ unfold Stdlib.mul, M.pure; apply RunO.Pure | ]
+       | |- {{? _, _, _ | LowM.Call (Stdlib.div _ _) _ ⇓ _ | _ ?}} =>
+           c; [ unfold Stdlib.div, M.pure; apply RunO.Pure | ]
        (** mapping_index_access arm — the previously-deferred case.
            [M.call (mapping_index_access slot key)] desugars to
            [LowM.Call (mapping_index_access slot key) LowM.Pure], so
@@ -1440,6 +1454,63 @@ Module MakeStateForm.
                 [ exact H_valid_now
                 | apply get_throttle_lastUpdated_valid; exact H_valid_sim
                 | lia ] | ]
+       (** checked_mul arm — closes [(now - lastUpdated) * FIX_ONE].
+           Preconditions:
+             - U256 bound on [now - lastUpdated] ← lia over
+               [H_valid_now], [get_throttle_lastUpdated_valid].
+             - U256 bound on FIX_ONE literal ← [lia] over computation.
+             - no-overflow ← [H_elapsed_mul_ok] (new conjunct). *)
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.checked_mul_t_uint256 _ _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_checked_mul_t_uint256;
+                [ pose proof (get_throttle_lastUpdated_valid sim account H_valid_sim);
+                  unfold U256.Valid.t in *; lia
+                | unfold U256.Valid.t; lia
+                | exact H_elapsed_mul_ok ] | ]
+       (** checked_div arm — closes [((now - lastUpdated) * 1e18) /
+           PROPOSAL_THROTTLE_PERIOD]. Preconditions:
+             - U256 bound on dividend ← derived from [H_elapsed_mul_ok]
+               (the literal 1000000000000000000 is [ProposerThrottle.FIX_ONE]
+               after unfolding the constant in the hypothesis).
+             - U256 bound on divisor ← computed bound.
+             - nonzero divisor ← computed bound. *)
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.checked_div_t_uint256 _ _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_checked_div_t_uint256;
+                [ pose proof H_elapsed_mul_ok as Hmul;
+                  unfold ProposerThrottle.FIX_ONE in Hmul;
+                  pose proof (get_throttle_lastUpdated_valid sim account H_valid_sim);
+                  unfold U256.Valid.t in *;
+                  split; [ apply Z.mul_nonneg_nonneg; lia | lia ]
+                | unfold U256.Valid.t, PROPOSAL_THROTTLE_PERIOD; lia
+                | unfold PROPOSAL_THROTTLE_PERIOD; lia ] | ]
+       (** checked_add arm — closes [currentCharge + ((...) / PROPOSAL_THROTTLE_PERIOD)].
+           Preconditions:
+             - U256 bound on [currentCharge] ← [get_throttle_currentCharge_valid].
+             - U256 bound on division result ← derived from
+               [H_elapsed_mul_ok] (FIX_ONE unfolded) since division can
+               only reduce magnitude.
+             - no-overflow on sum ← [H_charge_ok] (FIX_ONE unfolded). *)
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.checked_add_t_uint256 _ _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_checked_add_t_uint256;
+                [ apply get_throttle_currentCharge_valid; exact H_valid_sim
+                | pose proof H_elapsed_mul_ok as Hmul;
+                  unfold ProposerThrottle.FIX_ONE in Hmul;
+                  pose proof (get_throttle_lastUpdated_valid sim account H_valid_sim);
+                  unfold U256.Valid.t in *;
+                  unfold PROPOSAL_THROTTLE_PERIOD;
+                  split;
+                  [ apply Z.div_pos;
+                    [ apply Z.mul_nonneg_nonneg; lia | lia ]
+                  | apply Z.div_lt_upper_bound; [ lia | nia ] ]
+                | pose proof H_charge_ok as Hchg;
+                  unfold ProposerThrottle.FIX_ONE in Hchg;
+                  unfold PROPOSAL_THROTTLE_PERIOD in *;
+                  exact Hchg ] | ]
        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
        | |- _ => s
        end)).
@@ -1469,6 +1540,7 @@ Module MakeStateForm.
       (H_no_overflow   :
          let throttle := ThrottleLibStorage.get_throttle sim account in
          now >= throttle.(Throttle.lastUpdated) /\
+         (now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE < 2 ^ 256 /\
          throttle.(Throttle.currentCharge)
            + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
              / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
@@ -1550,6 +1622,7 @@ Module MakeStateForm.
       (H_no_overflow   :
          let throttle := ThrottleLibStorage.get_throttle sim account in
          now >= throttle.(Throttle.lastUpdated) /\
+         (now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE < 2 ^ 256 /\
          throttle.(Throttle.currentCharge)
            + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
              / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
