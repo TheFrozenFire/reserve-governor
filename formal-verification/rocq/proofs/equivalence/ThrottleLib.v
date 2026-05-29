@@ -890,6 +890,25 @@ Module MakeStateForm.
       Their use is non-defeating: Phases C-F use them as oracle
       rewrites; treat them as sound on inspection of the
       [throttles_packed] body, which is a pure function. *)
+  (** ----- R022 unblocker: tuple-Eq unfolding via reflexivity -----
+
+      The [Dict.Eq.ITuple2] instance body is definitionally equal to
+      [fun '(a1,b1) '(a2,b2) => andb (eqb a1 a2) (eqb b1 b2)]. At
+      concrete [Z]-keyed instances this reduces all the way down to
+      [Z.eqb a1 a2 && Z.eqb b1 b2] — but only if we apply the
+      reduction explicitly via a [reflexivity]-provable rewrite
+      lemma. The kernel converts at definition time, so [reflexivity]
+      succeeds here even though [simpl] / [cbn] / [hauto] anomaly. *)
+  Lemma Dict_Eq_eqb_ZZ_pair_unfold (a1 a2 b1 b2 : Z) :
+    @Dict.Eq.eqb (Z * Z) Dict.Eq.ITuple2 (a1, b1) (a2, b2)
+    = andb (Z.eqb a1 a2) (Z.eqb b1 b2).
+  Proof. reflexivity. Qed.
+
+  (** The Dict_Eq_eqb_ZZ_pair_unfold rewrite is the R022 unblocker, but
+      threading it through the proof requires careful coordination
+      with [cbn] reduction. The two lemmas below are Admitted with
+      the unblocker in place; closure pending one more refinement
+      pass on the tactic structure. *)
   Lemma throttles_packed_currentCharge (sim : ThrottleLibStorage.t) (account : Address.t) :
     StorableValue.map_get_u256 (throttles_packed sim) (account, 0)
     = (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge).
