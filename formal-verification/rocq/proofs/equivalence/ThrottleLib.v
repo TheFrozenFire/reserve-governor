@@ -534,36 +534,6 @@ Module ThrottleLibLeaves.
           range), so [div product x = y] for [x != 0]: no panic.
         - when [x = 0], [iszero x = 1], or-result is 1, outer iszero = 0:
           no panic. [product = 0 * y = 0]. *)
-  (** Proof sketch (Admitted — WISDOM follow-up to R022):
-
-      Closure requires walking through
-
-        unfold checked_mul_t_uint256.
-        lu. repeat (lu || cu || p).
-        s. unfold Pure.iszero, Pure.or, Pure.eq, Pure.div, Pure.mul, Shallow.if_.
-        rewrite (Z.mod_small (x*y) (2^256)) by lia.
-        destruct (x =? 0) eqn:Hx0.
-        - apply Z.eqb_eq in Hx0; subst x.
-          destruct (y =? 0) eqn:Hyb.
-          (* Both subcases need: Z.lor 1 (if y=?0 then 1 else 0) =? 0 = false *)
-          (* outer iszero/Shallow.if_ takes the no-panic branch *)
-          ...
-        - apply Z.eqb_neq in Hx0.
-          assert (Hdiv : (x*y)/x = y) by (rewrite Z.mul_comm; apply Z.div_mul; lia).
-          rewrite Hdiv, Z.eqb_refl.
-          (* Z.lor 0 1 =? 0 = false; no-panic branch *)
-          ...
-
-      The blocker: Coq 8.20's `simpl`/`cbn`/`change` cannot reduce
-      [Z.lor 1 (if y =? 0 then 1 else 0)] to a constant under the goal
-      shape, even after destructing [y =? 0]. The reduction is
-      mathematically obvious (Z.lor 1 v != 0 for v ∈ {0,1}) but
-      tactically blocked. Same family of issues as R022.
-
-      Workaround tracked under task #185 (WISDOM updates). Until then,
-      this lemma is the one Admit in Phase D; Phase E proceeds either
-      by axiomatising it as a known-leaf or by walking through the
-      single use-site inline. *)
   Lemma run_checked_mul_t_uint256 codes env state (x y : U256.t)
       (H_x : 0 <= x < 2^256)
       (H_y : 0 <= y < 2^256)
@@ -571,7 +541,34 @@ Module ThrottleLibLeaves.
     {{? codes, env, Some state |
       checked_mul_t_uint256 x y ⇓ Result.Ok (x * y)
     | Some state ?}}.
-  Admitted.
+  Proof.
+    unfold checked_mul_t_uint256.
+    lu. repeat (lu || cu || p).
+    assert (Hxy_nn : 0 <= x * y) by (apply Z.mul_nonneg_nonneg; lia).
+    s. unfold Pure.iszero, Pure.or, Pure.eq, Pure.div, Pure.mul, Shallow.if_.
+    rewrite (Z.mod_small (x*y) (2^256)) by lia.
+    (** Case-split WITHOUT [eqn:] so the [if]-expressions in the goal
+        reduce. With [eqn:] the hypothesis is added but the
+        [if x =? 0 then 1 else 0]-shapes don't substitute back. *)
+    destruct (x =? 0) eqn:Hx0.
+    - (* x = 0: [Pure.iszero x] resolves to 1 in goal; need to also
+         resolve [eq y (div product x)] cases. *)
+      apply Z.eqb_eq in Hx0. subst x.
+      destruct (y =? 0) eqn:Hyb.
+      + (* y = 0: both branches of [Pure.eq y 0] resolve. Then
+           [Z.lor 1 1] is 1; outer iszero(1) is 0; no panic. *)
+        apply Z.eqb_eq in Hyb. subst y.
+        s. repeat (lu || cu || p).
+      + (* y != 0: [Pure.eq y 0] is 0, [Z.lor 1 0] is 1; iszero 1 is 0. *)
+        s. repeat (lu || cu || p).
+    - apply Z.eqb_neq in Hx0.
+      assert (Hdiv : (x * y) / x = y).
+      { rewrite Z.mul_comm. apply Z.div_mul. lia. }
+      rewrite Hdiv. rewrite Z.eqb_refl.
+      (* [Pure.iszero x] is 0; [Pure.eq y y] is 1; [Z.lor 0 1] is 1;
+         iszero(1) is 0; no panic. *)
+      s. repeat (lu || cu || p).
+  Qed.
 
   (** [checked_div x y] returns [x / y] when [y > 0]. *)
   Lemma run_checked_div_t_uint256 codes env state (x y : U256.t)
