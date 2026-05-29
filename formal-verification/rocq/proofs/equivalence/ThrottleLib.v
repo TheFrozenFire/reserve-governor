@@ -527,13 +527,12 @@ Module ThrottleLibLeaves.
 
   (** [checked_mul x y] returns [x * y] when the product doesn't overflow.
       The shallow form uses [iszero (or (iszero x) (eq y (div product x)))]
-      to detect overflow — i.e., either x is zero (product = 0, no overflow)
-      or the round-trip [(x*y)/x = y] holds.
+      to detect overflow.
 
-      The proof body needs more case splitting than checked_add — the
-      round-trip via division surfaces both [Z.mod_small] and [Z.div_mul]
-      obligations. Leaving Admitted for the moment so the simpler ones
-      land first; closes with [Z.mod_small + Z.div_mul + Z.eqb_refl]. *)
+      The proof needs deeper EVM-boolean-arithmetic reduction (nested
+      iszero/or/eq with the (if then 1 else 0)-style branching that the
+      shallow form bakes in). Admitted pending a more involved tactic
+      development. *)
   Lemma run_checked_mul_t_uint256 codes env state (x y : U256.t)
       (H_x : 0 <= x < 2^256)
       (H_y : 0 <= y < 2^256)
@@ -543,12 +542,7 @@ Module ThrottleLibLeaves.
     | Some state ?}}.
   Admitted.
 
-  (** [checked_div x y] returns [x / y] when [y > 0].
-
-      Same goal-shape issue as checked_mul — the false branch of the
-      iszero check leaves the goal in a partially-reduced form that
-      pe doesn't directly close. Admitted pending further apparatus
-      work. *)
+  (** [checked_div x y] returns [x / y] when [y > 0]. *)
   Lemma run_checked_div_t_uint256 codes env state (x y : U256.t)
       (H_x : 0 <= x < 2^256)
       (H_y : 0 <= y < 2^256)
@@ -556,7 +550,15 @@ Module ThrottleLibLeaves.
     {{? codes, env, Some state |
       checked_div_t_uint256 x y ⇓ Result.Ok (x / y)
     | Some state ?}}.
-  Admitted.
+  Proof.
+    unfold checked_div_t_uint256.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.iszero.
+    destruct (y =? 0) eqn:Hy0; s.
+    { apply Z.eqb_eq in Hy0. lia. }
+    { repeat (lu || cu || p). s. unfold Pure.div.
+      rewrite Hy0. pe; reflexivity. }
+  Qed.
 
 End ThrottleLibLeaves.
 
