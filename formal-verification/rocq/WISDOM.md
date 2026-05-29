@@ -1014,3 +1014,107 @@ goal is worth investigating — usually a `change`-then-`lia` fix.
 
 - `proofs/equivalence/ThrottleLib.v`:
   `get_throttle_currentCharge_capped`. ~27s → ~1.4s after the swap.
+
+## R031: `destruct (expr) eqn:Hgt` requires the exact same syntactic form in all hypotheses
+
+### The trap
+
+Standard pattern: case-split on a boolean inside a hypothesis.
+
+```coq
+Hclamp : ((... charge_raw ... / PROPOSAL_THROTTLE_PERIOD) >? FIX_ONE) = false
+```
+
+You want to derive `charge_raw <= FIX_ONE`. Reaching for
+`destruct (charge_raw >? FIX_ONE) eqn:Hgt` to case-split — but the
+destruct silently abstracts the expression in every hypothesis it
+touches, and that abstraction fails with
+`Found no subterm matching ... in Hclamp` if the expression in
+Hclamp and the destruct expression have any syntactic divergence,
+even when they're definitionally equal.
+
+In practice this hits when `PROPOSAL_THROTTLE_PERIOD := 12 * 3600`
+gets unfolded inside Hclamp (showing as `(12 * 3600)`) but the
+destruct uses the symbol. Or when the goal has `43200` but the
+hypothesis still has `(12 * 3600)`.
+
+### Working approaches
+
+1. **Abstract via `set` first.** Set introduces a fresh local
+   variable for the boolean expression, then destruct the variable:
+
+   ```coq
+   set (b := charge_raw >? FIX_ONE) in *.
+   destruct b eqn:Hgt.
+   ```
+
+   `set ... in *` folds the expression in both hypothesis and goal,
+   so they share one definition. Destruct on the variable name avoids
+   the syntactic-match problem entirely.
+
+2. **Apply `Z.eqb_eq` upfront.** If the hypothesis is in
+   `(... =? 0) = true` form, `apply Z.eqb_eq in H` flattens it to
+   `(...) = 0`. This often makes the structure more amenable to
+   the next step.
+
+3. **Use `Z.gtb_spec` for `gtb = false ⇒ ≤`.** `Z.gtb_ge` doesn't
+   exist in Coq 8.20's ZArith. The BoolSpec pattern is:
+
+   ```coq
+   destruct (Z.gtb_spec a b) as [Hlt|Hle];
+     [congruence | exact Hle].
+   ```
+
+   `congruence` handles the contradictory branch where
+   `(a >? b) = true` clashes with the `Hgt : (a >? b) = false`
+   in context.
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v`:
+  `run_getProposalsAvailable_equivalent_make_state` Goal 1 (unclamped
+  `checked_mul` precondition). Initial attempts with raw `destruct`
+  failed; `set ... in *; destruct b eqn:Hgt; apply Z.eqb_eq in
+  Hclamp; rewrite Hgt in Hclamp; discriminate` closes the
+  contradictory branch.
+
+## R032: Phase E syntactic-vs-algebraic gap on `Z.min FIX_ONE raw`
+
+### The gap
+
+The contract emits `(FIX_ONE, cap * FIX_ONE / FIX_ONE)` in the
+clamped branch (when `raw > FIX_ONE`). The theorem expects
+`(readCharge, proposalsAvailable)` from the sim, where
+`readCharge = Z.min FIX_ONE raw` and
+`proposalsAvailable = (cap * Z.min FIX_ONE raw) / FIX_ONE`.
+
+These are algebraically equal when `raw > FIX_ONE` (`Z.min` reduces
+to `FIX_ONE`), but `apply RunO.Pure` uses syntactic unification and
+won't reduce `Z.min` without an explicit case-split. The unclamped
+branch has the inverse problem: `(raw, cap*raw/FIX_ONE)` vs
+`(Z.min FIX_ONE raw, ...)` where `raw ≤ FIX_ONE ⇒ Z.min = raw`.
+
+### Working pattern (next step for Goal 4 closure)
+
+```coq
+(* Unclamped branch: charge_raw ≤ FIX_ONE *)
+- replace (readCharge throttle now) with charge_raw
+    by (unfold readCharge; rewrite Z.min_r; lia).
+  replace (proposalsAvailable throttle cap now)
+    with ((cap * charge_raw) / FIX_ONE)
+    by (unfold proposalsAvailable, readCharge;
+        rewrite Z.min_r; [reflexivity | lia]).
+  l. { apply RunO.Pure. }
+  ...
+```
+
+The `Z.min_r : Z.min a b = b ↔ b ≤ a` (or the `Z.min_l` variant for
+the other direction) bridges the gap. Each branch needs the
+corresponding `Z.min_r`/`Z.min_l` discharge.
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v`:
+  `run_getProposalsAvailable_equivalent_make_state` Goals 4, 5 — open
+  under `all: admit`; closure plan documented inline next to the
+  admit.

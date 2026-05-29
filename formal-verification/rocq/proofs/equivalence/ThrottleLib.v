@@ -1155,6 +1155,199 @@ Module MakeStateForm.
         FIX_ONE], in the clamped branch [H_capacity_ok] discharges
         directly), the final [checked_div(_, FIX_ONE)], and the
         tuple repackaging. *)
+    (** After the walker, five focused goals remain. Goals 1+2 (unclamped
+        branch, Hclamp=true) and 3+4 (clamped branch, Hclamp=false) close
+        in pairs: the first goal in each pair is a [checked_mul(capacity,
+        charge)] and the second is the [checked_div(_, FIX_ONE)] +
+        tuple-emit cascade. Goal 5 is the outer tuple swap.
+
+        Closing strategy:
+          - In the unclamped branch (Hclamp = true), [charge_raw ≤ FIX_ONE]
+            is derivable from [Hclamp] (Pure.gt returning 0 ⇒ a ≤ b).
+            Then [capacity * charge_raw ≤ capacity * FIX_ONE < 2^256] by
+            [H_capacity_ok].
+          - In the clamped branch (Hclamp = false), [charge = FIX_ONE],
+            so [capacity * FIX_ONE < 2^256] directly from [H_capacity_ok].
+          - [checked_div(_, FIX_ONE)] needs FIX_ONE != 0 (trivial) and the
+            dividend nonneg (from checked_mul's output).
+          - The tuple-emit and outer match resolve by [RunO.Pure] once
+            the metavariables are pinned. *)
+
+    (** Helper: in the unclamped branch, Hclamp gives charge_raw ≤ FIX_ONE.
+        [Pure.gt a b = if a >? b then 1 else 0]; [(... =? 0) = true] iff
+        [Pure.gt = 0], iff [a ≤ b]. *)
+    1: { (* Goal 1: checked_mul(capacity, charge_raw), unclamped *)
+      c; [ apply ThrottleLibLeaves.run_checked_mul_t_uint256 | apply RunO.Pure ].
+      - destruct H_valid_sim as [H_cap _].
+        unfold ProposerThrottle.Valid.capacity, UINT256_MAX in H_cap.
+        unfold U256.Valid.t; lia.
+      - pose proof (get_throttle_currentCharge_valid sim account H_valid_sim) as Hcc.
+        pose proof (get_throttle_lastUpdated_valid sim account H_valid_sim) as Hlu.
+        unfold U256.Valid.t in *.
+        unfold PROPOSAL_THROTTLE_PERIOD in *.
+        split.
+        + apply Z.add_nonneg_nonneg; [lia|].
+          apply Z.div_pos; [|lia].
+          apply Z.mul_nonneg_nonneg; [lia|unfold FIX_ONE; lia].
+        + (* charge_raw <= FIX_ONE from Hclamp.
+             Hclamp : ((Pure.gt charge_raw FIX_ONE) =? 0) = true.
+             Apply Z.eqb_eq to get [Pure.gt = 0]; unfold Pure.gt; case-split. *)
+          unfold Pure.gt in Hclamp.
+          apply Z.eqb_eq in Hclamp.
+          unfold PROPOSAL_THROTTLE_PERIOD in *.
+          (* Abstract the boolean inside Hclamp using set, then destruct
+             the bound variable. *)
+          set (b := (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+            (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+            1000000000000000000 / (12 * 3600) >? 1000000000000000000) in *.
+          destruct b eqn:Hgt.
+          * (* b = true; Hclamp : 1 = 0 *)
+            discriminate.
+          * (* b = false; derive charge_raw <= 1e18 from Hgt *)
+            unfold b in Hgt.
+            assert (Hle :
+              (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+              (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+              1000000000000000000 / (12 * 3600) <= 1000000000000000000).
+            { destruct (Z.gtb_spec
+                ((ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+                 (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+                 1000000000000000000 / (12 * 3600))
+                1000000000000000000) as [Hlt|HleX];
+                [congruence | exact HleX]. }
+            change FIX_ONE with 1000000000000000000 in *.
+            lia.
+      - (* capacity * charge_raw < 2^256 *)
+        pose proof H_capacity_ok as Hcap.
+        unfold ProposerThrottle.FIX_ONE, FIX_ONE in *.
+        unfold Pure.gt in Hclamp.
+        apply Z.eqb_eq in Hclamp.
+        unfold PROPOSAL_THROTTLE_PERIOD in *.
+        set (b := (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+          (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+          1000000000000000000 / (12 * 3600) >? 1000000000000000000) in *.
+        destruct b eqn:Hgt.
+        + discriminate.
+        + unfold b in Hgt.
+          assert (Hle :
+            (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+            (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+            1000000000000000000 / (12 * 3600) <= 1000000000000000000).
+          { destruct (Z.gtb_spec
+              ((ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+               (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+               1000000000000000000 / (12 * 3600))
+              1000000000000000000) as [Hlt|HleX];
+              [congruence | exact HleX]. }
+          destruct H_valid_sim as [H_cap _].
+          unfold ProposerThrottle.Valid.capacity, UINT256_MAX in H_cap.
+          apply Z.le_lt_trans with (m := sim.(ThrottleLibStorage.capacity) * 1000000000000000000);
+            [apply Z.mul_le_mono_nonneg_l; lia | exact Hcap].
+    }
+
+    1: { (* Goal 2: checked_div + tuple-emit (unclamped). The walker
+            exits with two subgoals: checked_div and the tuple cascade,
+            linked through ?output_inter1. *)
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account.
+      (* Two subgoals after walker. *)
+      - (* Goal 2.A: checked_div(cap * charge_raw, FIX_ONE) *)
+        c; [ apply ThrottleLibLeaves.run_checked_div_t_uint256 | apply RunO.Pure ].
+        + (* 0 <= cap * charge_raw < 2^256 *)
+          pose proof H_valid_sim as Hvs.
+          destruct Hvs as [H_cap_v _].
+          unfold ProposerThrottle.Valid.capacity, UINT256_MAX in H_cap_v.
+          pose proof (get_throttle_currentCharge_valid sim account H_valid_sim) as Hcc.
+          pose proof (get_throttle_lastUpdated_valid sim account H_valid_sim) as Hlu.
+          unfold U256.Valid.t in *.
+          unfold Pure.gt in Hclamp.
+          apply Z.eqb_eq in Hclamp.
+          unfold PROPOSAL_THROTTLE_PERIOD in *.
+          set (b := (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+            (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+            1000000000000000000 / (12 * 3600) >? 1000000000000000000) in *.
+          destruct b eqn:Hgt; [discriminate|].
+          unfold b in Hgt.
+          assert (Hle : (ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+            (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+            1000000000000000000 / (12 * 3600) <= 1000000000000000000).
+          { destruct (Z.gtb_spec
+              ((ThrottleLibStorage.get_throttle sim account).(Throttle.currentCharge) +
+               (now - (ThrottleLibStorage.get_throttle sim account).(Throttle.lastUpdated)) *
+               1000000000000000000 / (12 * 3600))
+              1000000000000000000) as [Hlt|HleX];
+              [congruence | exact HleX]. }
+          change FIX_ONE with 1000000000000000000 in *.
+          change ProposerThrottle.FIX_ONE with 1000000000000000000 in *.
+          split.
+          * apply Z.mul_nonneg_nonneg; [lia|].
+            apply Z.add_nonneg_nonneg; [lia|].
+            apply Z.div_pos; [|lia].
+            apply Z.mul_nonneg_nonneg; lia.
+          * apply Z.le_lt_trans with (m := sim.(ThrottleLibStorage.capacity) * 1000000000000000000);
+              [apply Z.mul_le_mono_nonneg_l; lia | exact H_capacity_ok].
+        + unfold U256.Valid.t, FIX_ONE; lia.
+        + unfold FIX_ONE; lia.
+      - (* Goal 2.B: tuple-emit cascade. cbn match reduces the outer
+           match; then walk through the LowM.Let pass-throughs. *)
+        cbn match.
+        l. { apply RunO.Pure. }
+        cbn match.
+        l. { apply RunO.Pure. }
+        cbn match.
+        apply RunO.Pure.
+    }
+
+    1: { (* Goal 3 (originally Goal 3): checked_mul(capacity, FIX_ONE), clamped *)
+      c; [ apply ThrottleLibLeaves.run_checked_mul_t_uint256 | apply RunO.Pure ].
+      - destruct H_valid_sim as [H_cap _].
+        unfold ProposerThrottle.Valid.capacity, UINT256_MAX in H_cap.
+        unfold U256.Valid.t; lia.
+      - unfold U256.Valid.t, FIX_ONE; lia.
+      - unfold ProposerThrottle.FIX_ONE, FIX_ONE in *.
+        exact H_capacity_ok.
+    }
+
+    1: { (* Goal 4: clamped-branch closure.
+            See note below: the structure closes goals 1-3 fully; goals
+            4 and 5 hit an algebraic-equivalence gap between the
+            function's clamped output and [Z.min FIX_ONE raw] from the
+            sim. *)
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account.
+      all: admit.
+    }
+
+    (* Goal 5 (outer tuple-swap, plus any walker residual): closes
+       symbolically once the branch outputs are pinned to the sim form. *)
+
+    (** ----- Phase E closure status (this commit) -----
+
+        Goals 1, 2, 3 close fully with no remaining [admit]. The
+        closure tactics are concrete and follow the established walker
+        + checked_mul / checked_div preconditions pattern.
+
+        Goal 4 (clamped-branch tuple-emit) and Goal 5 (outer tuple
+        swap, plus any walker residual) are admitted under [all:
+        admit] because they hit the algebraic-vs-syntactic bridge:
+
+          The function emits [(FIX_ONE, cap*FIX_ONE/FIX_ONE)] in the
+          clamped branch. The theorem expects this to equal
+          [(readCharge throttle now, proposalsAvailable throttle cap now)].
+          In the clamped branch, [readCharge = Z.min FIX_ONE raw =
+          FIX_ONE] (because [raw > FIX_ONE]) and [proposalsAvailable =
+          (cap * Z.min FIX_ONE raw) / FIX_ONE = cap * FIX_ONE / FIX_ONE].
+          These are algebraically equal, but Coq's [apply RunO.Pure]
+          uses syntactic unification and won't see the equivalence
+          without a manual [destruct] on [raw <=? FIX_ONE] to reduce
+          [Z.min] case-by-case, plus the corresponding [replace] or
+          [rewrite] to bridge the forms.
+
+        Next step: replace [all: admit] in Goal 4 with the
+        case-analysis on [Z.min FIX_ONE raw], discharging via
+        [Hclamp = false] (which implies [raw > FIX_ONE]) to reduce
+        [Z.min] to [FIX_ONE], then close with the explicit [l. p.]
+        chain (proven to work in Goal 2.B's unclamped form). *)
   Admitted.
 
   (** ----- Phase F: public-wrapper equivalence -----
