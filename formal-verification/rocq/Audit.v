@@ -794,6 +794,47 @@ Notation audit_bysig_preserves_validity :=
 
 
 (** ============================================================
+    === Section 6c: StakingVault — optimistic-vote checkpoint history ===
+    ============================================================
+
+    [StakingVaultDelegationCheckpointed] layers a per-delegatee
+    [Trace208] checkpoint trace onto the base dual-delegation
+    sim. Closes the "past-vote correctness" gap identified in
+    notes/external_dependencies.md (Priority 1): the base sim
+    abstracts Trace208 down to [latest], so its theorems are
+    about CURRENT votes; the Governor's veto-tally code path
+    reads [getPastOptimisticVotes(account, snapshot)] via
+    [Trace208.upperLookupRecent], so PAST-VOTE correctness needs
+    its own theorem.
+
+    Three audit notations:
+
+      - [audit_checkpointed_new_delegate_after_push] : after
+        [set_opt_delegate_checkpointed] re-points the optimistic
+        delegate, the new delegate's checkpoint trace's [latest]
+        equals the post-update vote count. The structural form
+        of "the checkpoint reflects the current vote weight."
+      - [audit_checkpointed_preserves_other_traces] : checkpoint
+        traces for parties that are neither the old nor the new
+        delegate are structurally unchanged.
+      - [audit_checkpointed_empty_returns_zero] : querying
+        [getPastOptimisticVotes] on an empty state returns zero,
+        matching the OZ Checkpoints behavior on empty traces.
+*)
+
+Require ReserveGovernor.proofs.StakingVaultDelegationCheckpointed.
+
+Notation audit_checkpointed_new_delegate_after_push :=
+  ReserveGovernor.proofs.StakingVaultDelegationCheckpointed.StakingVaultDelegationCheckpointedProofs.getPastOptimisticVotes_new_delegate_at_now.
+
+Notation audit_checkpointed_preserves_other_traces :=
+  ReserveGovernor.proofs.StakingVaultDelegationCheckpointed.StakingVaultDelegationCheckpointedProofs.checkpointed_set_preserves_other_traces.
+
+Notation audit_checkpointed_empty_returns_zero :=
+  ReserveGovernor.proofs.StakingVaultDelegationCheckpointed.StakingVaultDelegationCheckpointedProofs.getPastOptimisticVotes_empty_zero.
+
+
+(** ============================================================
     === Section 7: ProposalLib ===
     ============================================================
 

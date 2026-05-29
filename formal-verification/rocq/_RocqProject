@@ -92,6 +92,15 @@ simulations/StakingVaultDelegationBySig.v
 proofs/StakingVaultDelegationBySig.v
 proofs/StakingVaultDelegationBySig_validity.v
 
+# --- StakingVault: optimistic-vote checkpoint history ---
+# Layers Trace208 onto the base delegation sim. Closes the
+# "past-vote correctness" gap (notes/external_dependencies.md
+# Priority 1) — Governor's veto-counting reads
+# getPastOptimisticVotes(account, snapshot) which is
+# Trace208.upperLookupRecent, not the base sim's latest-only abstraction.
+simulations/StakingVaultDelegationCheckpointed.v
+proofs/StakingVaultDelegationCheckpointed.v
+
 # --- ProposalLib ---
 simulations/ProposalLib.v
 proofs/ProposalLib.v
