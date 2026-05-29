@@ -218,3 +218,4 @@ Audit.v
 # update for current coverage).
 proofs/equivalence/Sandbox.v
 proofs/equivalence/ThrottleLib.v
+proofs/equivalence/UnstakingManager.v
