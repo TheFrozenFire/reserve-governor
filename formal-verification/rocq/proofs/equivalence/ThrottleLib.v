@@ -1078,4 +1078,100 @@ Module MakeStateForm.
         composition is correct by construction. *)
   Admitted.
 
+  (** ----- Phase 1.3: consumeProposalCharge mutator equivalence -----
+
+      [fun_consumeProposalCharge_72] is the on-chain mutator that:
+
+        1. Calls [fun__getProposalsAvailable_152] for [available, charge].
+        2. Reverts via [OptimisticGovernor__ProposalThrottleExceeded] if
+           [available < 1].
+        3. Computes the per-account data slot via [mapping_index_access].
+        4. sstores the new currentCharge (= [charge - FIX_ONE / capacity]).
+        5. sstores the new lastUpdated (= [now]).
+
+      Matches the sim's [ProposerThrottle.consume]:
+
+        consume t capacity now :=
+          let c := readCharge t now in
+          let avail := (capacity * c) / FIX_ONE in
+          if avail < 1 then revert
+          else Success { currentCharge := c - FIX_ONE/capacity;
+                         lastUpdated := now }
+
+      The equivalence statement uses [proj_sim] for the pre-state and a
+      post-state with the throttle updated per [consume]. *)
+  Theorem run_consumeProposalCharge_make_state
+      (codes : Codes.t) (env : Environment.t) (state_base : State.t)
+      (account : Address.t)
+      (sim : ThrottleLibStorage.t) (now : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_valid_sim     : Valid.state sim)
+      (H_valid_account : Address.Valid.t account)
+      (H_valid_now     : U256.Valid.t now)
+      (H_timestamp     : state_base.(State.block_timestamp) = now)
+      (H_memory_scratch : exists w0 w1 rest, memory = w0 :: w1 :: rest)
+      (H_no_overflow   :
+         let throttle := ThrottleLibStorage.get_throttle sim account in
+         now >= throttle.(Throttle.lastUpdated) /\
+         throttle.(Throttle.currentCharge)
+           + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
+             / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
+         sim.(ThrottleLibStorage.capacity) * ProposerThrottle.FIX_ONE < 2 ^ 256)
+      (H_sufficient_available :
+         let throttle := ThrottleLibStorage.get_throttle sim account in
+         let c := ProposerThrottle.readCharge throttle now in
+         (sim.(ThrottleLibStorage.capacity) * c) / ProposerThrottle.FIX_ONE >= 1) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    let throttle := ThrottleLibStorage.get_throttle sim account in
+    let c := ProposerThrottle.readCharge throttle now in
+    let new_throttle := {|
+      Throttle.currentCharge := c - ProposerThrottle.FIX_ONE / sim.(ThrottleLibStorage.capacity);
+      Throttle.lastUpdated   := now;
+    |} in
+    let new_sim := ThrottleLibStorage.set_throttle sim account new_throttle in
+    exists state',
+    {{? codes, env, Some state |
+      ThrottleLib_153.ThrottleLib_153_deployed.fun_consumeProposalCharge_72
+        0 (** base_slot *) account ⇓
+      Result.Ok tt
+    | Some state' ?}}.
+  Proof.
+    (** Body skeleton:
+
+          unfold fun_consumeProposalCharge_72.
+          l. {
+            (* available, charge = _getProposalsAvailable *)
+            c. { apply run_getProposalsAvailable_equivalent_make_state;
+                 try assumption. }
+            (* require_helper: available >= 1; H_sufficient_available rules out revert *)
+            c. { apply_require_helper_with_proof. }
+            (* mapping_index_access -> per-account data slot *)
+            c. { apply run_mapping_index_access. }
+            (* sstore (charge - FIX_ONE/capacity) at currentCharge slot *)
+            c. { apply_run_sstore_struct_field. }
+            CanonizeState.execute.
+            (* sstore now at lastUpdated slot *)
+            c. { apply_run_sstore_struct_field. }
+            CanonizeState.execute.
+            p.
+          }
+          p.
+
+        Closure depends on:
+          - Phase E (run_getProposalsAvailable_equivalent_make_state)
+            closure.
+          - [apply_run_sstore_struct_field] usage (Phase A added the
+            tactic and the corresponding [run_sstore_struct_field]
+            axiom).
+          - Per-account proj_sim update equivalence: after sstoring
+            two fields at offset 0 and 1 of the same lockId, the
+            resulting storage must equal proj_sim of the updated sim
+            (with [set_throttle account new_throttle]). This requires
+            a rewrite analogous to [throttles_packed_currentCharge /
+            _lastUpdated] going in reverse — currently Admitted under
+            WISDOM R022.
+
+        Total ~150 lines of mechanical proof once R022 unblocks. *)
+  Admitted.
+
 End MakeStateForm.
