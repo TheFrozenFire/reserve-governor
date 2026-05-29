@@ -1339,18 +1339,20 @@ Module MakeStateForm.
     }
 
     1: { (* Goal 4: clamped-branch closure.
-            Goal 2.B's Z.min_r bridge sets the shared metavariable to
-            the form (Z.min FIX_ONE raw, cap * Z.min FIX_ONE raw / FIX_ONE).
-            Goal 4 needs to produce the SAME form via Z.min_l from
-            its clamped emit (FIX_ONE, cap*FIX_ONE/FIX_ONE).
+            Open under [all: admit]. See R032 / the Phase E status
+            note: Goal 2.B's Z.min_r bridge set the shared metavariable
+            to a form with [Z.min 1e18 raw] in multiple positions.
+            Closing Goal 4 with the clamped emit (1e18, ...) requires
+            unifying against that form, but [rewrite <- H_min_l at N]
+            accumulates nested [Z.min] wrappers — Coq picks
+            occurrences inside the already-set metavariable's [Z.min]
+            terms instead of the bare 1e18 positions.
 
-            Naive [rewrite ... at N] doesn't work — each rewrite shifts
-            occurrence indices, and Coq's unification engine
-            accumulates nested Z.min wrappers when matching against the
-            already-set metavariable. A clean closure requires either
-            an outer-level destruct that splits Goal 5 too, or a more
-            targeted rewrite primitive that can match by syntactic
-            position. Deferred to a focused session. *)
+            The cleanest fix is to restructure: split Goal 5 first via
+            the same Hclamp destruct, so each (branch, Goal 5 copy)
+            pair shares its own metavariable. Then both branches close
+            with concrete forms and the algebraic equivalence is
+            absorbed into Goal 5's reduction. *)
       unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
       throttle_walker Hmia H_ts_mp H_valid_sim H_valid_now H_now_geq H_elapsed_mul_ok H_charge_ok sim account.
       all: admit.
