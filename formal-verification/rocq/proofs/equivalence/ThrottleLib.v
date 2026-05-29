@@ -560,7 +560,133 @@ Module ThrottleLibLeaves.
       rewrite Hy0. pe; reflexivity. }
   Qed.
 
+  (** ----- Address-cleanup helpers -----
+
+      [cleanup_t_uint160 v] = [v AND (2^160 - 1)]. On a valid Address
+      (in range [0, 2^160)), the cleanup is identity by
+      [Address.implies_and_mask]. [convert_t_address_to_t_address] is
+      [cleanup_t_uint160 ∘ identity ∘ cleanup_t_uint160], hence also
+      identity on valid Address.t. *)
+
+  Lemma run_cleanup_t_uint160_on_address codes env state (a : U256.t)
+      (H : Address.Valid.t a) :
+    {{? codes, env, Some state |
+      cleanup_t_uint160 a ⇓ Result.Ok a
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_uint160.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.and.
+    pe.
+    - f_equal. rewrite <- Address.implies_and_mask by assumption. reflexivity.
+    - reflexivity.
+  Qed.
+
+  Lemma run_convert_t_uint160_to_t_uint160 codes env state (a : U256.t)
+      (H : Address.Valid.t a) :
+    {{? codes, env, Some state |
+      convert_t_uint160_to_t_uint160 a ⇓ Result.Ok a
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_uint160_to_t_uint160.
+    lu. l. { c. { apply run_cleanup_t_uint160_on_address. exact H. }
+             c. { apply run_identity. }
+             c. { apply run_cleanup_t_uint160_on_address. exact H. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_uint160_to_t_address codes env state (a : U256.t)
+      (H : Address.Valid.t a) :
+    {{? codes, env, Some state |
+      convert_t_uint160_to_t_address a ⇓ Result.Ok a
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_uint160_to_t_address.
+    lu. l. { c. { apply run_convert_t_uint160_to_t_uint160. exact H. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_t_address_to_t_address codes env state (a : U256.t)
+      (H : Address.Valid.t a) :
+    {{? codes, env, Some state |
+      convert_t_address_to_t_address a ⇓ Result.Ok a
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_address_to_t_address.
+    lu. l. { c. { apply run_convert_t_uint160_to_t_address. exact H. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
 End ThrottleLibLeaves.
+
+(** ----- Phase C: mapping_index_access (memory + keccak) -----
+
+    The function writes [convert_t_address_to_t_address key] at mem[0],
+    [slot] at mem[0x20], then keccaks 64 bytes from mem[0] and returns
+    the result. On a valid Address, the cleanup is identity, so the
+    result is precisely [keccak256_tuple2 key slot].
+
+    Precondition: the state must be in [make_state env state_base memory storage]
+    form with at least two memory slots available for the scratch
+    writes. [storage] is unconstrained — this helper doesn't touch
+    storage. *)
+
+Require Import RocqOfSolidity.proofs.RocqOfSolidity.
+
+Module MappingIndexAccess.
+
+  Import ThrottleLib_153.ThrottleLib_153_deployed.
+  Import ThrottleLibLeaves.
+
+  (** The function name in the generated shallow file contains unicode
+      subscripts (ₓ) to encode the original Yul mangling. We bind it to
+      a Coq-level name for readability. *)
+  Notation mapping_index_access_t_mapping_address_struct_of_address :=
+    mapping_index_access_t_mappingₓ_t_address_ₓ_t_structₓ_ProposalThrottle_ₓ18_storage_ₓ_of_t_address.
+
+  Lemma run_mapping_index_access codes env state_base
+      (slot : U256.t) (key : U256.t) (storage : SimulatedStorage.t)
+      (memory : SimulatedMemory.t)
+      (H_key : Address.Valid.t key)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let st := make_state env state_base memory storage in
+    exists memory_post,
+    {{? codes, env, Some st |
+      mapping_index_access_t_mapping_address_struct_of_address slot key ⇓
+      Result.Ok (keccak256_tuple2 key slot)
+    | Some (make_state env state_base memory_post storage) ?}}.
+  Proof.
+    destruct H_mem as (w0 & w1 & rest & ->).
+    eexists.
+    unfold mapping_index_access_t_mapping_address_struct_of_address.
+    l. {
+      (* do~ mstore(0, convert_t_address_to_t_address key) *)
+      l. {
+        c. { apply run_convert_t_t_address_to_t_address. exact H_key. }
+        c. { apply_run_mstore. }
+        CanonizeState.execute.
+        p.
+      }
+      (* do~ mstore(0x20, slot) *)
+      l. {
+        c. { apply_run_mstore. }
+        CanonizeState.execute.
+        p.
+      }
+      (* let~ dataSlot := keccak256(0, 0x40) *)
+      l. {
+        c. { apply_run_keccak256_tuple2. }
+        p.
+      }
+      p.
+    }
+    p.
+  Qed.
+
+End MappingIndexAccess.
 
 (** ----- The main equivalence theorem (Admitted; see header note) ----- *)
 
