@@ -513,7 +513,7 @@ entirely. The intermediate option is to close ONLY ThrottleLib
 (after R020 patch) as a demonstration target and leave Caveat-5
 permanently partial for the rest.
 
-## R022: `Dict.Eq.eqb` on tuple keys anomalies `cbn`/`simpl`/`hauto`
+## R022: `Dict.Eq.eqb` on tuple keys anomalies `cbn`/`simpl`/`hauto` — RESOLVED
 
 When mechanizing lemmas about `Dict.t (U256.t * U256.t) U256.t` (used
 by the upstream's `StorableValue.MapStruct` variant), the
@@ -542,35 +542,65 @@ The anomaly is at the kernel level, not the tactic level. It occurs
 even with `at i j`-positional `unfold` and even when restricting the
 blacklist to `Dict.Eq.eqb`.
 
-### Workarounds (none clean)
+### Resolution (commit 004f75f)
 
-1. **Admit and document.** For projection-sanity lemmas (those that
-   are mathematically trivial but tactically blocked), Admit with a
-   comment pointing at R022. The body of the involved function is
-   pure and inspectable; correctness is by direct read.
+The fix is to combine three independent tricks:
 
-2. **Manual `change`.** Tried but unreliable: `change` requires
-   syntactic identity through the projection, and the typeclass
-   instance argument is implicit.
+1. **Definitional rewrite lemma**: `Dict_Eq_eqb_ZZ_pair_unfold` in
+   `proofs/equivalence/Common.v` exposes the reduction at the lemma
+   level via `Proof. reflexivity. Qed.` — the kernel performs the
+   typeclass-instance reduction at definition time, so `reflexivity`
+   succeeds where `simpl`/`cbn`/`hauto` anomaly.
 
-3. **Upstream-side helper.** Add `Lemma Dict_eq_eqb_pair_unfold` in
-   `rocq-of-solidity/proofs/RocqOfSolidity.v` exposing
-   `Dict.Eq.eqb (a, b) (c, d) = andb (Z.eqb a c) (Z.eqb b d)`
-   provably (or definitionally with the right `Arguments`
-   directives). This is the right long-term fix.
+   ```coq
+   Lemma Dict_Eq_eqb_ZZ_pair_unfold (a1 a2 b1 b2 : Z) :
+     @Dict.Eq.eqb (Z * Z) Dict.Eq.ITuple2 (a1, b1) (a2, b2)
+     = andb (Z.eqb a1 a2) (Z.eqb b1 b2).
+   Proof. reflexivity. Qed.
+   ```
+
+2. **One-step cons-unfolding**: `map_get_u256_pair_cons` exposes the
+   `Dict.get` Fixpoint's cons-step body via `change` (the body is
+   definitionally equal to the `if`-form). Combined with #1, this
+   lets us peel off one cons-list head without invoking `cbn`.
+
+   ```coq
+   Lemma map_get_u256_pair_cons rest a c b d v :
+     map_get_u256 (((c, d), v) :: rest) (a, b)
+     = if andb (a =? c) (b =? d) then v
+       else map_get_u256 rest (a, b).
+   Proof.
+     unfold StorableValue.map_get_u256.
+     change (Dict.get (((c, d), v) :: rest) (a, b))
+       with (if @Dict.Eq.eqb _ Dict.Eq.ITuple2 (a, b) (c, d)
+             then Some v else Dict.get rest (a, b)).
+     rewrite Dict_Eq_eqb_ZZ_pair_unfold.
+     destruct (Z.eqb a c && Z.eqb b d); reflexivity.
+   Qed.
+   ```
+
+3. **`pose proof` + `replace ... in H` + `exact H`** for goals where
+   `rewrite` fails to find a pattern despite obvious unifiability.
+   Build the hypothesis, normalize it to match the goal exactly,
+   then close by `exact`. This sidesteps `rewrite`'s strict matching
+   when the LHS pattern contains subterms that need separate
+   simplification.
 
 ### Touchpoints in this repo
 
-- `proofs/equivalence/ThrottleLib.v`:
-  `throttles_packed_currentCharge`, `throttles_packed_lastUpdated`
-  Admitted with R022 reference.
-- Phases 2.x onward (UnstakingManager.locks, StakingVault rewards,
-  Governor proposals) — every contract using struct-mapping storage
-  will hit this same pattern. Closing R022 once unblocks all of them.
+- `proofs/equivalence/Common.v`: hosts the unblocker lemmas
+  (`Dict_Eq_eqb_ZZ_pair_unfold`, `map_get_u256_pair_cons`,
+  `Dict_Eq_eqb_Z_unfold`, `map_get_u256_Z_cons`).
+- `proofs/equivalence/ThrottleLib.v`: `throttles_packed_currentCharge`,
+  `throttles_packed_lastUpdated` — CLOSED.
+- `proofs/equivalence/UnstakingManager.v`: `locks_packed_get_user`,
+  `locks_packed_get_amount`, `locks_packed_get_unlockTime`,
+  `locks_packed_get_claimedAt` — all four CLOSED via a generalized
+  `flat_entries` helper plus the per-offset `flat_entries_cons_peel_*`
+  lemmas. The accumulator-threading shape of `locks_packed_aux`
+  required an additional `locks_packed_eq_flat` bridge.
 
-Tracked as part of task #185 (Ongoing WISDOM.md updates).
-
-## R023: Z.lor on if-then-else arguments resists tactical reduction
+## R023: Z.lor on if-then-else arguments resists tactical reduction — RESOLVED
 
 After unfolding [Pure.or], [Pure.iszero], [Pure.eq], [Pure.div], a
 goal like
@@ -588,30 +618,41 @@ arguments are concrete 0 or 1, `cbn [Z.lor]` exposes the
 `Pos.lor`/`N.ldiff` recursion machinery rather than reducing to 0
 or 1 outright.
 
-### Touchpoints
+### Resolution (commit 8dde5b9)
 
-- `proofs/equivalence/ThrottleLib.v`:
-  `run_checked_mul_t_uint256` Admitted under this. The shallow
-  body has the overflow-detection pattern
-  `iszero (or (iszero x) (eq y (div product x)))` which expands to
-  the shape above; closure stuck on reducing the boolean disjunction.
-
-### Workaround sketch (not yet implemented)
-
-Manually prove a lemma
+The trick is much simpler than the workaround sketch I wrote
+originally. Don't use `eqn:` on the destructs:
 
 ```coq
-Lemma Z_lor_bool_unfold (a b : bool) :
-  Z.lor (if a then 1 else 0) (if b then 1 else 0) =
-    (if a || b then 1 else 0).
-Proof. destruct a, b; reflexivity. Qed.
+destruct (x =? 0) eqn:Hx0.
+- apply Z.eqb_eq in Hx0. subst x.   (* x replaced by 0 in goal *)
+  destruct (y =? 0) eqn:Hyb.
+  + apply Z.eqb_eq in Hyb. subst y.  (* y replaced by 0 *)
+    s. repeat (lu || cu || p).        (* all if-thens fully reduce; named tactics close *)
+  + s. repeat (lu || cu || p).
+- apply Z.eqb_neq in Hx0.
+  assert (Hdiv : (x*y)/x = y).
+  rewrite Hdiv, Z.eqb_refl.
+  s. repeat (lu || cu || p).
 ```
 
-so the head reduces to a single `if-then-else`. Then chain
-`destruct (a || b) eqn:?` to dispatch the outer iszero.
+The key insight: `destruct ... eqn:H` adds a hypothesis but does
+NOT substitute back into `(if cond then ... else ...)`-shapes in
+the goal. After `apply Z.eqb_eq in H. subst <var>`, the variable
+is replaced everywhere, including inside `(if var =? ... then ...
+else ...)`. Then `s. repeat (lu || cu || p)` walks the named-tactic
+chain through the fully-reduced expression, and `p` (apply RunO.Pure)
+closes goals where the value/state match syntactically.
 
-Untested; not in scope of the current pass. Tracked alongside R022
-as the typeclass-anomaly family.
+No `Z_lor_bool_unfold` helper needed — the closure happens because
+the substituted concrete values make `Z.lor 0 0`, `Z.lor 0 1`, etc.
+fully evaluate. Goal becomes `Result.Ok (0 * 0) ⇓ Result.Ok 0`,
+discharged by `p`.
+
+### Touchpoints in this repo
+
+- `proofs/equivalence/ThrottleLib.v`: `run_checked_mul_t_uint256`
+  CLOSED via this pattern. Final proof is ~25 lines.
 
 ## R024: `l. { c. { apply leaf } ... }` pattern is the canonical step-through
 

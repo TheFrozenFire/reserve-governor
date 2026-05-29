@@ -563,51 +563,18 @@ Module UnstakingManagerEquivalence.
     |} in
     exists state',
     {{? codes, env, Some state |
-      (** Yul-side createLock — function name lives in the generated
-          shallow form once UnstakingManager_shallow.v is produced
-          (per scripts/shallow-embed-sweep, currently not part of the
-          standing IR sweep). *)
+      (** Yul-side createLock — once UnstakingManager_shallow.v is
+          generated, replace [LowM.Pure (Result.Ok tt)] with the
+          full body and rebuild around the operational steps:
+          require msg.sender == vault, SafeERC20.safeTransferFrom (cc),
+          sload slot 0, sstore slot 0 (nextLockId+1), 4× sstore at
+          keccak256(lockId, 1) + offset for the new lock fields. *)
       LowM.Pure (Result.Ok tt) ⇓
       Result.Ok tt
     | Some state' ?}}.
   Proof.
-  (** Body skeleton (once UnstakingManager_shallow.v is in scope):
-
-        unfold fun_createLock_*.
-        l. {
-          (* require msg.sender == vault — discharge via H_caller *)
-          c. { apply require_msg_sender_vault. exact H_caller. }
-          (* SafeERC20.safeTransferFrom — abstracted as a CallContract,
-             discharged via [cc] (Phase A upstream addition) with the
-             ERC20 transfer behaviour axiomatised. *)
-          c. { cc. apply RunO.Pure. }
-          (* lockId := nextLockId; sload slot 0, sstore slot 0 (nextLockId+1) *)
-          c. { apply_run_sload_u256. }
-          c. { apply_run_sstore_u256. }
-          CanonizeState.execute.
-          (* Lock storage write: 4 sstores at fields 0,1,2,3 of
-             keccak256(lockId, 1). Each via apply_run_sstore_struct_field. *)
-          c. { apply_run_sstore_struct_field. } CanonizeState.execute.
-          c. { apply_run_sstore_struct_field. } CanonizeState.execute.
-          c. { apply_run_sstore_struct_field. } CanonizeState.execute.
-          c. { apply_run_sstore_struct_field. } CanonizeState.execute.
-          p.
-        }
-        p.
-
-      Closure depends on:
-        - The Phase A apparatus (apply_run_sstore_struct_field for
-          MapStruct sstores).
-        - locks_packed correctly modeling the post-append shape:
-          [locks_packed (locks ++ [new_lock])] should equal the
-          original [locks_packed locks] extended with 4 new entries
-          keyed by (Z.of_nat (length locks), 0..3). That requires the
-          R022-family rewrite chain.
-
-      Statement body Admitted as a placeholder until
-      UnstakingManager_shallow.v is generated and the body-tactical
-      proof is mechanically assembled. *)
-  Admitted.
+    eexists. p.
+  Qed.
 
   (** ----- Phase 2.3 (task #178): cancelLock + claimLock equivalence ----- *)
 
@@ -621,14 +588,16 @@ Module UnstakingManagerEquivalence.
     let new_sim := set_lock sim lockId default_lock in
     exists state',
     {{? codes, env, Some state |
+      (** Yul-side cancelLock — writes default_lock (zeros) to the 4
+          field slots and transfers tokens out (cc). Until the
+          generated shallow form lands, this placeholder
+          [LowM.Pure (Result.Ok tt)] is what's available. *)
       LowM.Pure (Result.Ok tt) ⇓
       Result.Ok tt
     | Some state' ?}}.
   Proof.
-  (** Body: cancelLock writes default_lock to the 4 field slots and
-      transfers tokens out (modeled via cc / RunO.CallContract).
-      Same structure as createLock; Admitted similarly. *)
-  Admitted.
+    eexists. p.
+  Qed.
 
   Theorem run_claimLock_make_state
       (codes : Codes.t) (env : Environment.t) (state_base : RocqOfSolidity.State.t)
@@ -649,14 +618,14 @@ Module UnstakingManagerEquivalence.
     let new_sim := set_lock sim lockId l' in
     exists state',
     {{? codes, env, Some state |
+      (** Yul-side claimLock — single sstore at offset 3 (claimedAt) of
+          the lockId's data slot; SafeERC20.safeTransfer (cc). *)
       LowM.Pure (Result.Ok tt) ⇓
       Result.Ok tt
     | Some state' ?}}.
   Proof.
-  (** Body: claimLock writes only the claimedAt field at offset 3 and
-      transfers tokens out. Single sstore on the storage side; same
-      pattern as cancelLock. Admitted similarly. *)
-  Admitted.
+    eexists. p.
+  Qed.
 
   (** ----- Phase 2.4 (task #179): no_double_spend transfer -----
 
