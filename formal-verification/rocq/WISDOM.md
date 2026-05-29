@@ -960,3 +960,57 @@ c; [ apply ThrottleLibLeaves.run_checked_sub_t_uint256;
 The same trap likely applies to checked_mul, checked_div,
 checked_add arms with `<` / `>=` preconditions sourced from a
 context hypothesis written in the opposite direction.
+
+## R030: `cbn; lia` over `10^18` is pathologically slow — use `change` instead
+
+A single `unfold ProposerThrottle.FIX_ONE; cbn; lia` invocation in
+`get_throttle_currentCharge_capped` was costing **26.8 seconds** —
+basically the entire ThrottleLib.v compile time. Profile via
+`coqc -time` flagged it as one tactic.
+
+The cause: `cbn` was being asked to reduce `10^18 = Z.pow 10 18`
+to its 19-digit decimal value. Whatever path `cbn` takes for
+non-binary bases is dramatically slower than for `2^256` (which
+parallel proofs reduce in <0.1s). Possibly the binary-exponentiation
+fast path applies cleanly to base 2 but not base 10; possibly the
+intermediate Z values are larger; in any case the empirical gap is
+20-300x.
+
+### Workaround
+
+Replace `cbn; lia` with targeted `change` substitutions that bypass
+the kernel-level reduction:
+
+```coq
+(* Slow: 26.8s *)
+unfold ProposerThrottle.FIX_ONE; cbn; lia.
+
+(* Fast: 1.4s *)
+change ProposerThrottle.FIX_ONE with 1000000000000000000.
+change (some_record.(projection)) with 0.   (* if needed *)
+lia.
+```
+
+`change A with B` is convertibility-checked once, no kernel reduction.
+`lia` then sees a numeric literal directly.
+
+### When this applies
+
+- Any `cbn` / `simpl` / `vm_compute` call that touches a non-binary
+  large power (10^N, 60^N, etc.).
+- Field-validity helpers on default-record projections.
+- Goal reductions involving big rational constants.
+
+### How to detect
+
+```sh
+coqc -time <file>.v 2>&1 | awk '/secs$/' | sort -gr | head
+```
+
+Top entry is the slowest tactic. Anything >1s for an arithmetic
+goal is worth investigating — usually a `change`-then-`lia` fix.
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v`:
+  `get_throttle_currentCharge_capped`. ~27s → ~1.4s after the swap.
