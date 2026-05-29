@@ -725,6 +725,75 @@ Notation audit_delegation_set_std_delegate_preserves_validity :=
 
 
 (** ============================================================
+    === Section 6b: StakingVault — signature-based delegation ===
+    ============================================================
+
+    [delegateOptimisticBySig] is the EIP-712 + ECDSA path layered
+    on top of the base optimistic-delegation surface. The
+    [StakingVaultDelegationBySig] simulation pulls in two new
+    mocks — [ECDSA] (signature recovery + EIP-712 typed-data
+    hashing) and [Nonces] (per-account replay counters) — and
+    states five theorems on the operator:
+
+      - [audit_bysig_expired_reverts] : signatures past their
+        [expiry] are rejected before any signer is recovered.
+      - [audit_bysig_increments_signer_nonce] : a successful
+        BySig delegation increments exactly the recovered
+        signer's nonce, by exactly 1, leaving all other accounts
+        untouched.
+      - [audit_bysig_sets_signer_delegate] : a successful BySig
+        delegation re-points only the signer's optimistic
+        delegate, not the caller's, not any third party's.
+      - [audit_bysig_replay_reverts] : calling BySig twice with
+        the same (signature, nonce) pair reverts the second call
+        — the contract-side replay-protection theorem.
+      - [audit_bysig_cross_chain_recovers_different_signer] /
+        [audit_bysig_cross_contract_recovers_different_signer] :
+        a signature bound to chain id A (or verifying contract X)
+        cannot be successfully replayed against chain B (or
+        contract Y). Captures the EIP-712 domain-separator
+        binding via the ECDSA mock's
+        [typed_data_hash_injective] axiom.
+      - [audit_bysig_preserves_validity] : the extended
+        [Valid.state] predicate (base delegation invariants plus
+        nonce-map non-negativity) survives a successful BySig
+        call given the standard from-side conservation
+        precondition that any reachable contract state already
+        satisfies.
+*)
+
+Require ReserveGovernor.proofs.StakingVaultDelegationBySig.
+Require ReserveGovernor.proofs.StakingVaultDelegationBySig_validity.
+
+Notation audit_bysig_expired_reverts :=
+  ReserveGovernor.proofs.StakingVaultDelegationBySig.StakingVaultDelegationBySigProofs.bysig_expired_reverts.
+
+Notation audit_bysig_increments_signer_nonce :=
+  ReserveGovernor.proofs.StakingVaultDelegationBySig.StakingVaultDelegationBySigProofs.bysig_success_increments_signer_nonce.
+
+Notation audit_bysig_preserves_other_nonces :=
+  ReserveGovernor.proofs.StakingVaultDelegationBySig.StakingVaultDelegationBySigProofs.bysig_success_preserves_other_nonces.
+
+Notation audit_bysig_sets_signer_delegate :=
+  ReserveGovernor.proofs.StakingVaultDelegationBySig.StakingVaultDelegationBySigProofs.bysig_success_sets_signer_delegate.
+
+Notation audit_bysig_preserves_other_delegates :=
+  ReserveGovernor.proofs.StakingVaultDelegationBySig.StakingVaultDelegationBySigProofs.bysig_success_preserves_other_delegates.
+
+Notation audit_bysig_replay_reverts :=
+  ReserveGovernor.proofs.StakingVaultDelegationBySig.StakingVaultDelegationBySigProofs.bysig_replay_reverts.
+
+Notation audit_bysig_cross_chain_recovers_different_signer :=
+  ReserveGovernor.proofs.StakingVaultDelegationBySig.StakingVaultDelegationBySigProofs.bysig_cross_chain_recovers_different_signer.
+
+Notation audit_bysig_cross_contract_recovers_different_signer :=
+  ReserveGovernor.proofs.StakingVaultDelegationBySig.StakingVaultDelegationBySigProofs.bysig_cross_contract_recovers_different_signer.
+
+Notation audit_bysig_preserves_validity :=
+  ReserveGovernor.proofs.StakingVaultDelegationBySig_validity.StakingVaultDelegationBySigValidity.delegateOptimisticBySig_preserves_validity.
+
+
+(** ============================================================
     === Section 7: ProposalLib ===
     ============================================================
 
