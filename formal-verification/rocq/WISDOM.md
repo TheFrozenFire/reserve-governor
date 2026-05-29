@@ -341,3 +341,37 @@ constants are in the goal) reduces the structural part while
 keeping the heavy operations symbolic. The remaining lia step is
 then small and fast. Apply this preemptively in any rewards /
 ratio / exchange proof to keep build times tractable.
+
+## R019: `Dict.Eq.eqb` typeclass projection blocks `cbn` / `simpl` reduction
+
+The upstream rocq-of-solidity's `Dict.Eq.eqb` is a typeclass field
+(`Class C (A : Set) := eqb : A -> A -> bool`), not a regular
+Definition. Neither `simpl` nor `cbn` reduces it to its instance
+body, even when the dict is concrete (`Dict.t Address.t V` where
+`Address.t = Z` and the instance is `IZ := Z.eqb`).
+
+Symptom: in Dict get-after-set proofs, after `induction dict;
+cbn`, the cons-branch goal contains `Dict.Eq.eqb k key` rather
+than `Z.eqb k key`. `destruct (k =? key)` and `rewrite Z.eqb_refl`
+both fail to find the subterm they expect because the term in the
+goal is still the typeclass projection.
+
+Workaround: use `hauto` (`From Hammer Require Import Tactics.`) as
+the kitchen-sink tactic. It handles the typeclass dispatch + the
+case-split + the induction step in one go:
+
+```coq
+Lemma dict_get_declare_or_assign_eq {V : Set}
+    (dict : Dict.t Address.t V) (key : Address.t) (value : V) :
+  Dict.get (Dict.declare_or_assign dict key value) key = Some value.
+Proof.
+  unfold Dict.declare_or_assign.
+  induction dict as [|[k v] dict IH];
+    hauto lq: on use: Z.eqb_refl, Z.eqb_eq, Z.eqb_neq.
+Qed.
+```
+
+Will apply to every storage-projection proof in
+`proofs/equivalence/` since each one needs Dict.get-after-set
+lemmas. Prefer `hauto`; fall back to manual unfolds only when
+`hauto` exhausts its depth bound.
