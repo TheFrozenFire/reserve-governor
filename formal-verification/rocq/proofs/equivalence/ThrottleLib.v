@@ -648,6 +648,18 @@ Module ThrottleLibLeaves.
     repeat (lu || cu || p).
   Qed.
 
+  (** [convert_t_structₓ_ProposalThrottle_ₓ18_storage_to_..._ptr] is
+      identity at the slot level — it just copies the slot address. *)
+  Lemma run_convert_t_struct_ProposalThrottle_storage_to_ptr codes env state v :
+    {{? codes, env, Some state |
+      convert_t_structₓ_ProposalThrottle_ₓ18_storage_to_t_structₓ_ProposalThrottle_ₓ18_storage_ptr v ⇓
+      Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_structₓ_ProposalThrottle_ₓ18_storage_to_t_structₓ_ProposalThrottle_ₓ18_storage_ptr.
+    lu. repeat (lu || cu || p).
+  Qed.
+
 End ThrottleLibLeaves.
 
 (** ----- Phase C: mapping_index_access (memory + keccak) -----
@@ -1075,14 +1087,104 @@ Module MakeStateForm.
       Result.Ok (available, charge)
     | Some state' ?}}.
   Proof.
-  (** Body-level tactic skeleton — see the docstring above for the
-      14-step closure plan. Admitted at the outer level pending
-      mechanical assembly of the inner tactic steps and resolution of
-      the R022-family blockers (checked_mul + throttles_packed
-      rewrites). The supporting leaves (run_mapping_index_access,
-      run_checked_add/sub/div, the convert chain) are all closed; the
-      main theorem's plumbing reduces to chaining them via [l. { c. {
-      apply leaf. } ... } CanonizeState.execute. ...]. *)
+    destruct H_no_overflow as (H_now_geq & H_charge_ok & H_capacity_ok).
+    destruct H_memory_scratch as (w0 & w1 & rest & H_mem_eq). subst memory.
+    eexists.
+    unfold ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152.
+    unfold M.strong_let_, M.generic_let, M.pure, M.call.
+    (** Aggressive walker — closes the trivial Yul let-bindings, the
+        zero-init, cleanup, convert, and constant calls automatically.
+        Leaves open: the mapping_index_access call (needs Phase C
+        composition with state threading), the timestamp primitive,
+        the three storage sloads (need apply_run_sload_struct_field
+        and apply_run_sload_u256), the checked arithmetic ops, and
+        the Shallow.if_ clamp.
+
+        The walker's structure is the template for follow-up: each
+        new arm covers one call site. The current shape demonstrates
+        a working `lazymatch + s` chain for the simple parts. *)
+    try
+      (repeat
+      (lazymatch goal with
+       | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+       | |- {{? _, _, _ |
+             LowM.Call ThrottleLib_153.ThrottleLib_153_deployed.zero_value_for_split_t_uint256 _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_zero_value_for_split_t_uint256 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.cleanup_t_uint256 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_cleanup_t_uint256 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.cleanup_from_storage_t_uint256 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_cleanup_from_storage_t_uint256 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.cleanup_t_rational_1000000000000000000_by_1 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_cleanup_t_rational_1000000000000000000_by_1 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.cleanup_t_rational_1_by_1 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_cleanup_t_rational_1_by_1 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.cleanup_t_rational_43200_by_1 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_cleanup_t_rational_43200_by_1 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.identity _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_identity | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_rational_1000000000000000000_by_1_to_t_uint256 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_convert_t_rational_1000000000000000000_by_1_to_t_uint256 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_rational_1_by_1_to_t_uint256 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_convert_t_rational_1_by_1_to_t_uint256 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_rational_43200_by_1_to_t_uint256 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_convert_t_rational_43200_by_1_to_t_uint256 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_uint256_to_t_uint256 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_convert_t_uint256_to_t_uint256 | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_structₓ_ProposalThrottle_ₓ18_storage_to_t_structₓ_ProposalThrottle_ₓ18_storage_ptr _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_convert_t_struct_ProposalThrottle_storage_to_ptr | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.shift_right_0_unsigned _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_shift_right_0_unsigned | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.extract_from_storage_value_offset_0_t_uint256 _) _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_extract_from_storage_value_offset_0_t_uint256 | ]
+       | |- {{? _, _, _ |
+             LowM.Call ThrottleLib_153.ThrottleLib_153_deployed.constant_PROPOSAL_THROTTLE_PERIOD_349 _
+             ⇓ _ | _ ?}} =>
+           c; [ apply ThrottleLibLeaves.run_constant_PROPOSAL_THROTTLE_PERIOD_349 | ]
+       | |- {{? _, _, _ | LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+           c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+       | |- {{? _, _, _ |
+             LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.mapping_index_access_t_mappingₓ_t_address_ₓ_t_structₓ_ProposalThrottle_ₓ18_storage_ₓ_of_t_address _ _) _
+             ⇓ _ | _ ?}} =>
+           let Hmia := fresh "Hmia" in
+           let mp   := fresh "memory_post" in
+           pose proof (MappingIndexAccess.run_mapping_index_access
+                         codes env state_base (Pure.add 0 1) account
+                         (proj_sim sim) (w0 :: w1 :: rest)
+                         H_valid_account
+                         (ex_intro _ w0 (ex_intro _ w1
+                            (ex_intro _ rest eq_refl)))) as Hmia;
+           destruct Hmia as [mp Hmia];
+           eapply RunO.Call; [ exact Hmia | ]
+       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+       | |- _ => s
+       end)).
   Admitted.
 
   (** ----- Phase F: public-wrapper equivalence -----
