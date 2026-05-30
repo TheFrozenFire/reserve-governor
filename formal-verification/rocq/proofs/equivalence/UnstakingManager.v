@@ -40,13 +40,13 @@ Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.proofs.equivalence.Common.
 Require Import ReserveGovernor.simulations.UnstakingManager.
 (** [UnstakingManager_shallow.v] is generated but doesn't compile under
-    Coq 8.20 — shallow_embed.py emits `let_state~ 'tt :=` for a switch
-    whose branches assign to a U256 variable. The natural patch
-    (binding pattern = commonly_updated_vars) cascades into broader
-    typing issues downstream because the outer block strips
-    re-declared variables from final_updated_vars. Deeper investigation
-    of shallow_embed's variable-tracking semantics is needed. Tracked
-    under WISDOM R035; this file keeps placeholder bodies. *)
+    Coq 8.20. The earlier YulSwitch let_state binding bug is now fixed
+    upstream (TheFrozenFire/rocq-of-solidity 8421532309). A separate
+    structural issue still blocks compile: cancelLock_212 and
+    claimLock_270 nest `let_state~` inside `[[ ]]` brackets, and the
+    `M.monadic` Ltac doesn't traverse `Shallow.let_state` notation
+    expansion. Until that's fixed upstream, this file keeps placeholder
+    bodies. Tracked under WISDOM R035. *)
 
 Import Stdlib.
 Import RunO.
