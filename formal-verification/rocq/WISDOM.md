@@ -1465,60 +1465,38 @@ f_equal. f_equal. exact IH.
   pattern verbatim — the helpers are reusable, the proof template
   fits any two-sstore-per-account mutation shape.
 
-## R035: shallow_embed.py mis-embeds switch with non-unit branches
+## R035: shallow_embed.py mis-embeds nested control flow
 
-### The symptom
+### Original symptom (switch bug — now FIXED)
 
-`generated/UnstakingManager_shallow.v` line 897 fails to compile:
+`generated/UnstakingManager_shallow.v` line 897 used to fail with a
+type error because the YulSwitch translation bound the result as
+`'tt` (unit) while the branches returned a Z. See "The switch bug —
+FIXED" section below.
+
+### Current symptom (separate, downstream bug)
+
+With the switch fix in place, UnstakingManager_shallow.v still fails,
+now at `fun_cancelLock_212` (and similarly `fun_claimLock_270`):
 ```
-Error: Found a constructor of inductive type unit while a constructor
-of Z is expected.
-```
-
-The shallow form has:
-```coq
-let_state~ 'tt := [[
-  (* switch *)
-  let~ δ := [[ expr_1364 ]] in
-  if δ =? 0 then
-    ...
-    let~ expr_1376 := [[ ... ]] in
-    M.pure (BlockUnit.Tt, expr_1376)  (* <-- expr_1376 is U256, but 'tt expects unit *)
-  else
-    ...
-]] default~ tt in
+Error: Must evaluate to a closed term
+offending expression: 
+e
+this is an object of type ident
 ```
 
-The outer `let_state~ 'tt :=` binds the result as unit, but the
-switch-branch body returns `(BlockUnit.Tt, expr_1376)` where
-`expr_1376` is a U256.t. The two types disagree.
-
-### What's happening upstream
-
-shallow_embed.py translates Yul `switch` statements into nested
-Coq `if-then-else` chains. When the switch's branches assign to a
-variable scoped outside the switch, the translation should bind
-the result as the variable's type — but it's instead binding to
-`'tt`. This works for switches whose branches do pure side-effects
-(reverts, stores) but fails for switches that compute a value.
-
-UnstakingManager hits this because cancelLock's body has a switch
-that computes a return value from SafeERC20's optional return.
-
-### Workaround for the equivalence proof
-
-Until shallow_embed.py is patched, equivalence proofs against
-UnstakingManager_shallow.v can't proceed. The
-`proofs/equivalence/UnstakingManager.v` file keeps placeholder
-`LowM.Pure (Result.Ok tt)` bodies in its three theorems; when the
-shallow form compiles cleanly, the swap is mechanical.
+The error comes from `M.monadic` Ltac — `[[ e ]]` is
+`(ltac:(M.monadic e))`. M.monadic can traverse raw `let v := x in f v`
+and `run x` patterns but doesn't know how to handle a `Shallow.let_state`
+(the `let_state~` notation) appearing inside its scope.
 
 ### Affected contracts
 
-- UnstakingManager.sol (confirmed: line 897 of shallow output).
-- Possibly any contract with switch-on-value patterns. ThrottleLib,
-  VersionRegistry, RewardTokenRegistry, Guardian shallow forms all
-  compile, so this is specific to switches that compute a value.
+- UnstakingManager.sol: cancelLock_212 and claimLock_270 both have a
+  `let_state~ ... := [[ Shallow.if_ (| _, <succ_with_nested_let_state>, _ |) ]]`
+  pattern. The inner let_state's `[[ ]]` brackets don't compile.
+- ThrottleLib, VersionRegistry, RewardTokenRegistry, Guardian shallow
+  forms have no nested let_state inside [[ ]] — they compile cleanly.
 
 ### Touchpoints
 
@@ -1527,11 +1505,12 @@ shallow form compiles cleanly, the swap is mechanical.
 - `scripts/shallow-embed-sweep`: generates the file successfully but
   the consumer can't load it.
 - Upstream: `~/git/reserve/formal-verification/rocq-of-solidity/rocq/scripts/shallow_embed.py`
-  — the switch translator needs to track the type of the
-  switch-bound variable and emit the right `let_state~ '<var> :=`
-  binding instead of `'tt`.
+  — emits `Shallow.let_state` nested inside `Shallow.if_`'s success
+  parameter, which lands inside `[[ ]]` brackets.
+- Upstream: `rocq/RocqOfSolidity/RocqOfSolidity.v` `Ltac M.monadic` —
+  doesn't recognise the `Shallow.let_state` shape.
 
-### Attempted fix that didn't land (2026-05-29)
+### The switch bug — FIXED (2026-05-30)
 
 The natural one-line patch is line 254:
 ```python
@@ -1539,32 +1518,63 @@ updated_vars_to_rocq(True, final_updated_vars)  →
 updated_vars_to_rocq(True, commonly_updated_vars)
 ```
 
-This makes the let_state binding pattern match what the switch's
-branches produce. The first-order test passes — `let_state~ 'tt`
-becomes `let_state~ expr_1376` on line 897, which type-checks against
-the inner `M.pure (BlockUnit.Tt, expr_1376)`.
+Landed upstream in TheFrozenFire/rocq-of-solidity:feat/env-block-context
+as commit `8421532309`. The previous diagnosis (this fix "cascades into a
+type mismatch") was wrong: `Shallow.let_state` is heterogeneous in its
+State1 and State2 parameters — body's value type and continuation's state
+type are independent. So `let_state~ expr_1376 := body default~ tt`
+typechecks cleanly when body returns Z and continuation expects unit.
 
-But the change cascades:
-- `block_to_rocq` does `updated_vars -= declared_vars` at line 107,
-  stripping any variable that's BOTH declared and assigned in the
-  same block. The outer `let~ expr_1376 := [[ 0 ]] in` declares
-  expr_1376 in the same block as the switch, so expr_1376 is
-  stripped from the parent's `updated_vars`. Thus `final_updated_vars`
-  passed to the switch's lambda doesn't include expr_1376.
-- With the patch, the switch's let_state binds `expr_1376` but the
-  `default~` uses `final_updated_vars` which is now (`tt`, i.e.
-  empty) — a TYPE mismatch with the binding's U256.
-- Forcing default to also be commonly_updated_vars fixes that one
-  spot but breaks the continuation type: the rest of the block
-  returns unit (via M.pure tt) but State2 is now U256.
+```coq
+Definition let_state {State1 State2 : Set}
+    (expression : t State1) (body : State1 -> State2 * t State2) :
+    t State2 := ...
+```
 
-The proper fix needs to:
-1. Distinguish "var declared earlier in this block, mutated by inner
-   stmt" (which should propagate as updated_vars upward) from "var
-   purely local to this block" (current behavior).
-2. Compute let_state binding vs default types coherently — both
-   should agree, and they should match the inner expression's State1
-   and the continuation's State2 respectively.
+After the patch, line 897 of UnstakingManager_shallow.v reads
+`let_state~ expr_1376 := [[ <switch> ]] default~ tt in` — types check,
+and the subsequent `Shallow.if_ (| expr_1376, ... |)` correctly reads
+the switch's update (lexical scope captures the binding).
 
-Until then, UnstakingManager_shallow.v stays unloaded. The other
-four shallow forms compile fine and are wired into _RocqProject.
+### Remaining downstream issue (separate from the switch bug)
+
+With the switch fix in place, UnstakingManager_shallow.v still fails to
+compile at `fun_cancelLock_212` (and similarly `fun_claimLock_270`) with
+a *different* error:
+
+```
+Error: Must evaluate to a closed term
+offending expression: 
+e
+this is an object of type ident
+```
+
+The pointer covers the whole `Definition fun_cancelLock_212` body. The
+trigger is a nested `let_state~` *inside* `[[ ]]` brackets: the outer
+`let_state~ expr_205 := [[ Shallow.if_ (| _77, succ, expr_205 |) ]]
+default~ tt in` wraps a `Shallow.if_` whose `succ` branch contains an
+*inner* `let_state~ _78 := [[ ... ]] default~ expr_205 in`.
+
+`[[ e ]]` is `(ltac:(M.monadic e))`. The `M.monadic` Ltac knows how to
+traverse raw `let v := x in f v` and `run x` patterns but doesn't
+specifically handle `Shallow.let_state` notation expansion. When the
+nested let_state appears inside the outer brackets' body, M.monadic gets
+confused and fails with this "object of type ident" error.
+
+The proper fix is one of:
+1. Extend `M.monadic` (upstream) to recognise `Shallow.let_state ...`
+   shape and traverse it the way it does `let v := x in f v`.
+2. Restructure shallow_embed.py to emit code without `let_state~` inside
+   `[[ ]]` brackets — keep all `let_state~` at the top-level shallow
+   layer, never inside the `M.monadic` Ltac's scope.
+
+Both are upstream changes. Option 2 is shallower (string-rewriting
+restructure) but may not always be feasible — Shallow.if_ takes a
+`success : M.t (BlockUnit.t * State)` parameter, and to express a
+mutator inside it you'd need to thread state via raw M.strong_let_
+without `let_state~`.
+
+Until either lands, UnstakingManager_shallow.v stays unloaded. The
+other four shallow forms (ThrottleLib, VersionRegistry,
+RewardTokenRegistry, Guardian) compile cleanly with the patch in place
+and are wired into _RocqProject.
