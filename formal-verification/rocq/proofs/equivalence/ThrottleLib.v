@@ -650,6 +650,94 @@ Module MakeStateForm.
         rewrite Hak. exact IH.
   Qed.
 
+  (** ----- Projection-update rewrites (Phase 1.3) -----
+
+      The Yul body of [consumeProposalCharge] performs two sstores at
+      the same account: one at offset 0 (currentCharge), one at
+      offset 1 (lastUpdated). Each sstore translates to a
+      [Dict.declare_or_assign] on the packed map.
+
+      The lemma below packages this: composing two declare_or_assigns
+      on [throttles_packed sim] at [(account, 0)] then [(account, 1)]
+      is structurally equal to projecting the sim after a single
+      [set_throttle]. This holds because:
+        - If [account] is already in sim's throttles dict, both
+          declare_or_assigns find their keys in place (since the
+          packed layout keeps them adjacent), so the result has the
+          same shape as set_throttle's in-place replace.
+        - If [account] is NOT in sim, both declare_or_assigns reach
+          the end and append. set_throttle on the sim side also
+          appends. The flat_map afterwards produces the same two
+          entries at the tail. *)
+  (** Helper: stepping declare_or_assign past a cons (matching or not).
+      Use the same [change]-then-rewrite-Z.eqb pattern as
+      [map_get_u256_pair_cons] to avoid the typeclass-dispatch trap. *)
+  Lemma declare_or_assign_pair_cons_step
+      (rest : Dict.t (U256.t * U256.t) U256.t)
+      (a c b d v new_v : U256.t) :
+    Dict.declare_or_assign (((c, d), v) :: rest) (a, b) new_v
+    = if andb (Z.eqb c a) (Z.eqb d b)
+      then ((a, b), new_v) :: rest
+      else ((c, d), v) :: Dict.declare_or_assign rest (a, b) new_v.
+  Proof.
+    unfold Dict.declare_or_assign.
+    change (Dict.declare_or_assign_function (((c, d), v) :: rest) (a, b) (fun _ => new_v))
+      with (if @Dict.Eq.eqb (Z * Z) Dict.Eq.ITuple2 (c, d) (a, b)
+            then ((a, b), new_v) :: rest
+            else ((c, d), v) :: Dict.declare_or_assign_function rest (a, b) (fun _ => new_v)).
+    rewrite Dict_Eq_eqb_ZZ_pair_unfold.
+    reflexivity.
+  Qed.
+
+  Lemma declare_or_assign_Z_cons_step
+      (rest : Dict.t Address.t Throttle.t)
+      (k a : Address.t) (v new_v : Throttle.t) :
+    Dict.declare_or_assign ((k, v) :: rest) a new_v
+    = if Z.eqb k a
+      then (a, new_v) :: rest
+      else (k, v) :: Dict.declare_or_assign rest a new_v.
+  Proof.
+    unfold Dict.declare_or_assign.
+    change (Dict.declare_or_assign_function ((k, v) :: rest) a (fun _ => new_v))
+      with (if @Dict.Eq.eqb _ Dict.Eq.IZ k a
+            then (a, new_v) :: rest
+            else (k, v) :: Dict.declare_or_assign_function rest a (fun _ => new_v)).
+    reflexivity.
+  Qed.
+
+  Lemma throttles_packed_set_throttle_two_sstores
+      (sim : ThrottleLibStorage.t) (account : Address.t)
+      (charge lastUpdated : U256.t) :
+    Dict.declare_or_assign
+      (Dict.declare_or_assign (throttles_packed sim) (account, 0) charge)
+      (account, 1) lastUpdated
+    = throttles_packed
+        (ThrottleLibStorage.set_throttle sim account
+          {| Throttle.currentCharge := charge;
+             Throttle.lastUpdated   := lastUpdated |}).
+  Proof.
+    (* The structural-equality form admits — see WISDOM R034.
+       Outline of the intended proof:
+       - Induct on sim.(throttles).
+       - Empty case: both declare_or_assigns append at the end; the
+         set_throttle on empty sim also produces a singleton dict,
+         and the flat_map produces a 2-entry list matching.
+       - Cons case (k=account): both declare_or_assigns find their
+         keys in place at the first two entries; replace as set_throttle.
+       - Cons case (k≠account): both declare_or_assigns skip the first
+         two entries; recurse via IH; the cons of (k, 0) and (k, 1)
+         entries pass through unchanged on both sides.
+       The mechanization gets tangled because [rewrite] picks the
+       inner [declare_or_assign] first; after the if-reduction, the
+       new shape doesn't expose the pattern for the next rewrite
+       without manual [simpl] / [change] gymnastics that fight against
+       Coq 8.20's [Z.eqb] reduction quirks. Observational equality
+       (forall key, map_get_u256 LHS = map_get_u256 RHS) would close
+       cleanly but the consuming equivalence theorem expects
+       structural equality of the State.t (specifically of the
+       MapStruct's underlying Dict). Tracked under WISDOM R034. *)
+  Admitted.
+
   (** ----- Slot-form bridge axiom: keccak256_tuple2 + small offset -----
 
       The Solidity-generated [Stdlib.add(keccak256(key, slot), offset)]

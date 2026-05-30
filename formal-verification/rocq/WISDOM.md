@@ -1166,21 +1166,234 @@ After several `rewrite at 1`, the expected form ends up with
 same as `Z.min FIX_ONE raw` (idempotence), but syntactically
 different so `apply RunO.Pure` still fails.
 
-### Better approach (Goals 4 + 5 coordinated closure)
+### Final Goal 4 closure (commit 78af2aa)
 
-The fundamental cause is the shared metavariable between the
-if-then-else's two branches. Closing branch 1 with one form fixes
-the metavariable; branch 2 then has to match that exact form.
+The shared-metavariable problem is bridged by `RunO.PureEq` with a
+side equality proof that uses `Z.min_l` (clamped branch) or
+`Z.min_r` (unclamped branch). Key trick for the clamped branch:
+introduce the equality as a named hypothesis `E`, normalize any
+literal computation (e.g. `replace (12 * 3600) with 43200`) inside
+the side proof, then do a single `rewrite E` in the main goal:
 
-The clean fix: restructure so the if-then-else's destruct happens at
-an *outer* level (around Goals 4 and 5 together), so each branch
-gets its own fresh metavariable for the OUTER goal. Then Goal 5's
-swap handles algebraic equivalence (`Z.min FIX_ONE raw = raw` for
-true branch, `= FIX_ONE` for false branch) inside a single goal.
+```coq
+apply RunO.PureEq.
++ assert (E : Z.min 1000000000000000000 (<raw_expr>) = 1000000000000000000)
+    by (apply Z.min_l; exact Hge_raw).
+  replace (12 * 3600) with 43200 in E by reflexivity.
+  rewrite E. reflexivity.
++ reflexivity.
+```
+
+A single `rewrite E` finds every occurrence of the LHS uniformly and
+substitutes, so the three FIX_ONE positions become three (Z.min ...)
+positions atomically — no accumulating nested wrappers as the
+"rewrite at N" approach would have produced.
 
 ### Touchpoints
 
 - `proofs/equivalence/ThrottleLib.v`:
-  `run_getProposalsAvailable_equivalent_make_state` Goal 2.B uses
-  the working Z.min_r pattern. Goal 4 + 5 deferred per the analysis
-  above.
+  `run_getProposalsAvailable_equivalent_make_state` closes with Qed.
+  Goal 2.B uses Z.min_r; Goal 4 uses the RunO.PureEq + Z.min_l +
+  rewrite-E pattern; Goal 5 closes by `cbn match; unfold
+  proposalsAvailable, readCharge; apply RunO.Pure` once Goal 2's
+  bridge has fixed the metavariable.
+
+## R033: Bridging if-then-else metavariable sharing with `RunO.PureEq` — the recipe
+
+### When to reach for this
+
+A theorem's body has an if-then-else (or any `match` with multiple
+result arms) whose branches emit *concretely different* output
+tuples, but the abstract `output` metavariable bound at the top of
+the proof (`eexists state'`-style) is shared across all branches. As
+soon as branch 1 closes with `apply RunO.Pure`, the metavariable
+unifies with branch 1's concrete shape, and branch 2 then fails
+because its shape doesn't match — even though both shapes equal a
+shared *abstract* form (e.g. `Z.min FIX_ONE raw`).
+
+This pattern shows up whenever a Solidity `if (cond) { return X }
+else { return Y }` corresponds to a sim that returns
+`Z.min/Z.max/clamp/abs(...)`. The Yul side emits both literal forms;
+the sim side stays abstract.
+
+### The two-leg recipe
+
+For each branch, do one of the two following:
+
+**Leg A — unclamped / inverse: `replace` introduces the abstract form.**
+
+```coq
+(* The branch emits raw; abstract form is `Z.min FIX_ONE raw` and
+   we have `raw <= FIX_ONE` in scope. *)
+replace raw with (Z.min FIX_ONE raw) by (apply Z.min_r; exact Hle).
+apply RunO.Pure.
+```
+
+The single `replace` substitutes uniformly across the goal, so all
+positions of `raw` become `Z.min FIX_ONE raw` at once. Branch 1
+closes with `RunO.Pure`. The metavariable picks up the abstract
+form.
+
+**Leg B — clamped / direct: `RunO.PureEq` accepts the mismatch.**
+
+```coq
+(* The branch emits literal `FIX_ONE`; abstract form is
+   `Z.min FIX_ONE raw` and we have `raw > FIX_ONE` ⇒ `FIX_ONE <= raw`. *)
+apply RunO.PureEq.
++ assert (E : Z.min FIX_ONE <raw_expr> = FIX_ONE)
+    by (apply Z.min_l; <exact-the-bound>).
+  rewrite E. reflexivity.
++ reflexivity.
+```
+
+`RunO.PureEq` accepts an `output ≠ output'` mismatch with a side
+equality proof. The `assert E` introduces the algebraic fact; the
+single `rewrite E` substitutes uniformly so all positions of the
+abstract `Z.min` form collapse to the literal at once.
+
+### Why a single rewrite over `rewrite at N`
+
+`rewrite E at 1` shifts occurrence indices after each invocation,
+and Coq's unification engine accumulates *nested* `Z.min` wrappers
+trying to match. A single unscoped `rewrite E` collapses every
+matching subterm to the literal in one step — no indexing trap.
+
+### Literal normalization inside the side proof
+
+If the side equality contains expressions like `12 * 3600` that need
+to match a literal `43200` in the goal, normalize them inside the
+assertion before `rewrite E`:
+
+```coq
+assert (E : ... = FIX_ONE) by (apply Z.min_l; exact Hge_raw).
+replace (12 * 3600) with 43200 in E by reflexivity.
+rewrite E. reflexivity.
+```
+
+### Tactic alias
+
+`pe` is the upstream alias for `apply RunO.PureEq`. The recipe in
+its compact form:
+
+```coq
+pe.
+- assert (E : <abstract> = <concrete>) by (apply Z.min_{l,r}; <bound>).
+  rewrite E. reflexivity.
+- reflexivity.
+```
+
+### Touchpoints / future use
+
+The Phase 1.3 mutator (`run_consumeProposalCharge_make_state`) will
+hit the same shape on its bound-clamp: the sim returns `Z.min
+FIX_ONE (currentCharge + delta)` while Yul emits literal `FIX_ONE`
+on overflow and the raw expression otherwise. Same recipe applies.
+
+Other places to expect this pattern:
+- Any `proposalsAvailable / readCharge` rederivation in
+  ProposerThrottle equivalence proofs.
+- Reward-cap clamps in StakingVault.
+- Block-timestamp `min(deadline, now)` patterns in Timelock.
+
+### Anti-patterns
+
+- `rewrite ... at 1; rewrite ... at 2; ...` — indices shift, nested
+  wrappers accumulate.
+- `apply RunO.Pure` then trying `f_equal` on tuple components — the
+  whole problem is the unification at apply-time, not after.
+- Refactoring to put the destruct at an outer level — works in
+  theory but bloats the proof; the recipe above is local and
+  composable.
+
+## R034: `Dict.declare_or_assign` chains resist structural-equality proofs
+
+### The shape
+
+For Phase 1.3 (`consumeProposalCharge` equivalence), the post-state's
+packed map is two stacked `Dict.declare_or_assign` calls — one for
+each sstore. The natural equivalence target is
+
+```coq
+Dict.declare_or_assign
+  (Dict.declare_or_assign (throttles_packed sim) (account, 0) charge)
+  (account, 1) lastUpdated
+= throttles_packed (set_throttle sim account new_throttle)
+```
+
+The two sides ARE structurally equal up to permutation in all cases
+(account already in sim's throttles, account fresh), but reaching
+that equality through `rewrite + Z.eqb_refl + simpl` chains hits
+multiple traps.
+
+### What goes wrong
+
+1. **Rewrite picks the inner declare_or_assign first**, not the outer.
+   The pattern `Dict.declare_or_assign (((c,d),v)::rest) (a,b) new_v`
+   matches the INNER call's first arg (a literal cons), not the
+   OUTER call's first arg (a function application).
+
+2. **After `rewrite Z.eqb_refl; simpl`, the goal shape mutates** in
+   ways that make the SECOND rewrite fail to find a matching
+   subterm. `simpl` reduces the if's conditional but also
+   over-eagerly normalizes adjacent expressions, breaking the
+   `((c,d),v)::rest` shape needed for the pattern.
+
+3. **The third nested declare_or_assign needs another pair_cons_step
+   rewrite**, not a Z_cons_step. The two helpers have different
+   shapes; mixing them in the proof script silently fails when the
+   right tool isn't reached.
+
+### The structural-vs-observational trade-off
+
+Observational equality (`forall key, map_get_u256 LHS key =
+map_get_u256 RHS key`) closes cleanly by induction over sim's
+throttles dict, with the `map_get_u256_pair_cons` helper handling
+each step. The proof is roughly 15-20 lines.
+
+Structural equality requires showing the underlying Dict lists are
+identical sequences. That requires:
+- Carefully threading `Dict.declare_or_assign_function` reductions
+  through the typeclass-dispatch `Dict.Eq.eqb`.
+- Avoiding `simpl` which over-reduces.
+- Matching specifically when the inner cons is hit twice (offsets 0
+  and 1) versus skipped twice.
+
+### Why we need structural
+
+The equivalence theorem asserts
+`{{? ... | yul_body ⇓ Result.Ok tt | Some post_state ?}}` where
+`post_state` is computed from the sim. The State.t embeds the
+MapStruct as a literal Dict (a list). For the theorem to typecheck,
+the two states need to be structurally equal — not just
+observationally equivalent maps. Coq's state-equality is up to
+syntactic equality of the underlying Dict.
+
+### Workarounds
+
+Three options, ordered by feasibility:
+
+1. **Restate the equivalence theorem with observational equality on
+   the storage map.** Introduce a helper relation
+   `state_extensionally_equal env state1 state2` that compares
+   storage entries pointwise. Loses the clean `state' = ...`
+   form but the proof closes immediately.
+
+2. **Mechanize the structural equality by hand**, step by step, with
+   `change` instead of `simpl` to avoid over-reduction. Estimated
+   1-2 hours of focused work.
+
+3. **Add `Dict.declare_or_assign_commute` and related rewrite lemmas
+   upstream**, then use them to normalize both sides into a
+   canonical form before equality check. Upstream change required.
+
+### Touchpoints
+
+- `proofs/equivalence/ThrottleLib.v`:
+  `throttles_packed_set_throttle_two_sstores` is Admitted under this
+  banner; the lemma statement is correct. The helpers
+  `declare_or_assign_pair_cons_step` and
+  `declare_or_assign_Z_cons_step` are proven and reusable.
+- Future contracts with struct-valued mappings (UnstakingManager.locks,
+  StakingVault rewards, Governor proposals) will hit the same shape.
+  This entry should be revisited when one of those equivalence
+  theorems is attempted.

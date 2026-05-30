@@ -483,6 +483,34 @@ Module ThrottleLibLeaves.
     pe; reflexivity.
   Qed.
 
+  (** [require_helper_t_error_179_OptimisticGovernor__ProposalThrottleExceeded]
+      — success path: when [condition ≠ 0], the guard passes silently.
+
+      Yul body shape:
+        if iszero(condition) { mstore selector; revert }
+      Since [iszero c = 1 ↔ c = 0], a non-zero [condition] skips the
+      revert and the helper returns [tt] with state unchanged.
+
+      Precondition: [condition <> 0] in Z. *)
+  Lemma run_require_helper_succeeds
+      codes env state (condition : U256.t) :
+    condition <> 0 ->
+    {{? codes, env, Some state |
+      require_helper_t_error_179_OptimisticGovernor__ProposalThrottleExceeded condition ⇓
+      Result.Ok tt
+    | Some state ?}}.
+  Proof.
+    intros Hcond.
+    unfold require_helper_t_error_179_OptimisticGovernor__ProposalThrottleExceeded.
+    unfold Shallow.let_state, Shallow.if_.
+    unfold Stdlib.iszero, Pure.iszero.
+    (* Case-split upfront: condition = 0 contradicts Hcond, condition ≠ 0
+       drives Pure.iszero to 0 so the if_ failure branch fires. *)
+    destruct (condition =? 0) eqn:Hcz.
+    - exfalso. apply Z.eqb_eq in Hcz. apply Hcond. exact Hcz.
+    - lu. repeat (lu || cu || p).
+  Qed.
+
   (** [convert_t_uint256_to_t_uint256] is identity for uint256.
       Already proven above; restated here for completeness. *)
 
@@ -524,7 +552,20 @@ Module ThrottleLibLeaves.
       eqn:Hupd; [|exact I].
     unfold update_storage_value_offset_0_t_uint256_to_t_uint256.
     unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
-    (* Walk: convert → sload → prepare_store → update_byte_slice → sstore. *)
+    (* Pre-build the sstore witness so we can rewrite its match-shape
+       under [H_nth] / [Hupd] before applying — the upstream Ltac
+       [apply_run_sstore_struct_field] only works when [nth_error]
+       reduces definitionally (concrete index), which we deliberately
+       avoid here for genericity. *)
+    pose proof
+      (Storage.run_sstore_struct_field storage index key offset value
+         codes env (make_state env state_base memory storage)) as Hsstore.
+    specialize (Hsstore
+      (State.get_current_storage_with_current_storage_eq _ _ _)).
+    rewrite H_nth in Hsstore.
+    cbv zeta in Hsstore.
+    rewrite Hupd in Hsstore.
+    (* Walk: convert → sload → prepare_store → update_byte_slice → sstore → pure. *)
     repeat (lazymatch goal with
       | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
       | |- {{? _, _, _ |
@@ -542,16 +583,10 @@ Module ThrottleLibLeaves.
           c; [ apply run_update_byte_slice_32_shift_0; exact H_v | ]
       | |- {{? _, _, _ |
             LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
-          c; [ eapply (Storage.run_sstore_struct_field storage index key offset value) | ]
+          c; [ apply Hsstore | ]
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
       | |- _ => s
       end).
-  (* Residual: walker leaves the sstore's state-precondition discharge
-     ([State.get_current_storage env state = Some (...)]) and possibly
-     post-sstore state canonicalization. Closing this requires
-     CanonizeState.execute + the precise state-shape lemmas from the
-     upstream proof library. The structure is in place; closure is
-     mechanical but lengthy. *)
-  Admitted.
+  Qed.
 
 End ThrottleLibLeaves.
