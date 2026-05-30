@@ -253,9 +253,14 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                         Mutator (consumeProposalCharge) closes with
                         Qed (R040 + timestamp arm). ThrottleLib is
                         now fully equivalence-closed end-to-end.
-      VersionRegistry   Equivalence scaffold theorem stated
-                        (isDeprecated reader); proof body Admitted
-                        pending walker composition.
+      VersionRegistry   isDeprecated equivalence theorem
+                        (run_isDeprecated_equivalent_scaffold)
+                        closes with Qed. Built on a bytes32→bool
+                        mapping_index_access port + bool-path
+                        cleanup chain (cleanup_from_storage_t_bool,
+                        shift_right_unsigned_dynamic_zero, extract,
+                        sload-at-proj_sim, read-at-proj_sim). All
+                        intermediate leaves close cleanly.
       RewardTokenRegistry,
       Guardian          Substrate ready (shallow forms compile);
                         full equivalence parked behind Phase 4

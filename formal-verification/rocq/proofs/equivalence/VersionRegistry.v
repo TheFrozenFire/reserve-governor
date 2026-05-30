@@ -258,6 +258,44 @@ Module VersionRegistryEquivalence.
       + exact IH.
   Qed.
 
+  (** ----- sload + read-from-storage wrappers for proj_sim ----- *)
+
+  Lemma run_sload_isDeprecated_at_proj_sim
+      codes env state_base memory sim key :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      Stdlib.sload (keccak256_tuple2 key 1) ⇓
+      Result.Ok (StorableValue.map_get_u256
+                   (isDeprecated_map sim.(VersionRegistry.State.history)) key)
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    apply (Storage.run_sload_map_u256 (proj_sim sim) 1
+             (isDeprecated_map sim.(VersionRegistry.State.history)) key).
+    apply proj_sim_isDeprecated.
+  Qed.
+
+  (** Read the isDeprecated map's value from proj_sim, returning the
+      clean 0/1 bool. Uses [land_0xff_bool] + [isDeprecated_map_values_bool]
+      to discharge the cleanup's mask. *)
+  Lemma run_read_isDeprecated_at_proj_sim
+      codes env state_base memory sim key :
+    let v := StorableValue.map_get_u256
+               (isDeprecated_map sim.(VersionRegistry.State.history)) key in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      read_from_storage_split_dynamic_t_bool (keccak256_tuple2 key 1) 0 ⇓
+      Result.Ok v
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_storage_split_dynamic_t_bool.
+    lu. l. { c. { apply run_sload_isDeprecated_at_proj_sim. }
+             c. { apply run_extract_from_storage_value_dynamict_bool_offset_zero. }
+             apply RunO.PureEq; [|reflexivity].
+             rewrite (land_0xff_bool _ (isDeprecated_map_values_bool
+                                          sim.(VersionRegistry.State.history) key)).
+             reflexivity. }
+    repeat (lu || cu || p).
+  Qed.
+
   (** ----- Bool-path scaffold for read_from_storage_split_dynamic_t_bool -----
 
       Closing the isDeprecated getter requires bool-path leaves
@@ -337,6 +375,28 @@ Module VersionRegistryEquivalence.
       Result.Ok expected
     | Some state' ?}}.
   Proof.
-  Admitted.
+    intros state expected.
+    pose proof (MappingIndexAccessBytes32Bool.run_mapping_index_access
+                  codes env state_base 1 key (proj_sim sim) memory H_mem) as Hmia.
+    destruct Hmia as (w0 & w1 & rest & Hmia).
+    eexists.
+    cbv zeta.
+    unfold getter_fun_isDeprecated_40.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_bool_ₓ_of_t_bytes32 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call (read_from_storage_split_dynamic_t_bool _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply run_read_isDeprecated_at_proj_sim | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
 
 End VersionRegistryEquivalence.
