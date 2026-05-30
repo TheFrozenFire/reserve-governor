@@ -1802,3 +1802,127 @@ rocq_start(
   mismatched (built with a different Coq version than `pet` is using).
 - `_check_path_containment` rejection: workspace path doesn't cover
   the file or one of its imports — try a parent-level `_CoqProject`.
+
+
+## R040: Wrapper-shape leaves for sstore — bake in the storage list shape
+
+**Status:** RESOLVED. Pattern landed in `proofs/equivalence/ThrottleLib.v` as
+`run_update_storage_offset_0_at_two_slot_list`.
+
+The upstream sstore leaf
+`run_update_storage_value_offset_0_t_uint256_to_t_uint256` (in
+`ThrottleLib_Leaves.v`) is generic over the storage list, so its
+conclusion is wrapped in a `match List.update_nth storage index ... with
+| Some s' => {{? ... ?}} | None => True end`. The match-form blocks
+`eapply` / `apply` because the unifier cannot see past the constructor
+mediation.
+
+When the walker reaches the sstore call, `c; [eapply <leaf> | ]` fails on
+the first subgoal because the leaf's conclusion is not a clean Hoare
+triple. The walker stops there, leaving the post-state as an evar.
+
+### The fix: a specialized wrapper
+
+Write a thin wrapper that bakes in the concrete shape of the storage
+list (e.g., for ThrottleLib, `[StorableValue.U256 cap; StorableValue.MapStruct map]`
+which is definitionally `proj_sim sim`). Inside the wrapper, invoke the
+generic leaf with the concrete list, `simpl List.update_nth` reduces the
+match, and the result is a clean Hoare-triple conclusion.
+
+```coq
+Lemma run_update_storage_offset_0_at_two_slot_list
+    codes env state_base memory
+    (cap : U256.t)
+    (map : Dict.t (U256.t * U256.t) U256.t)
+    (key offset value : U256.t)
+    (H_off : 0 <= offset < 32)
+    (H_v : 0 <= value < 2^256) :
+  let map' := Dict.declare_or_assign map (key, offset) value in
+  {{? codes, env, Some (make_state env state_base memory
+                          [StorableValue.U256 cap; StorableValue.MapStruct map]) |
+    update_storage_value_offset_0_t_uint256_to_t_uint256
+      (Pure.add (keccak256_tuple2 key 1) offset) value ⇓
+    Result.Ok tt
+  | Some (make_state env state_base memory
+            [StorableValue.U256 cap; StorableValue.MapStruct map']) ?}}.
+Proof.
+  rewrite Pure_add_keccak_offset by exact H_off.
+  pose proof (ThrottleLibLeaves.run_update_storage_value_offset_0_t_uint256_to_t_uint256
+                codes env state_base memory
+                [StorableValue.U256 cap; StorableValue.MapStruct map] 1%nat map
+                key offset value
+                H_v eq_refl) as H.
+  cbv zeta in H.
+  simpl List.update_nth in H.
+  change (Z.of_nat 1) with 1%Z in H.
+  unfold make_state in H at 2.
+  rewrite CanonizeState.with_current_storage_twice_eq in H.
+  exact H.
+Qed.
+```
+
+The walker arm then uses `apply` on the wrapper, which has a clean
+`{{? ?}}` conclusion, side conditions H_off and H_v that close via
+lia / domain bounds.
+
+### Generalization
+
+The same pattern applies to any contract whose sstore writes to a
+struct-mapping slot. The wrapper bakes in the contract's `proj_sim`
+shape (typically `[U256 cap; MapStruct map]` for a single-mapping
+contract, or longer lists for multi-field storage). Once the wrapper
+exists, the walker proceeds past the sstore mechanically, treating the
+post-state as a concrete updated list.
+
+For multi-sstore bodies (e.g., consumeProposalCharge's two-sstore
+pattern), the wrapper handles each sstore independently. The first
+sstore's post-state is `[U256 cap; MapStruct (declare_or_assign map ...)]`,
+which IS a valid input for the wrapper's second invocation (it just
+sees a different `map` parameter). After both sstores, the storage
+list is `[U256 cap; MapStruct (declare_or_assign (declare_or_assign ...) ...)]`,
+which `throttles_packed_set_throttle_two_sstores` (R034) rewrites
+back to `proj_sim new_sim` if needed — though for proofs concluding
+just `exists state', {{? ?}}` (rather than a specific post-state),
+this rewrite isn't required.
+
+### When to apply
+
+- The Yul body writes to a struct-mapping slot via
+  `update_storage_value_offset_0_t_uint256_to_t_uint256` (or a similar
+  one-of-N sstore variant).
+- The walker stops at the sstore call because the generic leaf has a
+  match-wrapped conclusion.
+- The pre-state of the sstore is `make_state ... (proj_sim sim)` or a
+  similar concrete-list form.
+
+### Related infrastructure
+
+- `CanonizeState.with_current_storage_twice_eq` (upstream) — collapses
+  double `with_current_storage` calls to a single one, exposing the
+  natural `make_state` form in the post-state.
+- `Pure_add_keccak_offset` (ThrottleLib.v) — bridges Yul's
+  `Pure.add (keccak ...) offset` to Z-level `keccak ... + offset`
+  under the cryptographic bound.
+- `proj_sim_throttles` / `proj_sim_capacity` (ThrottleLib.v) — supply
+  the `nth_error storage index = Some ...` precondition for the
+  generic leaf.
+
+### Timestamp arm
+
+The companion piece for Phase 1.3's walker: the `LowM.Call Stdlib.timestamp`
+form needs a dedicated arm because `pr` (Primitive) doesn't fire on the
+wrapper. Use:
+
+```coq
+| |- {{? _, _, _ |
+      LowM.Call Stdlib.timestamp _ ⇓ _ | _ ?}} =>
+    c; [ apply ThrottleLibLeaves.run_timestamp;
+         rewrite ThrottleLibLeaves.make_state_block_timestamp;
+         exact H_timestamp | ]
+```
+
+This composes `run_timestamp` (which discharges the call) with
+`make_state_block_timestamp` (which says `make_state` preserves
+`block_timestamp`) and the outer proof's `H_timestamp` (which says
+`state_base.(block_timestamp) = now`). The result: the call evaluates
+to `Result.Ok now` with the state unchanged.

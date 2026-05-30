@@ -220,12 +220,19 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
         (WISDOM R032/R033 — RunO.PureEq + Z.min_l/Z.min_r pattern).
         The structural-equality lemma
         [throttles_packed_set_throttle_two_sstores] (WISDOM R034)
-        now CLOSES WITH Qed via the rewrite-Hkneb + simpl cascade.
-        Phase 1.3 (consumeProposalCharge mutator) has its prelude
-        composed (pose Phase E witness, destruct, eexists) and a
-        walker that dispatches 8 routing arms; remaining work is
-        layering side-condition discharges for the leaf applications
-        (require_helper, checked_*, update_storage_value_offset_0).
+        closes with Qed via the rewrite-Hkneb + simpl cascade.
+        Phase 1.3 (consumeProposalCharge mutator) NOW CLOSES WITH Qed
+        end-to-end. The breakthrough was the
+        [run_update_storage_offset_0_at_two_slot_list] wrapper that
+        bakes in the concrete 2-slot [proj_sim] list shape so
+        [simpl List.update_nth] reduces the match definitionally,
+        exposing a clean Hoare-triple conclusion that [apply] can
+        unify against (WISDOM R040). The walker now dispatches 20+
+        routing arms — including a [Stdlib.timestamp] arm that uses
+        [ThrottleLibLeaves.run_timestamp] composed with
+        [make_state_block_timestamp] and [H_timestamp] — and the
+        single remaining bound side condition closes the same way as
+        Goal 6 (Z.to_euclidean_division_equations + nia).
 
       - Shallow forms wired into the main build for ThrottleLib,
         VersionRegistry, RewardTokenRegistry, Guardian. Only
@@ -243,9 +250,9 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                         its public wrapper) close with Qed.
                         Structural projection-update equivalence
                         (R034) closes with Qed.
-                        Mutator (consumeProposalCharge) walker
-                        partial — Admitted at the side-condition
-                        discharges.
+                        Mutator (consumeProposalCharge) closes with
+                        Qed (R040 + timestamp arm). ThrottleLib is
+                        now fully equivalence-closed end-to-end.
       VersionRegistry   Equivalence scaffold theorem stated
                         (isDeprecated reader); proof body Admitted
                         pending walker composition.

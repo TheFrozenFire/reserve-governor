@@ -855,6 +855,48 @@ Module MakeStateForm.
     unfold Pure.add. apply Z.mod_small. lia.
   Qed.
 
+  (** ----- sstore wrapper specialized for [proj_sim]-shape storage -----
+
+      The upstream sstore leaf
+      [ThrottleLibLeaves.run_update_storage_value_offset_0_t_uint256_to_t_uint256]
+      wraps its conclusion in a [match List.update_nth storage index ...
+      with | Some s' => {{? ... ?}} | None => True end]. The match form
+      blocks Phase 1.3's walker: [eapply] cannot unify past it, so the
+      walker stops at the first sstore. This wrapper bakes in the
+      concrete 2-slot list shape [[U256 cap; MapStruct map]] (which is
+      definitionally [proj_sim sim] under the projection) so the match
+      reduces by [simpl List.update_nth], and the wrapper's conclusion
+      is a plain {{? ?}}. *)
+  Lemma run_update_storage_offset_0_at_two_slot_list
+      codes env state_base memory
+      (cap : U256.t)
+      (map : Dict.t (U256.t * U256.t) U256.t)
+      (key offset value : U256.t)
+      (H_off : 0 <= offset < 32)
+      (H_v : 0 <= value < 2^256) :
+    let map' := Dict.declare_or_assign map (key, offset) value in
+    {{? codes, env, Some (make_state env state_base memory
+                            [StorableValue.U256 cap; StorableValue.MapStruct map]) |
+      ThrottleLib_153.ThrottleLib_153_deployed.update_storage_value_offset_0_t_uint256_to_t_uint256
+        (Pure.add (keccak256_tuple2 key 1) offset) value ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory
+              [StorableValue.U256 cap; StorableValue.MapStruct map']) ?}}.
+  Proof.
+    rewrite Pure_add_keccak_offset by exact H_off.
+    pose proof (ThrottleLibLeaves.run_update_storage_value_offset_0_t_uint256_to_t_uint256
+                  codes env state_base memory
+                  [StorableValue.U256 cap; StorableValue.MapStruct map] 1%nat map
+                  key offset value
+                  H_v eq_refl) as H.
+    cbv zeta in H.
+    simpl List.update_nth in H.
+    change (Z.of_nat 1) with 1%Z in H.
+    unfold make_state in H at 2.
+    rewrite CanonizeState.with_current_storage_twice_eq in H.
+    exact H.
+  Qed.
+
   (** ----- Storage-read leaves in make_state form ----- *)
 
   (** sload of the [lastUpdated] field at offset 1 from the
@@ -1889,7 +1931,12 @@ Module MakeStateForm.
             LowM.Call
               (ThrottleLib_153.ThrottleLib_153_deployed.update_storage_value_offset_0_t_uint256_to_t_uint256 _ _) _
             ⇓ _ | _ ?}} =>
-          c; [ eapply ThrottleLibLeaves.run_update_storage_value_offset_0_t_uint256_to_t_uint256 | ]
+          c; [ apply run_update_storage_offset_0_at_two_slot_list | ]
+      | |- {{? _, _, _ |
+            LowM.Call Stdlib.timestamp _ ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_timestamp;
+               rewrite ThrottleLibLeaves.make_state_block_timestamp;
+               exact H_timestamp | ]
       | |- {{? _, _, _ | LowM.Primitive Primitive.GetBlockTimestamp _ ⇓ _ | _ ?}} =>
           pr
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
@@ -1972,17 +2019,35 @@ Module MakeStateForm.
                ProposerThrottle.FIX_ONE in *.
         Z.to_euclidean_division_equations.
         nia. }
-    (* Remaining residual (Goals 7-9):
-       - Goals 7-8: the two sstore calls (currentCharge slot at offset
-         0, lastUpdated slot at offset 1). Both need
-         [run_update_storage_value_offset_0_t_uint256_to_t_uint256]
-         to fire with the MapStruct precondition supplied by
-         [proj_sim_throttles]. The Stdlib.timestamp primitive in
-         between Goals 7 and 8 closes via [pr] + [H_timestamp].
-       - Goal 9: the final Result.Ok (BlockUnit.Tt, tt) → Result.Ok tt
-         tuple discharge once the state evar is threaded through. *)
-    all: admit.
-  Admitted.
+    (* Goal 7: 0 <= readCharge - FIX_ONE/cap < 2^256.
+       Single remaining bound: the value written by the first sstore
+       (currentCharge field) must fit in U256. Uses readCharge bounds
+       + sufficient_available to combine into the U256 range. *)
+    assert (Hthrottle_valid : ProposerThrottle.Valid.throttle (ThrottleLibStorage.get_throttle sim account)).
+    { pose proof (Dict.get_is_valid Address.Valid.t ProposerThrottle.Valid.throttle
+                    sim.(ThrottleLibStorage.throttles) account
+                    (Valid.throttles_valid sim H_valid_sim)) as Hth.
+      unfold ThrottleLibStorage.get_throttle.
+      destruct (Dict.get _ _) as [t|];
+      [ exact Hth
+      | unfold ThrottleLibStorage.default_throttle; constructor; simpl;
+        unfold U256.Valid.t; change ProposerThrottle.FIX_ONE with 1000000000000000000; lia ]. }
+    destruct Hthrottle_valid as [Hcc_u256 Hcc_capped Hlu_u256].
+    unfold U256.Valid.t in Hcc_u256.
+    pose proof (ProposerThrottleProofs.readCharge_le_fix_one
+                  (ThrottleLibStorage.get_throttle sim account) now) as Hle.
+    change ProposerThrottle.FIX_ONE with 1000000000000000000 in Hle, Hcc_capped.
+    cbv zeta in H_no_overflow.
+    destruct H_no_overflow as (Hgt_now & _ & _ & _).
+    assert (Hnn : 0 <= ProposerThrottle.readCharge (ThrottleLibStorage.get_throttle sim account) now)
+      by (apply ProposerThrottleProofs.readCharge_nonneg; lia).
+    destruct H_valid_sim as [Hcap _].
+    unfold ProposerThrottle.Valid.capacity in Hcap.
+    cbv zeta in H_sufficient_available.
+    unfold ProposerThrottle.UINT256_MAX, ProposerThrottle.FIX_ONE in *.
+    Z.to_euclidean_division_equations.
+    nia.
+  Qed.
 
   (** ----- Phase 1.4: audit transfer through the equivalence -----
 
