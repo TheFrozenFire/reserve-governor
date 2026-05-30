@@ -1768,6 +1768,38 @@ Module MakeStateForm.
                   H_timestamp H_memory_scratch H_no_overflow) as HE.
     destruct HE as [state_E HE].
     eexists.
+    unfold ThrottleLib_153.ThrottleLib_153_deployed.fun_consumeProposalCharge_72.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    (* Walk the body. Routing every known sub-call to its leaf;
+       Stdlib primitives unfold via cu (CallUnfold) to expose the
+       LowM.Pure wrapped inside M.pure for RunO.Pure dispatch. *)
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152 _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ exact HE | ]
+      | |- {{? _, _, _ |
+            LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.cleanup_t_uint256 _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_cleanup_t_uint256 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_rational_1_by_1_to_t_uint256 _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_convert_t_rational_1_by_1_to_t_uint256 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_rational_1000000000000000000_by_1_to_t_uint256 _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_convert_t_rational_1000000000000000000_by_1_to_t_uint256 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.lt _ _) _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
     admit.
   Admitted.
 
