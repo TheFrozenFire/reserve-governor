@@ -267,6 +267,7 @@ End Valid.
 Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.generated.ThrottleLib_shallow.
 Require Import ReserveGovernor.proofs.equivalence.ThrottleLib_Leaves.
+Require Import ReserveGovernor.proofs.ProposerThrottle.
 
 Import Stdlib.
 Import RunO.
@@ -1846,6 +1847,29 @@ Module MakeStateForm.
               (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_structₓ_ProposalThrottle_ₓ18_storage_to_t_structₓ_ProposalThrottle_ₓ18_storage_ptr _) _
             ⇓ _ | _ ?}} =>
           c; [ apply ThrottleLibLeaves.run_convert_t_struct_ProposalThrottle_storage_to_ptr | ]
+      (* Slot-discriminated arms for the three storage reads. These use
+         the higher-level [run_read_*_from_make_state] lemmas which
+         return concrete values from [proj_sim sim] and don't expose
+         a [?account] evar. Order matters: more specific patterns must
+         appear before the generic fallback. *)
+      | |- {{? _, _, _ |
+            LowM.Call
+              (ThrottleLib_153.ThrottleLib_153_deployed.read_from_storage_split_offset_0_t_uint256
+                 (Pure.add 0 0)) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply run_read_capacity_from_make_state | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (ThrottleLib_153.ThrottleLib_153_deployed.read_from_storage_split_offset_0_t_uint256
+                 (Pure.add (keccak256_tuple2 _ _) 0)) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply run_read_currentCharge_from_make_state | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (ThrottleLib_153.ThrottleLib_153_deployed.read_from_storage_split_offset_0_t_uint256
+                 (Pure.add (keccak256_tuple2 _ _) 1)) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply run_read_lastUpdated_from_make_state | ]
       | |- {{? _, _, _ |
             LowM.Call
               (ThrottleLib_153.ThrottleLib_153_deployed.read_from_storage_split_offset_0_t_uint256 _) _
@@ -1875,30 +1899,54 @@ Module MakeStateForm.
     all: try assumption.
     (* lia handles arithmetic value-bound side conditions when active. *)
     all: try lia.
-    (* Residual: 4 subgoals + 5 shelved (9 evars). Goal 1 is the
-       require_helper side condition `iszero(lt(propAvail, 1)) <> 0`.
-       Goals 2-3 are the mapping_index_access c-split; the walker arm
-       fires (we confirmed via `idtac` diagnostic that the lazymatch
-       matches and `c;[..|..]` enters the body subgoal) but the inner
-       `eapply MappingIndexAccess.run_mapping_index_access` fails to
-       unify. Goal 4 is the final Result.Ok (_, tt) discharge.
+    (* After the upfront-pose breakthrough (commit b815c4f) and the
+       slot-discriminated read arms above, the walker fires deeply past
+       mapping_index_access. The structured residual is:
+         Goal 1 — require_helper side condition.
+         Goal 2 — capacity in U256 range.
+         Goal 3 — capacity > 0.
+         Goal 4 — readCharge in U256 range.
+         Goal 5 — FIX_ONE/capacity in U256 range.
+         Goal 6 — FIX_ONE/capacity ≤ readCharge (checked_sub no underflow).
+         Goal 7 — first sstore (currentCharge slot) discharge.
+         Goal 8 — continuation through second sstore (lastUpdated slot).
+         Goal 9 — final Result.Ok (_, tt) tuple discharge.
 
-       The structural setup is now correct:
-         - Phase E/F signatures expose `exists w0' w1' rest', ... |
-           Some (make_state ... (w0' :: w1' :: rest') ...) ?}}`.
-         - MappingIndexAccess.run_mapping_index_access exposes the
-           same cons-of-3 shape.
-         - Phase 1.3 destructs Phase E's 3 existentials and rebuilds
-           `state_E := e_w0 :: e_w1 :: e_rest`, exposing the structure.
+       Goals 1-3 close mechanically below. Goals 4-9 are layered work
+       (see notes after the partial-discharge block). *)
 
-       What's left is the eapply unification failure. The lemma's
-       conclusion uses `let st := make_state ... in exists w0' w1'
-       rest', ... | Some (make_state ... (w0' :: w1' :: rest') ...)`
-       and the goal has `Some (make_state env state_base state_E
-       (proj_sim sim))` where state_E is `set` to a cons. eapply's
-       higher-order unification doesn't see through this. Closing
-       requires interactive inspection (waiting on rocq-mcp upgrade)
-       or explicit witness threading. *)
+    (* Goal 1: require_helper side condition. [H_sufficient_available]
+       definitionally is [proposalsAvailable >= 1], so the inner [<? 1]
+       is [false], the outer [iszero] returns [1], and [1 <> 0]. *)
+    1:{ cbv zeta in H_sufficient_available.
+        unfold ProposerThrottle.proposalsAvailable, Pure.iszero, Pure.lt.
+        destruct (Z.ltb _ _) eqn:Hlt; cbn;
+        [ apply Z.ltb_lt in Hlt; lia
+        | intro Hc; discriminate ]. }
+    (* Goal 2: 0 <= capacity < 2^256. From H_valid_sim.capacity_pos:
+       [0 < capacity <= UINT256_MAX = 2^256 - 1]. *)
+    1:{ destruct H_valid_sim as [Hcap _].
+        unfold ProposerThrottle.Valid.capacity in Hcap.
+        unfold ProposerThrottle.UINT256_MAX in Hcap. lia. }
+    (* Goal 3: capacity > 0. Same source. *)
+    1:{ destruct H_valid_sim as [Hcap _].
+        unfold ProposerThrottle.Valid.capacity in Hcap. lia. }
+    (* Remaining residual (Goals 4-9):
+       - Goal 4 (readCharge in U256 range) needs [Hthrottle_valid] from
+         [Dict.get_is_valid] over [throttles_valid], then
+         [readCharge_le_fix_one] + [readCharge_nonneg] (both in
+         ReserveGovernor.proofs.ProposerThrottle).
+       - Goal 5 follows from FIX_ONE = 10^18 < 2^256 and capacity > 0
+         (so FIX_ONE / capacity is bounded by FIX_ONE).
+       - Goal 6 needs integer-arithmetic reasoning:
+         [capacity * readCharge / FIX_ONE >= 1] implies
+         [capacity * readCharge >= FIX_ONE], hence
+         [readCharge >= FIX_ONE / capacity] since capacity > 0.
+       - Goals 7-8 need the two sstore calls to fire via
+         [ThrottleLibLeaves.run_update_storage_value_offset_0...]
+         with [proj_sim_throttles] supplying the MapStruct precondition.
+       - Goal 9 is the final tuple discharge once the state evar is
+         threaded through. *)
     all: admit.
   Admitted.
 
