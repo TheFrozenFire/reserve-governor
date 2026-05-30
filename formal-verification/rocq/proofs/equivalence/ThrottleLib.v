@@ -1837,13 +1837,23 @@ Module MakeStateForm.
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
       | |- _ => s
       end).
-    (* Close any side-condition that's directly a hypothesis. After
-       this step, 9 residual existential metavariables remain (as
-       reported by Show Existentials during diagnostic). They are
-       a mix of state-shape evars and value-bound side conditions
-       (checked_* arguments, sstore preconditions, require_helper's
-       condition≠0). Each needs a targeted discharge. *)
+    (* Close any side-condition that's directly a hypothesis. *)
     all: try assumption.
+    (* lia handles arithmetic value-bound side conditions when active. *)
+    all: try lia.
+    (* Residual: 9 evars remain after try assumption + try lia.
+       Diagnostic via Show Existentials reveals their structure:
+         - 1 × ?state' (the outermost post-state metavar from eexists)
+         - 2 × ?state_inter, 2 × ?output_inter (mid-chain unification
+           metavars from c; and l splits)
+         - 4 × ?Goal (continuation subgoals from c; [eapply X | ])
+           that didn't get picked up by the walker on subsequent
+           iterations — meaning the walker's lazymatch arms don't
+           match the post-call continuation's shape.
+       Closing these requires either restructuring the walker so it
+       feeds each continuation back through the lazymatch, or
+       manually closing each ?Goal with the right tactic for its
+       observed shape. Both need interactive inspection. *)
     all: admit.
   Admitted.
 
