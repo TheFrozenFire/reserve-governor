@@ -1788,6 +1788,18 @@ Module MakeStateForm.
         the inner mapping_index_access call's [H_mem] precondition. *)
     destruct HE as (e_w0 & e_w1 & e_rest & HE).
     set (state_E := e_w0 :: e_w1 :: e_rest) in *.
+    (** Pose the MIA fact AFTER state_E is in scope, BEFORE the
+        eexists creates the outer ?state'. This way all the witnesses
+        (w0_mia, w1_mia, rest_mia) are in scope when later evars are
+        created, avoiding "variable not in scope" instantiation
+        failures during the walker's c-split. Mirrors Phase E's
+        upfront-pose pattern. *)
+    pose proof (MappingIndexAccess.run_mapping_index_access codes env state_base
+                  (Pure.add 0 1) account (proj_sim sim) state_E
+                  H_valid_account
+                  (ex_intro _ e_w0 (ex_intro _ e_w1
+                     (ex_intro _ e_rest eq_refl)))) as Hmia.
+    destruct Hmia as (w0_mia & w1_mia & rest_mia & Hmia).
     eexists.
     unfold ThrottleLib_153.ThrottleLib_153_deployed.fun_consumeProposalCharge_72.
     unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
@@ -1828,7 +1840,7 @@ Module MakeStateForm.
             LowM.Call
               (ThrottleLib_153.ThrottleLib_153_deployed.mapping_index_access_t_mappingₓ_t_address_ₓ_t_structₓ_ProposalThrottle_ₓ18_storage_ₓ_of_t_address _ _) _
             ⇓ _ | _ ?}} =>
-          c; [ eapply MappingIndexAccess.run_mapping_index_access | ]
+          eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
       | |- {{? _, _, _ |
             LowM.Call
               (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_structₓ_ProposalThrottle_ₓ18_storage_to_t_structₓ_ProposalThrottle_ₓ18_storage_ptr _) _
