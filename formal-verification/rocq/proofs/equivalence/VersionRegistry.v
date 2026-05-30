@@ -194,6 +194,70 @@ Module VersionRegistryEquivalence.
 
   End MappingIndexAccessBytes32Bool.
 
+  (** ----- Bool-path leaves -----
+
+      Each leaf characterizes one Yul-shallow function on the
+      read-from-storage chain. Combined with a sload leaf (which
+      derives the stored value from [proj_sim sim]), they close the
+      full `read_from_storage_split_dynamic_t_bool` body. *)
+
+  Lemma run_cleanup_from_storage_t_bool codes env state v :
+    {{? codes, env, Some state |
+      cleanup_from_storage_t_bool v ⇓ Result.Ok (Z.land v 0xff)
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_from_storage_t_bool.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_shift_right_unsigned_dynamic_zero codes env state v :
+    {{? codes, env, Some state |
+      shift_right_unsigned_dynamic 0 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_right_unsigned_dynamic.
+    lu. repeat (lu || cu || p). s.
+    apply RunO.PureEq; [|reflexivity].
+    unfold Pure.shr. simpl. rewrite Z.div_1_r. reflexivity.
+  Qed.
+
+  Lemma run_extract_from_storage_value_dynamict_bool_offset_zero
+      codes env state v :
+    {{? codes, env, Some state |
+      extract_from_storage_value_dynamict_bool v 0 ⇓
+      Result.Ok (Z.land v 0xff)
+    | Some state ?}}.
+  Proof.
+    unfold extract_from_storage_value_dynamict_bool,
+           shift_right_unsigned_dynamic, cleanup_from_storage_t_bool.
+    lu. repeat (lu || cu || p). s.
+    apply RunO.PureEq; [|reflexivity].
+    unfold Pure.and, Pure.shr, Pure.mul. simpl.
+    rewrite Z.div_1_r. reflexivity.
+  Qed.
+
+  (** Z.land v 0xff = v for v ∈ {0, 1}. *)
+  Lemma land_0xff_bool (v : Z) : v = 0 \/ v = 1 -> Z.land v 0xff = v.
+  Proof.
+    intros [-> | ->]; reflexivity.
+  Qed.
+
+  (** All values in [isDeprecated_map history] are 0 or 1. *)
+  Lemma isDeprecated_map_values_bool
+      (history : list VersionEntry.t) (key : U256.t) :
+    let v := StorableValue.map_get_u256 (isDeprecated_map history) key in
+    v = 0 \/ v = 1.
+  Proof.
+    cbv zeta.
+    induction history as [|e rest IH]; simpl.
+    - left. reflexivity.
+    - unfold StorableValue.map_get_u256 in *.
+      simpl Dict.get.
+      destruct (Dict.Eq.eqb _ _).
+      + destruct e.(VersionEntry.deprecated); [right | left]; reflexivity.
+      + exact IH.
+  Qed.
+
   (** ----- Bool-path scaffold for read_from_storage_split_dynamic_t_bool -----
 
       Closing the isDeprecated getter requires bool-path leaves
