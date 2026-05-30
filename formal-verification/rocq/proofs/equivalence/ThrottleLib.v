@@ -1797,6 +1797,51 @@ Module MakeStateForm.
             LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} => cu
       | |- {{? _, _, _ |
             LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ |
+            LowM.Call
+              (ThrottleLib_153.ThrottleLib_153_deployed.require_helper_t_error_179_OptimisticGovernor__ProposalThrottleExceeded _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_require_helper_succeeds;
+               (* Side: the iszero/lt expression evaluates to non-zero
+                  iff available >= 1. Discharged via H_sufficient_available. *)
+               admit | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (MappingIndexAccess.mapping_index_access_t_mapping_address_struct_of_address _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply MappingIndexAccess.run_mapping_index_access;
+               [ exact H_valid_account | exact H_memory_scratch ] | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (ThrottleLib_153.ThrottleLib_153_deployed.convert_t_structₓ_ProposalThrottle_ₓ18_storage_to_t_structₓ_ProposalThrottle_ₓ18_storage_ptr _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_convert_t_struct_ProposalThrottle_storage_to_ptr | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (ThrottleLib_153.ThrottleLib_153_deployed.read_from_storage_split_offset_0_t_uint256 _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_read_from_storage_split_offset_0_t_uint256;
+               admit | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (ThrottleLib_153.ThrottleLib_153_deployed.checked_div_t_uint256 _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_checked_div_t_uint256;
+               admit | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (ThrottleLib_153.ThrottleLib_153_deployed.checked_sub_t_uint256 _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_checked_sub_t_uint256;
+               admit | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (ThrottleLib_153.ThrottleLib_153_deployed.update_storage_value_offset_0_t_uint256_to_t_uint256 _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply ThrottleLibLeaves.run_update_storage_value_offset_0_t_uint256_to_t_uint256;
+               [ admit | admit ] | ]
+      | |- {{? _, _, _ | LowM.Primitive Primitive.GetBlockTimestamp _ ⇓ _ | _ ?}} =>
+          pr
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
       | |- _ => s
       end).
