@@ -27,6 +27,7 @@ Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.simulations.VersionRegistry.
 Require Import ReserveGovernor.generated.VersionRegistry_shallow.
 Require Import Coq.Lists.List.
+Require Import Lia.
 Import ListNotations.
 Import Stdlib.
 Import RunO.
@@ -117,6 +118,111 @@ Module VersionRegistryEquivalence.
       requires the [Dict.Eq.eqb] (Z, Z) instance unfolding documented
       in WISDOM R022. The unblocker lemma is in scope from
       proofs/equivalence/ThrottleLib.v. Marked deferred here. *)
+
+  Import ReserveOptimisticGovernanceVersionRegistry_271.ReserveOptimisticGovernanceVersionRegistry_271_deployed.
+
+  (** ----- Bytes32-path leaves: identity-via-cleanup -----
+
+      The shallow form's [cleanup_t_bytes32] and
+      [convert_t_bytes32_to_t_bytes32] are identity transformations
+      under the U256 representation. The leaves close trivially. *)
+
+  Lemma run_cleanup_t_bytes32 codes env state v :
+    {{? codes, env, Some state |
+      cleanup_t_bytes32 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_bytes32.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_bytes32_to_t_bytes32 codes env state v :
+    {{? codes, env, Some state |
+      convert_t_bytes32_to_t_bytes32 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_bytes32_to_t_bytes32.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** ----- Mapping index access port for bytes32→bool -----
+
+      The Yul body is byte-for-byte identical to ThrottleLib's
+      `mapping_index_access_t_mapping_address_struct_of_address`:
+      mstore the key at memory offset 0, mstore the slot at memory
+      offset 0x20, then keccak256(0, 0x40). Only the function name
+      and the key's domain (bytes32 vs address) differ.
+
+      Like ThrottleLib's, the lemma exposes the post-state memory's
+      cons-of-3 structure for nested applications. *)
+  Module MappingIndexAccessBytes32Bool.
+
+    Lemma run_mapping_index_access codes env state_base
+        (slot : U256.t) (key : U256.t) (storage : SimulatedStorage.t)
+        (memory : SimulatedMemory.t)
+        (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+      let st := make_state env state_base memory storage in
+      exists w0' w1' rest',
+      {{? codes, env, Some st |
+        mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_bool_ₓ_of_t_bytes32 slot key ⇓
+        Result.Ok (keccak256_tuple2 key slot)
+      | Some (make_state env state_base (w0' :: w1' :: rest') storage) ?}}.
+    Proof.
+      destruct H_mem as (w0 & w1 & rest & ->).
+      do 3 eexists.
+      unfold mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_bool_ₓ_of_t_bytes32.
+      l. {
+        l. {
+          c. { apply run_convert_t_bytes32_to_t_bytes32. }
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_keccak256_tuple2. }
+          p.
+        }
+        p.
+      }
+      p.
+    Qed.
+
+  End MappingIndexAccessBytes32Bool.
+
+  (** ----- Bool-path scaffold for read_from_storage_split_dynamic_t_bool -----
+
+      Closing the isDeprecated getter requires bool-path leaves
+      analogous to ThrottleLib_Leaves but for the dynamic bool storage
+      path. The Yul body (per the shallow form) chains:
+
+        slot ← 1
+        offset ← 0
+        slot ← mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_bool_ₓ_of_t_bytes32(slot, key)
+             = keccak256_tuple2(key, 1)
+        ret ← read_from_storage_split_dynamic_t_bool(slot, offset)
+            = cleanup_from_storage_t_bool(shift_right_unsigned_dynamic(offset*8, sload(slot)))
+
+      To close the equivalence theorem we'd need:
+        - run_mapping_index_access_bytes32 (port of ThrottleLib's; ~30 lines)
+        - run_shift_right_unsigned_dynamic_zero (offset=0 case)
+        - run_cleanup_from_storage_t_bool (Z.land v 0xff)
+        - run_extract_from_storage_value_dynamict_bool (compose above)
+        - run_read_from_storage_split_dynamic_t_bool (sload + extract)
+        - A sload leaf for flat Map (not MapStruct) that knows the
+          stored value equals map_get_u256 (isDeprecated_map history) key
+        - Phase 1.3's R040 wrapper pattern would bake in proj_sim's
+          3-slot list shape to let `apply` see past the match.
+
+      Each leaf is 10-30 lines; the main proof is 80-100 lines
+      following ThrottleLib Phase 1.2's view-function template.
+      Total: ~200 lines of mechanical work once attempted, but
+      requires careful handling of the `Pure.shr 0` reduction and
+      the bool-cleanup's Z.land semantics. *)
 
   (** ----- Phase 3.1 (task #200) — getter_fun_isDeprecated_40 equivalence -----
 
