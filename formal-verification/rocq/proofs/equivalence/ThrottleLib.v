@@ -337,14 +337,17 @@ Module MappingIndexAccess.
       (H_key : Address.Valid.t key)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let st := make_state env state_base memory storage in
-    exists memory_post,
+    (** Expose the post-state memory's cons-of-3 structure so callers
+        (Phase E, transitively Phase 1.3) can apply this lemma again
+        without re-discharging the H_mem precondition. *)
+    exists w0' w1' rest',
     {{? codes, env, Some st |
       mapping_index_access_t_mapping_address_struct_of_address slot key ⇓
       Result.Ok (keccak256_tuple2 key slot)
-    | Some (make_state env state_base memory_post storage) ?}}.
+    | Some (make_state env state_base (w0' :: w1' :: rest') storage) ?}}.
   Proof.
     destruct H_mem as (w0 & w1 & rest & ->).
-    eexists.
+    do 3 eexists.
     unfold mapping_index_access_t_mapping_address_struct_of_address.
     l. {
       (* do~ mstore(0, convert_t_address_to_t_address key) *)
@@ -1249,12 +1252,19 @@ Module MakeStateForm.
     let charge    := ProposerThrottle.readCharge throttle now in
     let available := ProposerThrottle.proposalsAvailable
                        throttle sim.(ThrottleLibStorage.capacity) now in
-    exists state',
+    (** Expose the post-state in concrete make_state form so downstream
+        callers (Phase 1.3 consumeProposalCharge_make_state) can apply
+        lemmas that require the make_state shape to unify. The storage
+        slice doesn't change in this view function; only the memory
+        scratchpad does. Expose the cons-of-3 memory structure too,
+        so Phase 1.3's subsequent mapping_index_access call can
+        discharge its [H_mem] precondition. *)
+    exists w0' w1' rest',
     {{? codes, env, Some state |
       ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152
         0 (** base_slot *) account ⇓
       Result.Ok (available, charge)
-    | Some state' ?}}.
+    | Some (make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)) ?}}.
   Proof.
     destruct H_no_overflow as (H_now_geq & H_elapsed_mul_ok & H_charge_ok & H_capacity_ok).
     destruct H_memory_scratch as (w0 & w1 & rest & H_mem_eq). subst memory.
@@ -1270,7 +1280,12 @@ Module MakeStateForm.
                   H_valid_account
                   (ex_intro _ w0 (ex_intro _ w1
                      (ex_intro _ rest eq_refl)))) as Hmia.
-    destruct Hmia as [mp Hmia].
+    (** Peel the 3 existentials; rebuild the memory as a cons so the
+        rest of the proof (which references [mp] as memory) keeps
+        working unchanged. The cons-of-3 form is now visible to
+        downstream callers via the strengthened signature. *)
+    destruct Hmia as (w0' & w1' & rest' & Hmia).
+    set (mp := w0' :: w1' :: rest') in *.
     (** Derive the timestamp equation for the post-mapping_index_access
         state-skeleton ([make_state] with memory [mp]). The walker hits
         the timestamp call after the mapping_index_access close, so the
@@ -1279,7 +1294,7 @@ Module MakeStateForm.
     assert (H_ts_mp :
       (make_state env state_base mp (proj_sim sim)).(State.block_timestamp) = now)
       by (rewrite ThrottleLibLeaves.make_state_block_timestamp; exact H_timestamp).
-    eexists.
+    do 3 eexists.
     unfold ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152.
     (** Unfold the M-monad wrappers so the underlying [LowM.Let] /
         [LowM.let_] / [LowM.Pure] / [LowM.Call] constructors are exposed
@@ -1626,19 +1641,21 @@ Module MakeStateForm.
     let throttle  := ThrottleLibStorage.get_throttle sim account in
     let available := ProposerThrottle.proposalsAvailable
                        throttle sim.(ThrottleLibStorage.capacity) now in
-    exists state',
+    (** Same concrete-post-state structure as Phase E — see comment
+        there. *)
+    exists memory_post,
     {{? codes, env, Some state |
       ThrottleLib_153.ThrottleLib_153_deployed.fun_getProposalsAvailable_91
         0 (** base_slot *) account ⇓
       Result.Ok available
-    | Some state' ?}}.
+    | Some (make_state env state_base memory_post (proj_sim sim)) ?}}.
   Proof.
     pose proof (run_getProposalsAvailable_equivalent_make_state
                   codes env state_base account sim now memory
                   H_valid_sim H_valid_account H_valid_now
                   H_timestamp H_memory_scratch H_no_overflow) as HE.
-    destruct HE as [state' HE].
-    eexists state'.
+    destruct HE as (w0' & w1' & rest' & HE).
+    eexists (w0' :: w1' :: rest').
     unfold ThrottleLib_153.ThrottleLib_153_deployed.fun_getProposalsAvailable_91.
     (** Walk through the trivial outer/inner zero-init bindings; when
         we hit the inner [fun__getProposalsAvailable_152] call,
@@ -1766,7 +1783,11 @@ Module MakeStateForm.
                   codes env state_base account sim now memory
                   H_valid_sim H_valid_account H_valid_now
                   H_timestamp H_memory_scratch H_no_overflow) as HE.
-    destruct HE as [state_E HE].
+    (** Peel Phase E's 3 existentials and rebuild the post-state memory
+        as a cons-of-3 form. This exposes the memory shape needed by
+        the inner mapping_index_access call's [H_mem] precondition. *)
+    destruct HE as (e_w0 & e_w1 & e_rest & HE).
+    set (state_E := e_w0 :: e_w1 :: e_rest) in *.
     eexists.
     unfold ThrottleLib_153.ThrottleLib_153_deployed.fun_consumeProposalCharge_72.
     unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
@@ -1842,30 +1863,30 @@ Module MakeStateForm.
     all: try assumption.
     (* lia handles arithmetic value-bound side conditions when active. *)
     all: try lia.
-    (* Residual: 4 subgoals (9 internal evars). Goal inspection via
-       in-file `idtac` instrumentation reveals the real blocker isn't
-       the walker — it's that Phase E's signature exposes its post-state
-       as an existential `state' : State.t` rather than the structured
-       `make_state env state_base memory storage` form it actually
-       constructs. After `destruct HE as [state_E HE]`, state_E is
-       opaque, so `eapply MappingIndexAccess.run_mapping_index_access`
-       (which requires make_state form to unify slot/key/memory/storage)
-       silently fails, the walker's catch-all `s` is a no-op, and
-       the `repeat` terminates leaving 4 subgoals:
-         1. require_helper side condition `iszero(lt(propAvail, 1)) <> 0`
-            — needs H_sufficient_available + unfold proposalsAvailable.
-         2-3. mapping_index_access c-split (body + continuation) — stuck
-            on opaque state_E.
-         4. Final `match Result.Ok (_, tt) => Pure tt` discharge — should
-            collapse once 2-3 resolve.
+    (* Residual: 4 subgoals + 5 shelved (9 evars). Goal 1 is the
+       require_helper side condition `iszero(lt(propAvail, 1)) <> 0`.
+       Goals 2-3 are the mapping_index_access c-split; the walker arm
+       fires (we confirmed via `idtac` diagnostic that the lazymatch
+       matches and `c;[..|..]` enters the body subgoal) but the inner
+       `eapply MappingIndexAccess.run_mapping_index_access` fails to
+       unify. Goal 4 is the final Result.Ok (_, tt) discharge.
 
-       To unblock: strengthen Phase E's conclusion from
-         `exists state', ... | Some state' ?}}`
-       to
-         `exists state_base' memory', ... | Some (make_state env
-           state_base' memory' (proj_sim sim)) ?}}`
-       (or add a separate `state_E = make_state ...` equality
-       hypothesis). The walker's tactics then unify cleanly. *)
+       The structural setup is now correct:
+         - Phase E/F signatures expose `exists w0' w1' rest', ... |
+           Some (make_state ... (w0' :: w1' :: rest') ...) ?}}`.
+         - MappingIndexAccess.run_mapping_index_access exposes the
+           same cons-of-3 shape.
+         - Phase 1.3 destructs Phase E's 3 existentials and rebuilds
+           `state_E := e_w0 :: e_w1 :: e_rest`, exposing the structure.
+
+       What's left is the eapply unification failure. The lemma's
+       conclusion uses `let st := make_state ... in exists w0' w1'
+       rest', ... | Some (make_state ... (w0' :: w1' :: rest') ...)`
+       and the goal has `Some (make_state env state_base state_E
+       (proj_sim sim))` where state_E is `set` to a cons. eapply's
+       higher-order unification doesn't see through this. Closing
+       requires interactive inspection (waiting on rocq-mcp upgrade)
+       or explicit witness threading. *)
     all: admit.
   Admitted.
 
