@@ -25,8 +25,11 @@ Require Import RocqOfSolidity.RocqOfSolidity.
 Require Import simulations.RocqOfSolidity.
 Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.simulations.VersionRegistry.
+Require Import ReserveGovernor.generated.VersionRegistry_shallow.
 Require Import Coq.Lists.List.
 Import ListNotations.
+Import Stdlib.
+Import RunO.
 
 Module VersionRegistryEquivalence.
 
@@ -114,5 +117,56 @@ Module VersionRegistryEquivalence.
       requires the [Dict.Eq.eqb] (Z, Z) instance unfolding documented
       in WISDOM R022. The unblocker lemma is in scope from
       proofs/equivalence/ThrottleLib.v. Marked deferred here. *)
+
+  (** ----- Phase 3.1 (task #200) — getter_fun_isDeprecated_40 equivalence -----
+
+      The simplest view function: reads slot 1 (the isDeprecated map)
+      keyed by the versionHash, returning the 0/1 bool packed value.
+
+      Shape mirrors ThrottleLib's Phase 1.2 [run_getProposalsAvailable_equivalent_make_state]
+      but with a flat [Map U256→U256] (not MapStruct) so the storage
+      projection is one slot shallower.
+
+      The expected return value on the sim side is
+      [StorableValue.map_get_u256 (isDeprecated_map history) key], which
+      evaluates to:
+        - 0 if [key] not in history, or in history with [deprecated=false]
+        - 1 if [key] in history with [deprecated=true]
+
+      Closure walks the body:
+        1. let slot := 1; let offset := 0 (constants).
+        2. mapping_index_access(slot=1, key) — produces
+           [keccak256_tuple2 key 1] via the existing
+           [run_mapping_index_access] template.
+        3. read_from_storage_split_dynamic_t_bool(slot, offset) — reads
+           the packed map at offset 0; the sloaded value is exactly
+           [map_get_u256 (isDeprecated_map history) key] given
+           [proj_sim sim] is in storage.
+        4. Final [M.pure] returns the read value.
+
+      Currently Admitted as a scaffold theorem statement. The closing
+      proof follows the same pattern as ThrottleLib Phase 1.2 — the
+      sub-call leaves all exist upstream ([run_mapping_index_access],
+      [run_sload_map_u256]); the bool-extraction leaf can be added if
+      not already present. Estimated 50-80 lines once attempted. *)
+  Theorem run_isDeprecated_equivalent_scaffold
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : VersionRegistry.State.t) (key : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_key : U256.Valid.t key)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    let expected := StorableValue.map_get_u256
+                      (isDeprecated_map sim.(VersionRegistry.State.history)) key in
+    exists state',
+    {{? codes, env, Some state |
+      ReserveOptimisticGovernanceVersionRegistry_271
+        .ReserveOptimisticGovernanceVersionRegistry_271_deployed
+        .getter_fun_isDeprecated_40 key ⇓
+      Result.Ok expected
+    | Some state' ?}}.
+  Proof.
+  Admitted.
 
 End VersionRegistryEquivalence.
