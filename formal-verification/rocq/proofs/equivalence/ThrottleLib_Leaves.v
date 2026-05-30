@@ -410,4 +410,77 @@ Module ThrottleLibLeaves.
   Qed.
   Local Opaque State.with_current_storage.
 
+  (** ----- Phase 1.3 leaves: sstore wrapper machinery ----- *)
+
+  (** [shift_left_0 v] = [shl 0 v] = v for valid U256.t v. *)
+  Lemma run_shift_left_0 codes env state (v : U256.t)
+      (H_v : 0 <= v < 2^256) :
+    {{? codes, env, Some state |
+      shift_left_0 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_left_0.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.shl.
+    rewrite Z.mul_1_r.
+    rewrite Z.mod_small by exact H_v.
+    pe; reflexivity.
+  Qed.
+
+  (** [prepare_store_t_uint256 v] = v. Just an assignment in Yul. *)
+  Lemma run_prepare_store_t_uint256 codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      prepare_store_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold prepare_store_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** [update_byte_slice_32_shift_0 old new] = new for valid U256.t new.
+      Walks the bit-mask logic:
+        - shift_left_0 new = new
+        - old AND (NOT (2^256 - 1)) = old AND 0 = 0
+        - 0 OR (new AND (2^256 - 1)) = new (since new < 2^256). *)
+  Lemma run_update_byte_slice_32_shift_0 codes env state
+      (old_value new_value : U256.t)
+      (H_new : 0 <= new_value < 2^256) :
+    {{? codes, env, Some state |
+      update_byte_slice_32_shift_0 old_value new_value ⇓ Result.Ok new_value
+    | Some state ?}}.
+  Proof.
+    unfold update_byte_slice_32_shift_0.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    (* Walk: mask=ff..ff, toInsert=shift_left_0 new, value=old AND NOT mask,
+       result = value OR (toInsert AND mask). *)
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (shift_left_0 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_shift_left_0; exact H_new | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.not _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.not; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.and _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.and; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.or _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.or; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    (* Final step: prove result = new_value via bit-mask reduction. *)
+    s.
+    unfold Pure.and, Pure.or, Pure.not.
+    (* Mask is 2^256 - 1 as a literal; not(mask) = 0. *)
+    change (2 ^ 256 -
+            115792089237316195423570985008687907853269984665640564039457584007913129639935 - 1)
+      with 0.
+    rewrite Z.land_0_r.
+    rewrite Z.lor_0_l.
+    (* new_value AND (2^256-1) = new_value (since 0 <= new_value < 2^256) *)
+    change 115792089237316195423570985008687907853269984665640564039457584007913129639935
+      with (Z.ones 256).
+    rewrite Z.land_ones by lia.
+    rewrite Z.mod_small by exact H_new.
+    pe; reflexivity.
+  Qed.
+
 End ThrottleLibLeaves.
