@@ -1931,22 +1931,56 @@ Module MakeStateForm.
     (* Goal 3: capacity > 0. Same source. *)
     1:{ destruct H_valid_sim as [Hcap _].
         unfold ProposerThrottle.Valid.capacity in Hcap. lia. }
-    (* Remaining residual (Goals 4-9):
-       - Goal 4 (readCharge in U256 range) needs [Hthrottle_valid] from
-         [Dict.get_is_valid] over [throttles_valid], then
-         [readCharge_le_fix_one] + [readCharge_nonneg] (both in
-         ReserveGovernor.proofs.ProposerThrottle).
-       - Goal 5 follows from FIX_ONE = 10^18 < 2^256 and capacity > 0
-         (so FIX_ONE / capacity is bounded by FIX_ONE).
-       - Goal 6 needs integer-arithmetic reasoning:
-         [capacity * readCharge / FIX_ONE >= 1] implies
-         [capacity * readCharge >= FIX_ONE], hence
-         [readCharge >= FIX_ONE / capacity] since capacity > 0.
-       - Goals 7-8 need the two sstore calls to fire via
-         [ThrottleLibLeaves.run_update_storage_value_offset_0...]
-         with [proj_sim_throttles] supplying the MapStruct precondition.
-       - Goal 9 is the final tuple discharge once the state evar is
-         threaded through. *)
+    (* Goal 4: 0 <= readCharge < 2^256. Pull throttle validity from the
+       dict + [readCharge_le_fix_one] + [readCharge_nonneg]. *)
+    1:{ assert (Hthrottle_valid : ProposerThrottle.Valid.throttle (ThrottleLibStorage.get_throttle sim account)).
+        { pose proof (Dict.get_is_valid Address.Valid.t ProposerThrottle.Valid.throttle
+                        sim.(ThrottleLibStorage.throttles) account
+                        (Valid.throttles_valid sim H_valid_sim)) as Hth.
+          unfold ThrottleLibStorage.get_throttle.
+          destruct (Dict.get _ _) as [t|];
+          [ exact Hth
+          | unfold ThrottleLibStorage.default_throttle; constructor; simpl;
+            unfold U256.Valid.t; change ProposerThrottle.FIX_ONE with 1000000000000000000; lia ]. }
+        destruct Hthrottle_valid as [Hcc_u256 Hcc_capped Hlu_u256].
+        unfold U256.Valid.t in Hcc_u256.
+        pose proof (ProposerThrottleProofs.readCharge_le_fix_one
+                      (ThrottleLibStorage.get_throttle sim account) now) as Hle.
+        change ProposerThrottle.FIX_ONE with 1000000000000000000 in Hle, Hcc_capped.
+        cbv zeta in H_no_overflow.
+        destruct H_no_overflow as (Hgt_now & _ & _ & _).
+        assert (Hnn : 0 <= readCharge (ThrottleLibStorage.get_throttle sim account) now)
+          by (apply ProposerThrottleProofs.readCharge_nonneg; lia).
+        lia. }
+    (* Goal 5: 0 <= FIX_ONE / capacity < 2^256. FIX_ONE/capacity is
+       bounded by FIX_ONE = 10^18 < 2^256. *)
+    1:{ destruct H_valid_sim as [Hcap _].
+        unfold ProposerThrottle.Valid.capacity in Hcap.
+        split.
+        - apply Z.div_pos; lia.
+        - apply Z.le_lt_trans with 1000000000000000000;
+          [ apply Z.div_le_upper_bound; lia
+          | lia ]. }
+    (* Goal 6: FIX_ONE/capacity <= readCharge. From
+       [capacity * readCharge / FIX_ONE >= 1] and capacity > 0,
+       [Z.to_euclidean_division_equations] supplies the div-mod facts
+       and [nia] closes. *)
+    1:{ cbv zeta in H_sufficient_available.
+        destruct H_valid_sim as [Hcap _].
+        unfold ProposerThrottle.Valid.capacity,
+               ProposerThrottle.UINT256_MAX,
+               ProposerThrottle.FIX_ONE in *.
+        Z.to_euclidean_division_equations.
+        nia. }
+    (* Remaining residual (Goals 7-9):
+       - Goals 7-8: the two sstore calls (currentCharge slot at offset
+         0, lastUpdated slot at offset 1). Both need
+         [run_update_storage_value_offset_0_t_uint256_to_t_uint256]
+         to fire with the MapStruct precondition supplied by
+         [proj_sim_throttles]. The Stdlib.timestamp primitive in
+         between Goals 7 and 8 closes via [pr] + [H_timestamp].
+       - Goal 9: the final Result.Ok (BlockUnit.Tt, tt) → Result.Ok tt
+         tuple discharge once the state evar is threaded through. *)
     all: admit.
   Admitted.
 
