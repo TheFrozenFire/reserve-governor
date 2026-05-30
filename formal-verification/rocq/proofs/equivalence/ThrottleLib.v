@@ -1723,42 +1723,48 @@ Module MakeStateForm.
       Result.Ok tt
     | Some state' ?}}.
   Proof.
-    (** Body skeleton:
+    (** All blockers are now resolved:
 
+          - Phase E (run_getProposalsAvailable_equivalent_make_state):
+            Qed-closed.
+          - require_helper success leaf (run_require_helper_succeeds):
+            Qed-closed.
+          - mapping_index_access (run_mapping_index_access):
+            Qed-closed.
+          - update_storage_value_offset_0 wrapper
+            (run_update_storage_value_offset_0_t_uint256_to_t_uint256):
+            Qed-closed (uses Storage.run_sstore_struct_field axiom).
+          - timestamp primitive (R020 resolved upstream).
+          - throttles_packed_set_throttle_two_sstores (R034): Qed-closed
+            with the rewrite Hkneb + simpl pattern.
+
+        Body composition skeleton (~150 lines of mechanical proof):
+
+          pose proof (run_getProposalsAvailable_equivalent_make_state ...) as HE.
+          destruct HE as [state' HE].
+          eexists <post-state derived from R034>.
           unfold fun_consumeProposalCharge_72.
-          l. {
-            (* available, charge = _getProposalsAvailable *)
-            c. { apply run_getProposalsAvailable_equivalent_make_state;
-                 try assumption. }
-            (* require_helper: available >= 1; H_sufficient_available rules out revert *)
-            c. { apply_require_helper_with_proof. }
-            (* mapping_index_access -> per-account data slot *)
-            c. { apply run_mapping_index_access. }
-            (* sstore (charge - FIX_ONE/capacity) at currentCharge slot *)
-            c. { apply_run_sstore_struct_field. }
-            CanonizeState.execute.
-            (* sstore now at lastUpdated slot *)
-            c. { apply_run_sstore_struct_field. }
-            CanonizeState.execute.
-            p.
-          }
-          p.
+          unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+          repeat (lazymatch goal with
+            | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+            | |- {{? _, _, _ | LowM.Call (fun__getProposalsAvailable_152 _ _) _ ⇓ _ | _ ?}} =>
+                c; [ exact HE | ]
+            | |- {{? _, _, _ | LowM.Call (require_helper_t_error_179_... _) _ ⇓ _ | _ ?}} =>
+                c; [ apply run_require_helper_succeeds; <discharge: available >= 1> | ]
+            | |- {{? _, _, _ | LowM.Call (mapping_index_access_... _ _) _ ⇓ _ | _ ?}} =>
+                c; [ apply run_mapping_index_access; <bounds> | ]
+            | |- {{? _, _, _ | LowM.Call (update_storage_value_offset_0_... _ _) _ ⇓ _ | _ ?}} =>
+                c; [ apply run_update_storage_value_offset_0_t_uint256_to_t_uint256; <H_v + H_nth> | ]
+            | |- {{? _, _, _ | LowM.Primitive Primitive.GetBlockTimestamp _ ⇓ _ | _ ?}} =>
+                pr; <H_timestamp>
+            | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+            | |- _ => s
+            end).
+          (* Final state equality uses throttles_packed_set_throttle_two_sstores. *)
 
-        Closure depends on:
-          - Phase E (run_getProposalsAvailable_equivalent_make_state)
-            closure.
-          - [apply_run_sstore_struct_field] usage (Phase A added the
-            tactic and the corresponding [run_sstore_struct_field]
-            axiom).
-          - Per-account proj_sim update equivalence: after sstoring
-            two fields at offset 0 and 1 of the same lockId, the
-            resulting storage must equal proj_sim of the updated sim
-            (with [set_throttle account new_throttle]). This requires
-            a rewrite analogous to [throttles_packed_currentCharge /
-            _lastUpdated] going in reverse — currently Admitted under
-            WISDOM R022.
-
-        Total ~150 lines of mechanical proof once R022 unblocks. *)
+        Open work item: writing this out properly with all the
+        intermediate hypotheses lined up. The composition is no longer
+        gated on a missing lemma — every leaf is closed. *)
   Admitted.
 
   (** ----- Phase 1.4: audit transfer through the equivalence -----
