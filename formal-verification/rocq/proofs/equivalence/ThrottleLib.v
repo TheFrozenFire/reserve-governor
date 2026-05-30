@@ -1805,7 +1805,7 @@ Module MakeStateForm.
                try (intro Heq; discriminate); try lia | ]
       | |- {{? _, _, _ |
             LowM.Call
-              (MappingIndexAccess.mapping_index_access_t_mapping_address_struct_of_address _ _) _
+              (ThrottleLib_153.ThrottleLib_153_deployed.mapping_index_access_t_mappingₓ_t_address_ₓ_t_structₓ_ProposalThrottle_ₓ18_storage_ₓ_of_t_address _ _) _
             ⇓ _ | _ ?}} =>
           c; [ eapply MappingIndexAccess.run_mapping_index_access | ]
       | |- {{? _, _, _ |
@@ -1842,19 +1842,30 @@ Module MakeStateForm.
     all: try assumption.
     (* lia handles arithmetic value-bound side conditions when active. *)
     all: try lia.
-    (* Residual: 9 evars remain after try assumption + try lia.
-       Diagnostic via Show Existentials reveals their structure:
-         - 1 × ?state' (the outermost post-state metavar from eexists)
-         - 2 × ?state_inter, 2 × ?output_inter (mid-chain unification
-           metavars from c; and l splits)
-         - 4 × ?Goal (continuation subgoals from c; [eapply X | ])
-           that didn't get picked up by the walker on subsequent
-           iterations — meaning the walker's lazymatch arms don't
-           match the post-call continuation's shape.
-       Closing these requires either restructuring the walker so it
-       feeds each continuation back through the lazymatch, or
-       manually closing each ?Goal with the right tactic for its
-       observed shape. Both need interactive inspection. *)
+    (* Residual: 4 subgoals (9 internal evars). Goal inspection via
+       in-file `idtac` instrumentation reveals the real blocker isn't
+       the walker — it's that Phase E's signature exposes its post-state
+       as an existential `state' : State.t` rather than the structured
+       `make_state env state_base memory storage` form it actually
+       constructs. After `destruct HE as [state_E HE]`, state_E is
+       opaque, so `eapply MappingIndexAccess.run_mapping_index_access`
+       (which requires make_state form to unify slot/key/memory/storage)
+       silently fails, the walker's catch-all `s` is a no-op, and
+       the `repeat` terminates leaving 4 subgoals:
+         1. require_helper side condition `iszero(lt(propAvail, 1)) <> 0`
+            — needs H_sufficient_available + unfold proposalsAvailable.
+         2-3. mapping_index_access c-split (body + continuation) — stuck
+            on opaque state_E.
+         4. Final `match Result.Ok (_, tt) => Pure tt` discharge — should
+            collapse once 2-3 resolve.
+
+       To unblock: strengthen Phase E's conclusion from
+         `exists state', ... | Some state' ?}}`
+       to
+         `exists state_base' memory', ... | Some (make_state env
+           state_base' memory' (proj_sim sim)) ?}}`
+       (or add a separate `state_E = make_state ...` equality
+       hypothesis). The walker's tactics then unify cleanly. *)
     all: admit.
   Admitted.
 
