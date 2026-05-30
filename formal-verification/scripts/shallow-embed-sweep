@@ -118,9 +118,19 @@ for entry in "${SHALLOW_TARGETS[@]}"; do
   out="$GENERATED_DIR/${name}_shallow.v"
 
   set +e
+  # solc emits one top-level JSON object per compilation unit (the
+  # main contract plus each library inlined). Filter to the named
+  # contract by matching the `.name` prefix (solc suffixes the AST id,
+  # e.g. "UnstakingManager_271"). Falls back to the first object if
+  # the named filter misses — e.g. when the file's contract is named
+  # something other than the basename (VersionRegistry.sol defines
+  # ReserveOptimisticGovernanceVersionRegistry).
   "$SOLC_ROCQ" --experimental --ir-ast-json --optimize "$src" 2>/dev/null \
     | grep '^{' \
-    | jq 'walk(if type == "object" then del(.nativeSrc, .src, .type) else . end)' \
+    | jq -s --arg contract "$name" '
+        (map(select(.name | startswith($contract + "_"))) | first)
+        // (.[0])
+        | walk(if type == "object" then del(.nativeSrc, .src, .type) else . end)' \
     > "$json"
   rc_json=$?
   set -e
