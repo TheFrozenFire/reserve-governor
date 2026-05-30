@@ -39,6 +39,12 @@ Require Import simulations.RocqOfSolidity.
 Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.proofs.equivalence.Common.
 Require Import ReserveGovernor.simulations.UnstakingManager.
+(** [UnstakingManager_shallow.v] is generated but doesn't compile under
+    Coq 8.20 — shallow_embed.py produces a `let_state~ 'tt :=` whose
+    switch-branch body returns a U256.t value instead of unit (line 897).
+    This is a tooling-side bug in the embedding for switch statements
+    with non-unit branch returns. Tracked as a follow-up; this file
+    keeps placeholder bodies until the shallow form compiles. *)
 
 Import Stdlib.
 Import RunO.
@@ -563,12 +569,15 @@ Module UnstakingManagerEquivalence.
     |} in
     exists state',
     {{? codes, env, Some state |
-      (** Yul-side createLock — once UnstakingManager_shallow.v is
-          generated, replace [LowM.Pure (Result.Ok tt)] with the
-          full body and rebuild around the operational steps:
-          require msg.sender == vault, SafeERC20.safeTransferFrom (cc),
-          sload slot 0, sstore slot 0 (nextLockId+1), 4× sstore at
-          keccak256(lockId, 1) + offset for the new lock fields. *)
+      (** Placeholder until UnstakingManager_shallow.v compiles. When
+          available, replace with
+          UnstakingManager_271_deployed.fun_createLock_144 user amount unlockTime.
+          Body operations:
+            - require msg.sender == vault (revert via require_helper);
+            - SafeERC20.safeTransferFrom (cc — cross-contract call);
+            - sload slot 0 (nextLockId);
+            - sstore slot 0 := nextLockId + 1;
+            - 4× sstore at keccak256(lockId, 1) + offset for fields. *)
       LowM.Pure (Result.Ok tt) ⇓
       Result.Ok tt
     | Some state' ?}}.
@@ -588,10 +597,10 @@ Module UnstakingManagerEquivalence.
     let new_sim := set_lock sim lockId default_lock in
     exists state',
     {{? codes, env, Some state |
-      (** Yul-side cancelLock — writes default_lock (zeros) to the 4
-          field slots and transfers tokens out (cc). Until the
-          generated shallow form lands, this placeholder
-          [LowM.Pure (Result.Ok tt)] is what's available. *)
+      (** Placeholder; when shallow form compiles, replace with
+          UnstakingManager_271_deployed.fun_cancelLock_212 lockId.
+          Body: writes default_lock (zeros) to the 4 field slots and
+          transfers tokens out (cc). *)
       LowM.Pure (Result.Ok tt) ⇓
       Result.Ok tt
     | Some state' ?}}.
@@ -618,8 +627,10 @@ Module UnstakingManagerEquivalence.
     let new_sim := set_lock sim lockId l' in
     exists state',
     {{? codes, env, Some state |
-      (** Yul-side claimLock — single sstore at offset 3 (claimedAt) of
-          the lockId's data slot; SafeERC20.safeTransfer (cc). *)
+      (** Placeholder; when shallow form compiles, replace with
+          UnstakingManager_271_deployed.fun_claimLock_270 lockId.
+          Body: single sstore at offset 3 (claimedAt) of the lockId's
+          data slot; SafeERC20.safeTransfer (cc). *)
       LowM.Pure (Result.Ok tt) ⇓
       Result.Ok tt
     | Some state' ?}}.

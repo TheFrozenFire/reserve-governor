@@ -1397,3 +1397,69 @@ Three options, ordered by feasibility:
   StakingVault rewards, Governor proposals) will hit the same shape.
   This entry should be revisited when one of those equivalence
   theorems is attempted.
+
+## R035: shallow_embed.py mis-embeds switch with non-unit branches
+
+### The symptom
+
+`generated/UnstakingManager_shallow.v` line 897 fails to compile:
+```
+Error: Found a constructor of inductive type unit while a constructor
+of Z is expected.
+```
+
+The shallow form has:
+```coq
+let_state~ 'tt := [[
+  (* switch *)
+  let~ δ := [[ expr_1364 ]] in
+  if δ =? 0 then
+    ...
+    let~ expr_1376 := [[ ... ]] in
+    M.pure (BlockUnit.Tt, expr_1376)  (* <-- expr_1376 is U256, but 'tt expects unit *)
+  else
+    ...
+]] default~ tt in
+```
+
+The outer `let_state~ 'tt :=` binds the result as unit, but the
+switch-branch body returns `(BlockUnit.Tt, expr_1376)` where
+`expr_1376` is a U256.t. The two types disagree.
+
+### What's happening upstream
+
+shallow_embed.py translates Yul `switch` statements into nested
+Coq `if-then-else` chains. When the switch's branches assign to a
+variable scoped outside the switch, the translation should bind
+the result as the variable's type — but it's instead binding to
+`'tt`. This works for switches whose branches do pure side-effects
+(reverts, stores) but fails for switches that compute a value.
+
+UnstakingManager hits this because cancelLock's body has a switch
+that computes a return value from SafeERC20's optional return.
+
+### Workaround for the equivalence proof
+
+Until shallow_embed.py is patched, equivalence proofs against
+UnstakingManager_shallow.v can't proceed. The
+`proofs/equivalence/UnstakingManager.v` file keeps placeholder
+`LowM.Pure (Result.Ok tt)` bodies in its three theorems; when the
+shallow form compiles cleanly, the swap is mechanical.
+
+### Affected contracts
+
+- UnstakingManager.sol (confirmed: line 897 of shallow output).
+- Possibly any contract with switch-on-value patterns. ThrottleLib,
+  VersionRegistry, RewardTokenRegistry, Guardian shallow forms all
+  compile, so this is specific to switches that compute a value.
+
+### Touchpoints
+
+- `proofs/equivalence/UnstakingManager.v`: header comment documents
+  the issue; three theorems are placeholder-bodied.
+- `scripts/shallow-embed-sweep`: generates the file successfully but
+  the consumer can't load it.
+- Upstream: `~/git/reserve/formal-verification/rocq-of-solidity/rocq/scripts/shallow_embed.py`
+  — the switch translator needs to track the type of the
+  switch-bound variable and emit the right `let_state~ '<var> :=`
+  binding instead of `'tt`.
