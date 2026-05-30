@@ -1578,3 +1578,227 @@ Until either lands, UnstakingManager_shallow.v stays unloaded. The
 other four shallow forms (ThrottleLib, VersionRegistry,
 RewardTokenRegistry, Guardian) compile cleanly with the patch in place
 and are wired into _RocqProject.
+
+## R036: Upfront-pose pattern for evar-scope problems in `c;[..|..]` walkers
+
+When the walker fires `c; [ eapply Lemma | ]` (or `eapply RunO.Call;
+[exact H | ...]`) on a Yul-style equivalence proof, Coq creates a
+state/output metavariable BEFORE the walker continues. If the lemma
+the walker uses has existentials in its post-state (e.g.,
+`exists w0' w1' rest', ... | Some (make_state ... (w0' :: w1' ::
+rest') ...) ?}}`), the natural pattern would be to destruct those
+existentials *after* the lemma application — but by then the
+metavariable's scope has already been fixed, and the witnesses live
+outside it.
+
+Result: `eapply` fails to unify, with an error like "cannot
+instantiate ?state_inter1 because w0' is not in its scope".
+
+### Fix — pose proof + destruct upfront
+
+Apply the lemma BEFORE the walker fires, name the result, destruct
+its existentials into named witnesses, then `set` an alias for the
+reconstructed cons-form. By the time the walker creates its
+metavariables, the witnesses are already in scope.
+
+```coq
+pose proof (MappingIndexAccess.run_mapping_index_access
+              codes env state_base (Pure.add 0 1) account
+              (proj_sim sim) state_E
+              H_valid_account
+              (ex_intro _ e_w0 (ex_intro _ e_w1
+                 (ex_intro _ e_rest eq_refl)))) as Hmia.
+destruct Hmia as (w0_mia & w1_mia & rest_mia & Hmia).
+(* Now Hmia is a concrete RunO.t fact, all witnesses in scope *)
+eexists.  (* outer state' evar; created AFTER witnesses *)
+(* walker fires; uses 'exact Hmia' in the matched arm *)
+```
+
+In the walker arm:
+```coq
+| |- {{? _, _, _ |
+      LowM.Call (mapping_index_access_... _ _) _ ⇓ _ | _ ?}} =>
+    eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
+```
+
+The walker no longer creates a metavariable scoped before the
+witnesses — `exact Hmia` plugs in the concrete fact directly.
+
+### When this kicks in
+
+- Any walker arm whose target lemma has `exists` in its post-state.
+- Mapping/struct lookups (mapping_index_access has the `cons-of-3`
+  shape on memory).
+- Phase E sub-call composition (Phase E itself uses this pattern
+  for its inner mapping lookup).
+
+### Why this isn't `c;[apply X | ]` automatically
+
+`c;[apply X | ]` creates the post-state evar BEFORE the inner tactic
+runs. The evar's scope captures only what was in context before the
+focus. Any new variable introduced inside the focus is outside that
+scope.
+
+The upfront-pose pattern inverts the order: facts come first,
+metavariables second.
+
+## R037: `idtac G; fail` diagnostic for silent walker arm mismatches
+
+When a `repeat (lazymatch ... end)` walker silently doesn't fire on
+a sub-call you expect it to handle, the most likely cause is a
+name-qualification mismatch: the walker arm matches against a
+`Notation`-qualified or short name, but the actual goal head is the
+fully-qualified shallow-form name (e.g.,
+`ThrottleLib_153.ThrottleLib_153_deployed.mapping_index_access_t_mappingₓ_t_address_ₓ_t_structₓ_ProposalThrottle_ₓ18_storage_ₓ_of_t_address`,
+not a friendlier alias).
+
+Lazymatch's failure is silent — it tries the next arm or falls
+through to the wildcard, leaving you wondering why your tactic
+"didn't run." There's no error message.
+
+### Diagnostic: insert idtac G; fail near the suspected arm
+
+```coq
+repeat (lazymatch goal with
+  | |- {{? _, _, _ | LowM.Call ?head _ ⇓ _ | _ ?}} =>
+      idtac head; fail   (* prints the head, then fails to stop the walker *)
+  | |- _ => s
+  end).
+```
+
+This prints the exact goal head before failing. Once you see the
+true name, update the walker arm to match. For shallow-form names,
+the pattern is typically
+`<ContractName>_<id>.<ContractName>_<id>_deployed.<function_name>`.
+
+### When to use
+
+- Walker iterates past a sub-call but you expected it to fire.
+- A new sub-call appears after refactoring and your walker doesn't
+  handle it.
+- After upstream shallow_embed.py changes — names may have shifted.
+
+Take out the `idtac; fail` after diagnosis; it's a one-shot tool.
+
+## R038: Slot-discriminated walker arms for storage reads
+
+A generic walker arm like
+
+```coq
+| |- {{? _, _, _ |
+      LowM.Call (read_from_storage_split_offset_0_t_uint256 _) _
+      ⇓ _ | _ ?}} =>
+    c; [ eapply ThrottleLibLeaves.run_read_from_storage_split_offset_0_t_uint256 | ]
+```
+
+invokes the lower-level leaf which takes an `?account` evar as the
+runtime account at `env.(Environment.address)`. That evar then
+propagates through every downstream goal that references the read
+value — typically 5+ goals all referring to `?account.(Account.
+storage) slot`.
+
+### Fix — slot-discriminating arms BEFORE the generic fallback
+
+If the proof has higher-level lemmas that return concrete sim values
+(e.g., `run_read_capacity_from_make_state` returns
+`sim.(ThrottleLibStorage.capacity)` directly, no evar), discriminate
+the walker arm by slot pattern:
+
+```coq
+(* Slot-discriminated arms first; order matters in lazymatch *)
+| |- {{? _, _, _ |
+      LowM.Call (read_from_storage_split_offset_0_t_uint256
+                   (Pure.add 0 0)) _
+      ⇓ _ | _ ?}} =>
+    c; [ apply run_read_capacity_from_make_state | ]
+| |- {{? _, _, _ |
+      LowM.Call (read_from_storage_split_offset_0_t_uint256
+                   (Pure.add (keccak256_tuple2 _ _) 0)) _
+      ⇓ _ | _ ?}} =>
+    c; [ apply run_read_currentCharge_from_make_state | ]
+| |- {{? _, _, _ |
+      LowM.Call (read_from_storage_split_offset_0_t_uint256
+                   (Pure.add (keccak256_tuple2 _ _) 1)) _
+      ⇓ _ | _ ?}} =>
+    c; [ apply run_read_lastUpdated_from_make_state | ]
+| |- {{? _, _, _ |
+      LowM.Call (read_from_storage_split_offset_0_t_uint256 _) _
+      ⇓ _ | _ ?}} =>
+    c; [ eapply ThrottleLibLeaves.run_read_from_storage_split_offset_0_t_uint256 | ]
+```
+
+### What this collapses
+
+Phase 1.3's `run_consumeProposalCharge_make_state` had 11 focused +
+6 shelved goals after the generic walker; switching to
+slot-discriminated arms left 8 focused + 5 shelved, with `?account`
+gone from every remaining goal. The bounds and arithmetic that
+followed became closeable by `lia` directly, with no need for
+intermediate evar instantiation.
+
+### General principle
+
+When a leaf's signature exposes an evar that ends up threaded
+through downstream goals, look for higher-level lemmas that
+instantiate that evar to a concrete value. If they exist, walker
+arms targeting specific slots/values are strictly better than a
+single generic arm.
+
+## R039: rocq-mcp interactive setup for cross-repo projects
+
+When governor proofs depend on `rocq-of-solidity`'s `RocqOfSolidity`
+library (under `~/git/reserve/formal-verification/rocq-of-solidity/
+rocq/RocqOfSolidity/`), `rocq-mcp` v0.2.1's path-containment check
+rejects absolute paths and symlinks that resolve outside the
+workspace. The fix is a parent-level `_CoqProject` that bridges both
+repos.
+
+### Setup
+
+1. **Use the Coq 8.20 opam switch.** The `.vo` files are built with
+   Coq 8.20.1 (rocq820 switch); `pet` from Coq 9.1 (rocq switch)
+   can't load them. Configure rocq-mcp's PATH to start with
+   `~/.opam/rocq820/bin`:
+
+   ```sh
+   claude mcp remove rocq-mcp --scope user
+   claude mcp add rocq-mcp --scope user --env PATH=/Users/jmart/.opam/rocq820/bin:/usr/bin:/bin -- uvx rocq-mcp
+   ```
+
+2. **Place `_CoqProject` at the parent of both repos.** For Reserve
+   governor work, that's `/Users/jmart/git/reserve/formal-verification/`:
+
+   ```
+   -R governor/formal-verification/rocq ReserveGovernor
+   -R rocq-of-solidity/rocq/RocqOfSolidity RocqOfSolidity
+   -arg -impredicative-set
+   -arg -w
+   -arg -stdlib-vector
+   ```
+
+3. **Use `-R` (recursive, exclusive), not `-Q`.** Unqualified
+   imports like `Require Import simulations.RocqOfSolidity.` only
+   resolve when the prefix is bound via `-R`.
+
+4. **Pass `workspace` explicitly to rocq-mcp tool calls.** Auto-
+   detection walks up from the file looking for `_CoqProject`, but
+   passing it explicitly avoids ambiguity when multiple are nested.
+
+### Usage
+
+```
+rocq_start(
+  file=governor/formal-verification/rocq/proofs/equivalence/ThrottleLib.v,
+  workspace=/Users/jmart/git/reserve/formal-verification,
+  theorem=run_consumeProposalCharge_make_state)
+```
+
+### Diagnostics
+
+- `rocq_check` returning empty TOC: missing imports — pet sees the
+  module body as empty because `Require Import` silently failed.
+- "Cannot find a physical path bound to logical path X": `-R`/`-Q`
+  prefix mismatch in `_CoqProject`, or the `.vo` files are version-
+  mismatched (built with a different Coq version than `pet` is using).
+- `_check_path_containment` rejection: workspace path doesn't cover
+  the file or one of its imports — try a parent-level `_CoqProject`.
