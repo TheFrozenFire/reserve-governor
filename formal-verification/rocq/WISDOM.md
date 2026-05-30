@@ -1305,7 +1305,7 @@ Other places to expect this pattern:
   theory but bloats the proof; the recipe above is local and
   composable.
 
-## R034: `Dict.declare_or_assign` chains resist structural-equality proofs
+## R034: `Dict.declare_or_assign` chains — RESOLVED via `rewrite H; simpl` cascade
 
 ### The shape
 
@@ -1417,18 +1417,53 @@ A focused attempt closed two of three cases:
   pass-through-nonmatch helper, so the IH applies at the top level
   rather than inside a cons.
 
+### Resolution (2026-05-29 night)
+
+**Lemma now closes with Qed.** The breakthrough was replacing the
+`replace (Z.eqb k account && Z.eqb 0 0) with false by (rewrite Hkneb; reflexivity); cbv iota`
+pattern with the simpler `rewrite Hkneb; simpl` cascade. Working
+proof shape for the non-matching case:
+
+```coq
+apply Z.eqb_neq in Hkne as Hkneb.
+change (List.flat_map _ ((k, v) :: dict))
+  with ((k, 0, vcc) :: (k, 1, vlu) :: List.flat_map _ dict).
+rewrite declare_or_assign_pair_cons_step. rewrite Hkneb. simpl.
+rewrite declare_or_assign_pair_cons_step. rewrite Hkneb. simpl.
+rewrite declare_or_assign_pair_cons_step. rewrite Hkneb. simpl.
+rewrite declare_or_assign_pair_cons_step. rewrite Hkneb. simpl.
+rewrite declare_or_assign_Z_cons_step. rewrite Hkneb. simpl.
+cbn [List.flat_map].
+f_equal. f_equal. exact IH.
+```
+
+### Why `rewrite Hkneb; simpl` works where `replace + cbv iota` failed
+
+- `rewrite Hkneb` substitutes `Z.eqb k account` with `false` at the
+  first occurrence in the goal. This affects ALL four cons-step
+  conditions (since each contains `Z.eqb k account`).
+- `simpl` then evaluates the entire cascade: `false && Z.eqb d b`
+  short-circuits to `false`, the `if false then ... else ...`
+  reduces to the else branch, and the let-bindings in the
+  declare_or_assign body collapse.
+- The `replace + cbv iota` pattern substituted a SLICE of the
+  condition (the whole `andb` expression), but `cbv iota` apparently
+  doesn't follow through to reduce the if when the conditional is
+  syntactically `false` but Coq's iota-reduction looks for a
+  match-pattern not a recognized term.
+
 ### Touchpoints
 
 - `proofs/equivalence/ThrottleLib.v`:
-  `throttles_packed_set_throttle_two_sstores` Admitted with
-  detailed inline comment of the investigation.
+  `throttles_packed_set_throttle_two_sstores` closes with Qed.
   Helpers `declare_or_assign_pair_cons_step`,
   `declare_or_assign_Z_cons_step`,
   `two_sstores_pass_through_nonmatch` all proven with Qed.
-- Future contracts with struct-valued mappings (UnstakingManager.locks,
-  StakingVault rewards, Governor proposals) will hit the same shape.
-  This entry should be revisited when one of those equivalence
-  theorems is attempted.
+- The composite lemma unblocks the Phase 1.3 (#196)
+  `run_consumeProposalCharge_make_state` proof body.
+- Future contracts with struct-valued mappings can copy this
+  pattern verbatim — the helpers are reusable, the proof template
+  fits any two-sstore-per-account mutation shape.
 
 ## R035: shallow_embed.py mis-embeds switch with non-unit branches
 

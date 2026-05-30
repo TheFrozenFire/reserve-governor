@@ -794,17 +794,25 @@ Module MakeStateForm.
         rewrite Z.eqb_refl. simpl.
         rewrite declare_or_assign_Z_cons_step.
         rewrite Z.eqb_refl. reflexivity.
-      + (* k ≠ account: skip first two entries, recurse via IH.
-           Despite four declare_or_assign_pair_cons_step rewrites that
-           SHOULD push the decl_or_assigns past the (k, 0) and (k, 1)
-           entries on both inner and outer levels, the goal at the
-           point we'd apply IH still has the Dict.declare_or_assign
-           chain on the LHS — meaning the rewrites aren't normalizing
-           the way I'd expect. WISDOM R034 captures the open question;
-           the helpers above are reusable for a subsequent debugging
-           session. *)
-        admit.
-  Admitted.
+      + (* k ≠ account: skip first two entries, recurse via IH. *)
+        apply Z.eqb_neq in Hkne as Hkneb.
+        change (List.flat_map _ ((k, v) :: dict))
+          with (((k, 0), v.(Throttle.currentCharge))
+                :: ((k, 1), v.(Throttle.lastUpdated))
+                :: List.flat_map (fun (entry : Address.t * Throttle.t) =>
+                      let (account, t) := entry in
+                      [((account, 0), t.(Throttle.currentCharge));
+                       ((account, 1), t.(Throttle.lastUpdated))]) dict).
+        (* Step both inner and outer declare_or_assign past (k, 0) and (k, 1).
+           Use rewrite ! Hkneb after each pair to reduce the boolean condition. *)
+        rewrite declare_or_assign_pair_cons_step. rewrite Hkneb. simpl.
+        rewrite declare_or_assign_pair_cons_step. rewrite Hkneb. simpl.
+        rewrite declare_or_assign_pair_cons_step. rewrite Hkneb. simpl.
+        rewrite declare_or_assign_pair_cons_step. rewrite Hkneb. simpl.
+        rewrite declare_or_assign_Z_cons_step. rewrite Hkneb. simpl.
+        cbn [List.flat_map].
+        f_equal. f_equal. exact IH.
+  Qed.
 
   (** ----- Slot-form bridge axiom: keccak256_tuple2 + small offset -----
 
