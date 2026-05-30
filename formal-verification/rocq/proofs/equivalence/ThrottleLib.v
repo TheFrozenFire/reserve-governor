@@ -1801,7 +1801,8 @@ Module MakeStateForm.
             LowM.Call
               (ThrottleLib_153.ThrottleLib_153_deployed.require_helper_t_error_179_OptimisticGovernor__ProposalThrottleExceeded _) _
             ⇓ _ | _ ?}} =>
-          c; [ eapply ThrottleLibLeaves.run_require_helper_succeeds | ]
+          c; [ eapply ThrottleLibLeaves.run_require_helper_succeeds;
+               try (intro Heq; discriminate); try lia | ]
       | |- {{? _, _, _ |
             LowM.Call
               (MappingIndexAccess.mapping_index_access_t_mapping_address_struct_of_address _ _) _
