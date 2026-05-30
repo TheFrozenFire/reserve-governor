@@ -1800,7 +1800,7 @@ Module MakeStateForm.
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
       | |- _ => s
       end).
-    admit.
+    all: admit.
   Admitted.
 
   (** ----- Phase 1.4: audit transfer through the equivalence -----
