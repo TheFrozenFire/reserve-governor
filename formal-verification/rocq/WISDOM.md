@@ -1463,3 +1463,41 @@ shallow form compiles cleanly, the swap is mechanical.
   — the switch translator needs to track the type of the
   switch-bound variable and emit the right `let_state~ '<var> :=`
   binding instead of `'tt`.
+
+### Attempted fix that didn't land (2026-05-29)
+
+The natural one-line patch is line 254:
+```python
+updated_vars_to_rocq(True, final_updated_vars)  →
+updated_vars_to_rocq(True, commonly_updated_vars)
+```
+
+This makes the let_state binding pattern match what the switch's
+branches produce. The first-order test passes — `let_state~ 'tt`
+becomes `let_state~ expr_1376` on line 897, which type-checks against
+the inner `M.pure (BlockUnit.Tt, expr_1376)`.
+
+But the change cascades:
+- `block_to_rocq` does `updated_vars -= declared_vars` at line 107,
+  stripping any variable that's BOTH declared and assigned in the
+  same block. The outer `let~ expr_1376 := [[ 0 ]] in` declares
+  expr_1376 in the same block as the switch, so expr_1376 is
+  stripped from the parent's `updated_vars`. Thus `final_updated_vars`
+  passed to the switch's lambda doesn't include expr_1376.
+- With the patch, the switch's let_state binds `expr_1376` but the
+  `default~` uses `final_updated_vars` which is now (`tt`, i.e.
+  empty) — a TYPE mismatch with the binding's U256.
+- Forcing default to also be commonly_updated_vars fixes that one
+  spot but breaks the continuation type: the rest of the block
+  returns unit (via M.pure tt) but State2 is now U256.
+
+The proper fix needs to:
+1. Distinguish "var declared earlier in this block, mutated by inner
+   stmt" (which should propagate as updated_vars upward) from "var
+   purely local to this block" (current behavior).
+2. Compute let_state binding vs default types coherently — both
+   should agree, and they should match the inner expression's State1
+   and the continuation's State2 respectively.
+
+Until then, UnstakingManager_shallow.v stays unloaded. The other
+four shallow forms compile fine and are wired into _RocqProject.

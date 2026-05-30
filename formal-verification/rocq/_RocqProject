@@ -216,6 +216,22 @@ Audit.v
 # Phase A-F scaffold (Phase C closed, Phases B/D/E/F Admitted under
 # R022-family blockers — see WISDOM R022 and the Audit.v Caveat-5
 # update for current coverage).
+#
+# Shallow forms produced by `scripts/shallow-embed-sweep` are listed
+# BEFORE the equivalence proofs that Require them. The shallow form
+# is the Gallina-monadic translation of the Yul AST — each shallow
+# emits one top-level `Module <Name>_<id>` containing all the
+# function definitions, so no collision issue (unlike the deep
+# `--ir-rocq` outputs which emit multiple top-level definitions).
+#
+# Only contracts whose shallow forms compile cleanly are listed.
+# UnstakingManager hits WISDOM R035 (shallow_embed.py switch-binding
+# bug) and doesn't currently compile — its equivalence proof file
+# keeps placeholder bodies until the embedding tool is fixed.
+generated/ThrottleLib_shallow.v
+generated/VersionRegistry_shallow.v
+generated/RewardTokenRegistry_shallow.v
+generated/Guardian_shallow.v
 proofs/equivalence/Common.v
 proofs/equivalence/Sandbox.v
 proofs/equivalence/ThrottleLib_Leaves.v
