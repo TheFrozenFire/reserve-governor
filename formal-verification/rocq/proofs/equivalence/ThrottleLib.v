@@ -763,28 +763,47 @@ Module MakeStateForm.
           {| Throttle.currentCharge := charge;
              Throttle.lastUpdated   := lastUpdated |}).
   Proof.
-    (* Progress this iteration: the EMPTY and MATCHING cases close with
-       [declare_or_assign_pair_cons_step] + cbv iota chains. Only the
-       NON-MATCHING case remains stuck — the IH's LHS appears in the
-       post-helper goal but [rewrite IH] doesn't find it as a syntactic
-       subterm.
-
-       Investigation findings (see WISDOM R034):
-       - Variable shadowing in [throttles_packed]'s lambda is NOT the
-         root cause: renaming the destructure binder to [addr] (and
-         aligning helpers) reproduces the same "no subterm" error.
-       - [cbn [List.app]] reduces the head_pair-append into cons-form
-         but still doesn't expose IH's LHS to [rewrite]'s unifier.
-       - Likely cause: the post-rewrite goal's [decl_or_assign] chain
-         is at a tail position inside a cons-list, and Coq's [rewrite]
-         picks the wrong occurrence index, or the helper expanded a
-         [let] in a way that breaks the syntactic match.
-
-       The fix likely needs [etransitivity. apply IH.] or
-       [transitivity (RHS_of_IH)] which avoids rewrite's pattern
-       matching. Or restructure so the IH appears with a non-shifting
-       occurrence. Either approach is another focused pass beyond a
-       single loop iteration. *)
+    unfold throttles_packed, ThrottleLibStorage.set_throttle. simpl.
+    induction sim.(ThrottleLibStorage.throttles) as [|[k v] dict IH].
+    - (* Empty case. *)
+      cbn [List.flat_map].
+      change (Dict.declare_or_assign [] (account, 0) charge)
+        with [((account, 0), charge)].
+      rewrite declare_or_assign_pair_cons_step.
+      replace (Z.eqb account account && Z.eqb 0 1) with false
+        by (rewrite Z.eqb_refl; reflexivity).
+      cbv iota.
+      change (Dict.declare_or_assign [] (account, 1) lastUpdated)
+        with [((account, 1), lastUpdated)].
+      reflexivity.
+    - destruct (Z.eqb_spec k account) as [Hkeq|Hkne].
+      + (* k = account: both sstores hit first two entries in place. *)
+        subst k.
+        change (List.flat_map _ ((account, v) :: dict))
+          with (((account, 0), v.(Throttle.currentCharge))
+                :: ((account, 1), v.(Throttle.lastUpdated))
+                :: List.flat_map (fun (entry : Address.t * Throttle.t) =>
+                      let (account, t) := entry in
+                      [((account, 0), t.(Throttle.currentCharge));
+                       ((account, 1), t.(Throttle.lastUpdated))]) dict).
+        rewrite declare_or_assign_pair_cons_step.
+        rewrite Z.eqb_refl. simpl.
+        rewrite declare_or_assign_pair_cons_step.
+        rewrite Z.eqb_refl. simpl.
+        rewrite declare_or_assign_pair_cons_step.
+        rewrite Z.eqb_refl. simpl.
+        rewrite declare_or_assign_Z_cons_step.
+        rewrite Z.eqb_refl. reflexivity.
+      + (* k ≠ account: skip first two entries, recurse via IH.
+           Despite four declare_or_assign_pair_cons_step rewrites that
+           SHOULD push the decl_or_assigns past the (k, 0) and (k, 1)
+           entries on both inner and outer levels, the goal at the
+           point we'd apply IH still has the Dict.declare_or_assign
+           chain on the LHS — meaning the rewrites aren't normalizing
+           the way I'd expect. WISDOM R034 captures the open question;
+           the helpers above are reusable for a subsequent debugging
+           session. *)
+        admit.
   Admitted.
 
   (** ----- Slot-form bridge axiom: keccak256_tuple2 + small offset -----
