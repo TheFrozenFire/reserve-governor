@@ -1837,6 +1837,13 @@ Module MakeStateForm.
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
       | |- _ => s
       end).
+    (* Close any side-condition that's directly a hypothesis. After
+       this step, 9 residual existential metavariables remain (as
+       reported by Show Existentials during diagnostic). They are
+       a mix of state-shape evars and value-bound side conditions
+       (checked_* arguments, sstore preconditions, require_helper's
+       condition≠0). Each needs a targeted discharge. *)
+    all: try assumption.
     all: admit.
   Admitted.
 
