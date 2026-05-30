@@ -1386,13 +1386,45 @@ Three options, ordered by feasibility:
    upstream**, then use them to normalize both sides into a
    canonical form before equality check. Upstream change required.
 
+### Second-pass progress (2026-05-29 evening)
+
+A focused attempt closed two of three cases:
+
+- **Empty case** (`sim.throttles = []`): closes with
+  `cbn [List.flat_map]; change Dict.declare_or_assign [] _ _ with [(...)]; rewrite declare_or_assign_pair_cons_step; replace ...; cbv iota; reflexivity`.
+- **Matching case** (`k = account`): closes with three
+  `rewrite declare_or_assign_pair_cons_step; rewrite Z.eqb_refl; simpl`
+  plus a final `rewrite declare_or_assign_Z_cons_step; rewrite Z.eqb_refl; reflexivity`.
+
+- **Non-matching case**: still stuck. Added helper
+  `two_sstores_pass_through_nonmatch` (closes with Qed via
+  the cons-step + cbv iota pattern). When applied via `rewrite`,
+  the goal becomes `head_pair ++ <IH's LHS>`. But `rewrite IH`
+  then fails with "no subterm matching" even after `cbn [List.app]`
+  reduces the append into cons form. Tried renaming
+  `throttles_packed`'s binder from `account` → `addr` to rule out
+  shadowing — same error. The IH's LHS appears in the goal but
+  rewrite's syntactic-occurrence finder doesn't pick it up.
+
+### Next-attempt hypotheses
+
+- `etransitivity. apply IH. ...` — bypasses `rewrite`'s pattern
+  matching by using transitivity of equality directly. The goal
+  becomes `head_pair ++ IH_RHS = goal_RHS`, which is a separate
+  proof but doesn't need to find IH's LHS as a subterm.
+- `replace (Dict.declare_or_assign (Dict.declare_or_assign (flat_map _ dict) ...) ...) with (flat_map _ (Dict.declare_or_assign_function dict ...))` — explicitly substitute, then `[ | exact IH ]` closes the equality side-goal.
+- Restructure to do the recursive case BEFORE the
+  pass-through-nonmatch helper, so the IH applies at the top level
+  rather than inside a cons.
+
 ### Touchpoints
 
 - `proofs/equivalence/ThrottleLib.v`:
-  `throttles_packed_set_throttle_two_sstores` is Admitted under this
-  banner; the lemma statement is correct. The helpers
-  `declare_or_assign_pair_cons_step` and
-  `declare_or_assign_Z_cons_step` are proven and reusable.
+  `throttles_packed_set_throttle_two_sstores` Admitted with
+  detailed inline comment of the investigation.
+  Helpers `declare_or_assign_pair_cons_step`,
+  `declare_or_assign_Z_cons_step`,
+  `two_sstores_pass_through_nonmatch` all proven with Qed.
 - Future contracts with struct-valued mappings (UnstakingManager.locks,
   StakingVault rewards, Governor proposals) will hit the same shape.
   This entry should be revisited when one of those equivalence

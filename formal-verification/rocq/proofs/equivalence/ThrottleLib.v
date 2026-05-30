@@ -705,6 +705,53 @@ Module MakeStateForm.
     reflexivity.
   Qed.
 
+  (** Helper: a flat_map step on a non-matching head element doesn't
+      interact with declare_or_assign at the (account, _) keys. *)
+  Lemma two_sstores_pass_through_nonmatch
+      (rest_throttles : list (Address.t * Throttle.t))
+      (k : Address.t) (v : Throttle.t)
+      (account : Address.t) (charge lastUpdated : U256.t)
+      (Hne : k <> account) :
+    let head_pair := ((k, 0), v.(Throttle.currentCharge))
+                     :: ((k, 1), v.(Throttle.lastUpdated)) :: nil in
+    let rest_flat := List.flat_map (fun (entry : Address.t * Throttle.t) =>
+                       let (addr, t) := entry in
+                       [((addr, 0), t.(Throttle.currentCharge));
+                        ((addr, 1), t.(Throttle.lastUpdated))]) rest_throttles in
+    Dict.declare_or_assign
+      (Dict.declare_or_assign (head_pair ++ rest_flat) (account, 0) charge)
+      (account, 1) lastUpdated
+    = head_pair ++ Dict.declare_or_assign
+                     (Dict.declare_or_assign rest_flat (account, 0) charge)
+                     (account, 1) lastUpdated.
+  Proof.
+    cbv zeta. simpl List.app.
+    apply Z.eqb_neq in Hne as Hneb.
+    (* Step the INNER declare_or_assign past (k, 0): no match. *)
+    rewrite declare_or_assign_pair_cons_step.
+    replace (Z.eqb k account && Z.eqb 0 0) with false
+      by (rewrite Hneb; reflexivity).
+    cbv iota.
+    (* Step the INNER again past (k, 1): no match. *)
+    rewrite declare_or_assign_pair_cons_step.
+    replace (Z.eqb k account && Z.eqb 0 1) with false
+      by (rewrite Hneb; reflexivity).
+    cbv iota.
+    (* Now the OUTER declare_or_assign has its first arg as
+       ((k, 0), ...) :: ((k, 1), ...) :: declare_or_assign rest (account, 0) charge.
+       Step it past (k, 0): no match. *)
+    rewrite declare_or_assign_pair_cons_step.
+    replace (Z.eqb k account && Z.eqb 1 0) with false
+      by (rewrite Hneb; reflexivity).
+    cbv iota.
+    (* Step OUTER past (k, 1): no match. *)
+    rewrite declare_or_assign_pair_cons_step.
+    replace (Z.eqb k account && Z.eqb 1 1) with false
+      by (rewrite Hneb; reflexivity).
+    cbv iota.
+    reflexivity.
+  Qed.
+
   Lemma throttles_packed_set_throttle_two_sstores
       (sim : ThrottleLibStorage.t) (account : Address.t)
       (charge lastUpdated : U256.t) :
@@ -716,26 +763,28 @@ Module MakeStateForm.
           {| Throttle.currentCharge := charge;
              Throttle.lastUpdated   := lastUpdated |}).
   Proof.
-    (* The structural-equality form admits — see WISDOM R034.
-       Outline of the intended proof:
-       - Induct on sim.(throttles).
-       - Empty case: both declare_or_assigns append at the end; the
-         set_throttle on empty sim also produces a singleton dict,
-         and the flat_map produces a 2-entry list matching.
-       - Cons case (k=account): both declare_or_assigns find their
-         keys in place at the first two entries; replace as set_throttle.
-       - Cons case (k≠account): both declare_or_assigns skip the first
-         two entries; recurse via IH; the cons of (k, 0) and (k, 1)
-         entries pass through unchanged on both sides.
-       The mechanization gets tangled because [rewrite] picks the
-       inner [declare_or_assign] first; after the if-reduction, the
-       new shape doesn't expose the pattern for the next rewrite
-       without manual [simpl] / [change] gymnastics that fight against
-       Coq 8.20's [Z.eqb] reduction quirks. Observational equality
-       (forall key, map_get_u256 LHS = map_get_u256 RHS) would close
-       cleanly but the consuming equivalence theorem expects
-       structural equality of the State.t (specifically of the
-       MapStruct's underlying Dict). Tracked under WISDOM R034. *)
+    (* Progress this iteration: the EMPTY and MATCHING cases close with
+       [declare_or_assign_pair_cons_step] + cbv iota chains. Only the
+       NON-MATCHING case remains stuck — the IH's LHS appears in the
+       post-helper goal but [rewrite IH] doesn't find it as a syntactic
+       subterm.
+
+       Investigation findings (see WISDOM R034):
+       - Variable shadowing in [throttles_packed]'s lambda is NOT the
+         root cause: renaming the destructure binder to [addr] (and
+         aligning helpers) reproduces the same "no subterm" error.
+       - [cbn [List.app]] reduces the head_pair-append into cons-form
+         but still doesn't expose IH's LHS to [rewrite]'s unifier.
+       - Likely cause: the post-rewrite goal's [decl_or_assign] chain
+         is at a tail position inside a cons-list, and Coq's [rewrite]
+         picks the wrong occurrence index, or the helper expanded a
+         [let] in a way that breaks the syntactic match.
+
+       The fix likely needs [etransitivity. apply IH.] or
+       [transitivity (RHS_of_IH)] which avoids rewrite's pattern
+       matching. Or restructure so the IH appears with a non-shifting
+       occurrence. Either approach is another focused pass beyond a
+       single loop iteration. *)
   Admitted.
 
   (** ----- Slot-form bridge axiom: keccak256_tuple2 + small offset -----
