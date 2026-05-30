@@ -76,5 +76,32 @@ established on the small targets.
 
 ## Status
 
-No equivalence proofs landed yet. This directory exists so the
-target paths are stable; the work is staged but not begun.
+Equivalence proofs landed (May 2026):
+
+- **ThrottleLib.v**: full storage projection (20+ leaves); both
+  view-function theorems (`run_getProposalsAvailable_equivalent_make_state`
+  and the public-wrapper variant) close with Qed. The structural
+  projection-update lemma `throttles_packed_set_throttle_two_sstores`
+  closes with Qed (WISDOM R034). The mutator
+  `run_consumeProposalCharge_make_state` has its prelude composed
+  and walker partial; remaining is side-condition layering for the
+  leaf applications.
+- **Sandbox.v**: toy proofs verifying the apparatus (Stdlib.timestamp
+  R020, RunO.CallContract R021 — both upstream patches landed in
+  TheFrozenFire/rocq-of-solidity:feat/env-block-context).
+- **VersionRegistry.v**: equivalence scaffold theorem stated
+  (`run_isDeprecated_equivalent_scaffold` — view function over
+  flat Map slot 1); body Admitted pending walker composition.
+- **UnstakingManager.v**: three theorems (createLock, cancelLock,
+  claimLock) with placeholder bodies. Real Yul references blocked
+  by WISDOM R035 (shallow_embed.py switch-binding bug).
+- **RewardTokenRegistry.v** / **Guardian.v**: substrate ready
+  (shallow forms compile, projections defined). Full equivalence
+  parked behind Phase 4 decision (notes/equivalence_phase4_decision.md)
+  — requires OZ EnumerableSet / AccessControlEnumerable mechanization.
+
+Reusable apparatus (in ThrottleLib.v): `declare_or_assign_pair_cons_step`,
+`declare_or_assign_Z_cons_step`, `two_sstores_pass_through_nonmatch`,
+the storage-slot lemmas. The same shape transfers to any
+struct-valued mapping (UnstakingManager.locks, StakingVault rewards,
+Governor proposals) once those equivalence proofs come online.
