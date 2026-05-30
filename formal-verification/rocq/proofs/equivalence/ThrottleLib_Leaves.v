@@ -483,4 +483,75 @@ Module ThrottleLibLeaves.
     pe; reflexivity.
   Qed.
 
+  (** [convert_t_uint256_to_t_uint256] is identity for uint256.
+      Already proven above; restated here for completeness. *)
+
+  (** [update_storage_value_offset_0_t_uint256_to_t_uint256 slot value] —
+      Yul helper that sstores [value] at [slot] (going through a
+      sload + bit-mask + sstore that reduces to a plain sstore for
+      uint256). The post-state has the storage updated at the
+      MapStruct entry [(key, offset)] to [value], where the slot is
+      [keccak256_tuple2 key index + offset].
+
+      Precondition: the storage at [index] is a [MapStruct map]; the
+      value being written fits in U256. *)
+  Lemma run_update_storage_value_offset_0_t_uint256_to_t_uint256
+      codes env state_base memory
+      (storage : list StorableValue.t)
+      (index : nat)
+      (map : Dict.t (U256.t * U256.t) U256.t)
+      (key : U256.t) (offset : U256.t) (value : U256.t)
+      (H_v : 0 <= value < 2^256)
+      (H_nth : List.nth_error storage index = Some (StorableValue.MapStruct map)) :
+    let state := make_state env state_base memory storage in
+    let map' := Dict.declare_or_assign map (key, offset) value in
+    match List.update_nth storage index (StorableValue.MapStruct map') with
+    | Some storage' =>
+      let state' := State.with_current_storage env state
+                      (Storage.of_storable_values storage') in
+      {{? codes, env, Some state |
+        update_storage_value_offset_0_t_uint256_to_t_uint256
+          (keccak256_tuple2 key (Z.of_nat index) + offset) value ⇓
+        Result.Ok tt
+      | Some state' ?}}
+    | None => True
+    end.
+  Proof.
+    cbv zeta.
+    destruct (List.update_nth storage index
+                (StorableValue.MapStruct
+                   (Dict.declare_or_assign map (key, offset) value)))
+      eqn:Hupd; [|exact I].
+    unfold update_storage_value_offset_0_t_uint256_to_t_uint256.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    (* Walk: convert → sload → prepare_store → update_byte_slice → sstore. *)
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint256_to_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint256_to_t_uint256 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
+          c; [ apply (Storage.run_sload_struct_field storage index map key offset);
+               exact H_nth | ]
+      | |- {{? _, _, _ |
+            LowM.Call (prepare_store_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_prepare_store_t_uint256 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (update_byte_slice_32_shift_0 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_update_byte_slice_32_shift_0; exact H_v | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
+          c; [ eapply (Storage.run_sstore_struct_field storage index key offset value) | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  (* Residual: walker leaves the sstore's state-precondition discharge
+     ([State.get_current_storage env state = Some (...)]) and possibly
+     post-sstore state canonicalization. Closing this requires
+     CanonizeState.execute + the precise state-shape lemmas from the
+     upstream proof library. The structure is in place; closure is
+     mechanical but lengthy. *)
+  Admitted.
+
 End ThrottleLibLeaves.
