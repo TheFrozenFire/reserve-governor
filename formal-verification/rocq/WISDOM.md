@@ -1926,3 +1926,94 @@ This composes `run_timestamp` (which discharges the call) with
 `block_timestamp`) and the outer proof's `H_timestamp` (which says
 `state_base.(block_timestamp) = now`). The result: the call evaluates
 to `Result.Ok now` with the state unchanged.
+
+## R041: `M.monadic` Ltac doesn't traverse `Shallow.let_state` — cancelLock_212 still blocked
+
+Diagnosed end-of-session 2026-05-30 while attempting to wire
+UnstakingManager_shallow.v into _RocqProject. The R035 switch-binding
+fix (upstream commit `8421532309`) was supposed to unblock the file,
+but `fun_cancelLock_212` still hits a `Must evaluate to a closed
+term, offending expression: e` error from coqc.
+
+### The actual failure shape
+
+The generator emits (at UnstakingManager_shallow.v:1186):
+
+```coq
+let~ _78 := [[ 32 ]] in
+let_state~ _78 := [[
+  Shallow.if_ (|
+    gt ~(| _78, returndatasize ~(||) |),
+    let~ _78 := [[ returndatasize ~(||) ]] in
+    M.pure (BlockUnit.Tt, _78),
+    _78
+  |)
+]] default~ expr_205 in
+```
+
+The `let_state~` binds `_78` (the inner YulIf's `then_updated_vars`)
+but defaults to `expr_205` (the surrounding then-block's
+`final_updated_vars`). The binding/default shapes don't have to match
+type-wise (Shallow.let_state is heterogeneous), but `[[ ]]` invokes
+`M.monadic` on the Shallow.if_ expression, and M.monadic doesn't have
+a lazymatch arm for `Shallow.let_state` notation expansions.
+
+### Why M.monadic falls over
+
+`M.monadic` (in upstream `simulations/RocqOfSolidity.v:401`) handles:
+
+1. `let v := ?x in @?f v` — Coq's primitive let.
+2. `run ?x` — the M.run marker.
+3. Default: `type of e` → `exact e` or `exact (pure e)`.
+
+`let_state~` expands via Notation to `Shallow.let_state e (fun x => (state, k))`.
+This is a function application, not a primitive let. M.monadic falls
+into the default arm. The `type of e` check seemingly succeeds for the
+outer call, but the recursive `[[ ]]` inside the YulIf body (line 1185
+above: `[[ returndatasize ~(||) ]]`) triggers another M.monadic call
+with `_78` rebound by the outer `let~ _78 := 32` — and somewhere in
+that path, an elaboration-time hole isn't resolved.
+
+The exact site of the unbound `e` is hard to pinpoint without
+interactive Ltac tracing. Symptoms suggest the inner Shallow.if_'s
+success branch's `M.pure (BlockUnit.Tt, _78)` references the `_78`
+bound by `let_state~ _78 := [[ ... ]]`, but when M.monadic processes
+the outer expression, it `exact e`s a term where the inner `_78`
+hasn't been bound yet by the lambda — leaving a hole that surfaces
+as "must evaluate to a closed term".
+
+### Two possible fixes (neither attempted)
+
+**Option A: extend M.monadic with a Shallow.let_state arm.**
+Add a lazymatch arm matching `Shallow.let_state ?e1 (fun ?v => @?f v)`
+that recursively monadic-izes `e1` and `f v`. Risk: the typing of
+`(state, k)` (the body's return shape — `State2 * t State2`) doesn't
+fit M.monadic's `let_` constructor signature. Significant upstream
+refactor needed.
+
+**Option B: restructure the generator to lift inner let_state~ out of
+`[[ ]]` brackets.** The current shallow_embed.py emits `Shallow.if_(|
+condition, then_body, else_value |)` where `then_body` contains
+`let_state~` notations expanded raw. If we lifted those out (pre-bound
+them before the `[[ Shallow.if_ ]]`), M.monadic would see only the
+condition + value expressions inside the brackets. This is the cleaner
+fix but requires major shallow_embed.py restructuring — needs a CPS
+transform of YulIf bodies.
+
+### Workaround used in this session
+
+Defer. UnstakingManager equivalence theorems retain placeholder bodies
+proving `LowM.Pure (Result.Ok tt) ⇓ Result.Ok tt`. The audit-facing
+language in Audit.v Caveat-5 documents this as a gap (sim-level
+theorems hold; contract-level theorems are placeholders).
+
+### When this might matter elsewhere
+
+Any contract with **nested if-then-else where the inner if rebinds a
+local declared in the outer if's then-block** will hit this. The
+pattern shows up in Solidity's safe-call patterns (try/catch),
+ERC-style returndata-handling, and any code using `returndatasize`
++ memory clamping (which `cancelLock` does for the
+`SafeERC20.safeTransfer` return-value decode). Cross-reference with
+[[R035]] (the surface-level fix that unblocked YulSwitch) — this is
+the residual issue that fix's commit message flagged.

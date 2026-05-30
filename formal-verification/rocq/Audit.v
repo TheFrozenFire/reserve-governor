@@ -253,6 +253,8 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                         Mutator (consumeProposalCharge) closes with
                         Qed (R040 + timestamp arm). ThrottleLib is
                         now fully equivalence-closed end-to-end.
+                        Legacy [storage_matches_sim]-form theorem
+                        retired (superseded by [make_state] form).
       VersionRegistry   isDeprecated equivalence theorem
                         (run_isDeprecated_equivalent_scaffold)
                         closes with Qed. Built on a bytes32→bool
@@ -261,14 +263,40 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                         shift_right_unsigned_dynamic_zero, extract,
                         sload-at-proj_sim, read-at-proj_sim). All
                         intermediate leaves close cleanly.
-      RewardTokenRegistry,
-      Guardian          Substrate ready (shallow forms compile);
-                        full equivalence parked behind Phase 4
-                        decision (OZ EnumerableSet /
-                        AccessControlEnumerable mechanization).
-      UnstakingManager  Substrate blocked (WISDOM R035). Equivalence
-                        theorems use placeholder bodies until the
-                        shallow embedding tool is fixed.
+      Guardian          hasRole view equivalence
+                        (run_hasRole_equivalent) closes with Qed.
+                        Built on TWO nested mapping_index_access
+                        lemmas (bytes32 → RoleData struct + address
+                        → bool), Map2 storage projection with three
+                        opaque OZ role-bytes32 parameters, and an
+                        offset-bound axiom for [Pure.add x 0 = x].
+                        First OZ-derived contract with a view-
+                        function equivalence Qed-closed. Mutator
+                        paths (grantRole, revokeRole) remain Phase
+                        4 parked (require OZ AccessControlEnumerable
+                        mechanization).
+      RewardTokenRegistry
+                        Substrate substantially expanded: 9
+                        conversion leaves (address → bytes32 chain
+                        via uint160/uint256), bytes32→uint256
+                        mapping_index_access (Qed-closed), sload-
+                        at-proj_sim, offset-bound axiom. Main view
+                        theorem [run_fun__contains_386_at_proj_sim_scaffold]
+                        stated with proper signature, body Admitted
+                        pending the next session's walker
+                        composition (~80-120 lines of mechanical
+                        work). Full-mutator equivalence remains
+                        Phase 4 parked (OZ EnumerableSet).
+      UnstakingManager  Substrate blocked (WISDOM R035, refined as
+                        R041). The R035 surface fix (YulSwitch
+                        binding) landed upstream, but a deeper
+                        issue persists: M.monadic Ltac doesn't
+                        traverse Shallow.let_state notation
+                        expansions when nested YulIf rebinds an
+                        outer-block local. Affects cancelLock
+                        specifically. Documented in WISDOM R041
+                        with two possible fix paths. Equivalence
+                        theorems retain placeholder bodies.
 
     For contracts whose equivalence files are fully closed (no
     Admits in the body), the divergence between that contract's

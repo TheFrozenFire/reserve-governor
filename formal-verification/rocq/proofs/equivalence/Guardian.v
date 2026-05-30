@@ -1,77 +1,525 @@
-(** Phase 3.3 (task #182) — Guardian equivalence scaffold.
+(** Phase 3.3 (task #216) — Guardian equivalence: hasRole view function.
 
     Guardian inherits from OpenZeppelin's [AccessControlEnumerable]
     and adds no own storage variables. Its on-chain storage is
-    entirely OZ machinery:
+    entirely OZ machinery, namely:
 
-      AccessControl:
+      AccessControl (slot 0):
         mapping(bytes32 => RoleData) private _roles;
-        struct RoleData { mapping(address => bool) members; bytes32 adminRole; }
+        struct RoleData {
+          mapping(address => bool) members;     (* offset 0 *)
+          bytes32 adminRole;                    (* offset 1 *)
+        }
 
-      AccessControlEnumerable adds:
+      AccessControlEnumerable (slot 1+):
         mapping(bytes32 => EnumerableSet.AddressSet) private _roleMembers;
 
-    The sim ([simulations/Guardian.v]) abstracts the role machinery
-    into
+    For the [hasRole(role, account)] view function, only [_roles[role].members[account]]
+    matters — that's a nested mapping at:
 
-      State.roles : list (RoleId * Address)  (* set of grants *)
-      State.admin_roles : list (RoleId * RoleId)
+      slot = keccak256(account, keccak256(role, 0) + 0)
+           = keccak256(account, keccak256(role, 0))     (* offset 0 *)
 
-    Closing the equivalence requires:
+    This matches [StorableValue.Map2]'s nested-keccak shape exactly,
+    keyed by [(role_bytes32, account)]. The mutator paths (grantRole,
+    revokeRole, _grantRole) touch BOTH [_roles] and [_roleMembers] (the
+    EnumerableSet) — those remain Phase 4 parked. This file closes the
+    view-only direction.
 
-      1. A projection from [State.roles] into both OZ structures:
-         the [_roles[r].members[addr]] bool flag AND the
-         [_roleMembers[r]] EnumerableSet.
-      2. Adminr-role projection.
-      3. Equivalence proofs for [grantRole], [revokeRole],
-         [renounceRole], [_grantRole], [_revokeRole], [_setRoleAdmin]
-         — each touches both the `_roles` mapping and the
-         `_roleMembers` enumerable set.
-      4. Reuse of RewardTokenRegistry's EnumerableSet projection
-         (Phase 3.2).
-
-    This file scaffolds the trust boundary. The full OZ AccessControl
-    + AccessControlEnumerable equivalence is a multi-day effort and
-    is parked behind the Phase 4 decision.
-
-    The honest stance: Guardian's `audit_*` theorems hold against the
-    sim's pure role-set abstraction. The contract's role-management is
-    implemented by widely-deployed OZ libraries; treating that as a
-    trusted base is the practical convention until OZ AccessControl
-    is itself mechanized. *)
+    The sim ([simulations/Guardian.v]) abstracts the role machinery as
+    three lists ([admins], [optimisticGuardians],
+    [optimisticGuardianManagers]). To project these into the Map2
+    shape, we treat the OZ role constants as opaque parameters
+    ([DEFAULT_ADMIN_ROLE], [OPTIMISTIC_GUARDIAN_ROLE],
+    [OPTIMISTIC_GUARDIAN_MANAGER_ROLE]) and populate the dict
+    list-by-list. *)
 
 Require Import RocqOfSolidity.RocqOfSolidity.
 Require Import simulations.RocqOfSolidity.
 Require Import RocqOfSolidity.proofs.RocqOfSolidity.
+Require Import ReserveGovernor.simulations.Guardian.
+Require Import ReserveGovernor.generated.Guardian_shallow.
 Require Import Coq.Lists.List.
+Require Import Lia.
 Import ListNotations.
-
-(** ----- Trust-boundary documentation -----
-
-    The Guardian sim's role-set is the abstraction. The contract's
-    on-chain storage is OZ's [_roles] + [_roleMembers] mappings.
-    Closure under sim ↔ contract requires:
-
-      [OZ_AccessControl_correct]:
-        forall role addr,
-          sim_has_role role addr  <->
-          on_chain_roles[role].members[addr] = true
-
-      [OZ_AccessControlEnumerable_correct]:
-        forall role,
-          set_of (sim_has_role role) = enumerable_set_of (_roleMembers[role])
-
-    Both predicates are folklore — OZ has the relevant invariants
-    documented and audited — but neither is mechanized in this
-    workstream. The sim-level theorems remain valid as long as the
-    OZ libraries behave per their specification, which is the same
-    trust assumption every audit treats as a given.
-
-    No new projection functions live here; the file is a placeholder
-    so [proofs/equivalence/] has consistent per-contract coverage. *)
+Import Stdlib.
+Import RunO.
 
 Module GuardianEquivalence.
 
-  (** Empty by design — see header. *)
+  Import Guardian.
+
+  (** ----- Keccak bound axiom (mirrors ThrottleLib's) -----
+
+      States that [keccak256_tuple2 key index] returns a U256 value
+      and that adding a small offset doesn't overflow. Used to
+      discharge [Pure.add x 0 = x] when [x] is a keccak result.
+      Same modeling assumption as ThrottleLib's
+      [keccak256_tuple2_offset_bound] — documented in Audit.v
+      Caveat-5. *)
+  Axiom keccak256_tuple2_offset_bound :
+    forall (key index offset : U256.t),
+      0 <= offset < 32 ->
+      0 <= keccak256_tuple2 key index /\
+      keccak256_tuple2 key index + offset < 2 ^ 256.
+
+  Lemma Pure_add_keccak_offset (key index offset : U256.t) :
+    0 <= offset < 32 ->
+    Pure.add (keccak256_tuple2 key index) offset
+    = keccak256_tuple2 key index + offset.
+  Proof.
+    intros H_off.
+    pose proof (keccak256_tuple2_offset_bound key index offset H_off) as [Hnn Hb].
+    unfold Pure.add. apply Z.mod_small. lia.
+  Qed.
+
+  (** ----- OZ role bytes32 constants as opaque parameters -----
+
+      The three named roles' bytes32 identifiers come from
+      [keccak256("OPTIMISTIC_GUARDIAN_ROLE")] etc., except for
+      [DEFAULT_ADMIN_ROLE] which is [bytes32(0)]. We don't need their
+      concrete values to state or prove the equivalence — we just need
+      stable names for the dict keys. The Solidity layer reads these
+      from immutable constants at the call site; the sim is parametric
+      over them.
+
+      In a stronger proof (composed with the actual deployment
+      bytecode), these would be instantiated to the concrete keccaks. *)
+  Parameter DEFAULT_ADMIN_ROLE_bytes32             : U256.t.
+  Parameter OPTIMISTIC_GUARDIAN_ROLE_bytes32       : U256.t.
+  Parameter OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 : U256.t.
+
+  (** ----- Project a (role, list<addr>) pair into Map2 entries -----
+
+      Each (role, account) with [account] in the list maps to 1 (true).
+      Absent entries return 0 (false) via [map_get_u256]'s default. *)
+  Fixpoint members_for_role
+      (role : U256.t) (addrs : list Address) :
+      Dict.t (U256.t * U256.t) U256.t :=
+    match addrs with
+    | []         => []
+    | a :: rest  => ((role, a), 1) :: members_for_role role rest
+    end.
+
+  (** ----- Full role-member dict from the sim's three lists ----- *)
+  Definition role_member_map (s : State.t) :
+      Dict.t (U256.t * U256.t) U256.t :=
+    members_for_role DEFAULT_ADMIN_ROLE_bytes32
+                     s.(State.admins) ++
+    members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                     s.(State.optimisticGuardians) ++
+    members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                     s.(State.optimisticGuardianManagers).
+
+  (** ----- Full projection -----
+
+      Single slot at index 0: the Map2-shaped role-member mapping.
+      Slot 1+ would hold AccessControlEnumerable's [_roleMembers], the
+      EnumerableSet machinery. For the view-only equivalence we don't
+      need to populate it; the unconstrained tail covers it. *)
+  Definition proj_sim (s : State.t) : SimulatedStorage.t := [
+    StorableValue.Map2 (role_member_map s)
+  ].
+
+  (** ----- Well-formedness ----- *)
+  Lemma proj_sim_length (s : State.t) :
+    List.length (proj_sim s) = 1%nat.
+  Proof. reflexivity. Qed.
+
+  Lemma proj_sim_roles (s : State.t) :
+    List.nth_error (proj_sim s) 0
+    = Some (StorableValue.Map2 (role_member_map s)).
+  Proof. reflexivity. Qed.
+
+  Import Guardian_325.Guardian_325_deployed.
+
+  (** ----- Bytes32 / address cleanup leaves -----
+
+      Both [cleanup_t_bytes32] and [convert_t_bytes32_to_t_bytes32]
+      are identity transforms at the U256-representation level. Same
+      for address-cleanup at the Yul level. *)
+  Lemma run_cleanup_t_bytes32 codes env state v :
+    {{? codes, env, Some state |
+      cleanup_t_bytes32 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_bytes32.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_bytes32_to_t_bytes32 codes env state v :
+    {{? codes, env, Some state |
+      convert_t_bytes32_to_t_bytes32 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_bytes32_to_t_bytes32.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** Address cleanup leaf: under the 160-bit bound, [and v 0xff..0xff]
+      reduces to [v]. *)
+  Lemma run_cleanup_t_uint160_on_address codes env state (v : U256.t)
+      (H_v : 0 <= v < 2^160) :
+    {{? codes, env, Some state |
+      cleanup_t_uint160 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_uint160.
+    lu. repeat (lu || cu || p). s.
+    replace (Pure.and v 1461501637330902918203684832716283019655932542975) with v.
+    - apply RunO.Pure.
+    - unfold Pure.and.
+      change 1461501637330902918203684832716283019655932542975 with (Z.ones 160).
+      rewrite Z.land_ones by lia.
+      rewrite Z.mod_small by lia.
+      reflexivity.
+  Qed.
+
+  Lemma run_identity codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      identity v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold identity.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_uint160_to_t_uint160 codes env state (v : U256.t)
+      (H_v : 0 <= v < 2^160) :
+    {{? codes, env, Some state |
+      convert_t_uint160_to_t_uint160 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_uint160_to_t_uint160.
+    lu. l. { c. { apply run_cleanup_t_uint160_on_address. exact H_v. }
+             c. { apply run_identity. }
+             c. { apply run_cleanup_t_uint160_on_address. exact H_v. }
+             p. } p.
+  Qed.
+
+  Lemma run_convert_t_uint160_to_t_address codes env state (v : U256.t)
+      (H_v : 0 <= v < 2^160) :
+    {{? codes, env, Some state |
+      convert_t_uint160_to_t_address v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_uint160_to_t_address.
+    lu. l. { c. { apply run_convert_t_uint160_to_t_uint160. exact H_v. } p. } p.
+  Qed.
+
+  Lemma run_convert_t_address_to_t_address codes env state (v : U256.t)
+      (H_v : 0 <= v < 2^160) :
+    {{? codes, env, Some state |
+      convert_t_address_to_t_address v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_address_to_t_address.
+    lu. l. { c. { apply run_convert_t_uint160_to_t_address. exact H_v. } p. } p.
+  Qed.
+
+  (** ----- Nested mapping_index_access — bytes32 → RoleData struct ----- *)
+  Module MappingIndexAccessBytes32RoleData.
+
+    Lemma run_mapping_index_access codes env state_base
+        (slot : U256.t) (key : U256.t) (storage : SimulatedStorage.t)
+        (memory : SimulatedMemory.t)
+        (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+      let st := make_state env state_base memory storage in
+      exists w0' w1' rest',
+      {{? codes, env, Some st |
+        mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_RoleData_ₓ1233_storage_ₓ_of_t_bytes32 slot key ⇓
+        Result.Ok (keccak256_tuple2 key slot)
+      | Some (make_state env state_base (w0' :: w1' :: rest') storage) ?}}.
+    Proof.
+      destruct H_mem as (w0 & w1 & rest & ->).
+      do 3 eexists.
+      unfold mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_RoleData_ₓ1233_storage_ₓ_of_t_bytes32.
+      l. {
+        l. {
+          c. { apply run_convert_t_bytes32_to_t_bytes32. }
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_keccak256_tuple2. }
+          p.
+        }
+        p.
+      }
+      p.
+    Qed.
+
+  End MappingIndexAccessBytes32RoleData.
+
+  (** ----- Nested mapping_index_access — address → bool ----- *)
+  Module MappingIndexAccessAddressBool.
+
+    Lemma run_mapping_index_access codes env state_base
+        (slot : U256.t) (key : U256.t) (storage : SimulatedStorage.t)
+        (memory : SimulatedMemory.t)
+        (H_key : 0 <= key < 2^160)
+        (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+      let st := make_state env state_base memory storage in
+      exists w0' w1' rest',
+      {{? codes, env, Some st |
+        mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address slot key ⇓
+        Result.Ok (keccak256_tuple2 key slot)
+      | Some (make_state env state_base (w0' :: w1' :: rest') storage) ?}}.
+    Proof.
+      destruct H_mem as (w0 & w1 & rest & ->).
+      do 3 eexists.
+      unfold mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address.
+      l. {
+        l. {
+          c. { apply run_convert_t_address_to_t_address. exact H_key. }
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_keccak256_tuple2. }
+          p.
+        }
+        p.
+      }
+      p.
+    Qed.
+
+  End MappingIndexAccessAddressBool.
+
+  (** ----- Bool-path leaves (offset-0 static variants) ----- *)
+
+  Lemma run_cleanup_from_storage_t_bool codes env state v :
+    {{? codes, env, Some state |
+      cleanup_from_storage_t_bool v ⇓ Result.Ok (Z.land v 0xff)
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_from_storage_t_bool.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_shift_right_0_unsigned codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      shift_right_0_unsigned v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_right_0_unsigned.
+    lu. repeat (lu || cu || p). s.
+    apply RunO.PureEq; [|reflexivity].
+    unfold Pure.shr. simpl. rewrite Z.div_1_r. reflexivity.
+  Qed.
+
+  Lemma run_extract_from_storage_value_offset_0_t_bool codes env state v :
+    {{? codes, env, Some state |
+      extract_from_storage_value_offset_0_t_bool v ⇓
+      Result.Ok (Z.land v 0xff)
+    | Some state ?}}.
+  Proof.
+    unfold extract_from_storage_value_offset_0_t_bool.
+    lu. l. { c. { apply run_shift_right_0_unsigned. }
+             c. { apply run_cleanup_from_storage_t_bool. }
+             p. } p.
+  Qed.
+
+  (** ----- Bool-value bound: every Dict.get hit on members_for_role is 1 ----- *)
+  Lemma members_for_role_get_is_one
+      (role : U256.t) (addrs : list Address) (key : U256.t * U256.t) (v : U256.t) :
+    Dict.get (members_for_role role addrs) key = Some v -> v = 1.
+  Proof.
+    induction addrs as [|a rest IH]; simpl.
+    - intro H; discriminate.
+    - destruct (Dict.Eq.eqb _ _).
+      + intro H; injection H as <-. reflexivity.
+      + exact IH.
+  Qed.
+
+  Lemma map_get_app_split
+      (m1 m2 : Dict.t (U256.t * U256.t) U256.t) (k : U256.t * U256.t) :
+    StorableValue.map_get_u256 (m1 ++ m2) k
+    = match Dict.get m1 k with
+      | Some v => v
+      | None   => StorableValue.map_get_u256 m2 k
+      end.
+  Proof.
+    unfold StorableValue.map_get_u256.
+    induction m1 as [|[k' v'] rest IH]; simpl.
+    - reflexivity.
+    - destruct (Dict.Eq.eqb k k'); [reflexivity | exact IH].
+  Qed.
+
+  Lemma members_for_role_map_get_bool
+      (role : U256.t) (addrs : list Address) (key : U256.t * U256.t) :
+    StorableValue.map_get_u256 (members_for_role role addrs) key = 0 \/
+    StorableValue.map_get_u256 (members_for_role role addrs) key = 1.
+  Proof.
+    unfold StorableValue.map_get_u256.
+    destruct (Dict.get (members_for_role role addrs) key) as [v|] eqn:Hg.
+    - right. apply (members_for_role_get_is_one _ _ _ _ Hg).
+    - left. reflexivity.
+  Qed.
+
+  Lemma role_member_map_values_bool (s : State.t) (key : U256.t * U256.t) :
+    let v := StorableValue.map_get_u256 (role_member_map s) key in
+    v = 0 \/ v = 1.
+  Proof.
+    cbv zeta. unfold role_member_map.
+    rewrite map_get_app_split.
+    destruct (Dict.get (members_for_role _ s.(State.admins)) key) as [v|] eqn:Hg1.
+    - right. apply (members_for_role_get_is_one _ _ _ _ Hg1).
+    - rewrite map_get_app_split.
+      destruct (Dict.get (members_for_role _ s.(State.optimisticGuardians)) key) as [v|] eqn:Hg2.
+      + right. apply (members_for_role_get_is_one _ _ _ _ Hg2).
+      + apply members_for_role_map_get_bool.
+  Qed.
+
+  (** Z.land v 0xff = v for v ∈ {0, 1}. *)
+  Lemma land_0xff_bool (v : Z) : v = 0 \/ v = 1 -> Z.land v 0xff = v.
+  Proof. intros [-> | ->]; reflexivity. Qed.
+
+  (** ----- sload via Map2 + proj_sim ----- *)
+  Lemma run_sload_role_member_at_proj_sim
+      codes env state_base memory sim (role account : U256.t) :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      Stdlib.sload (keccak256_tuple2 account (keccak256_tuple2 role 0)) ⇓
+      Result.Ok (StorableValue.map_get_u256
+                   (role_member_map sim) (role, account))
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    apply (Storage.run_sload_map2_u256 (proj_sim sim) 0
+             (role_member_map sim) role account).
+    apply proj_sim_roles.
+  Qed.
+
+  (** ----- Read-from-storage at offset 0 returns the clean 0/1 ----- *)
+  Lemma run_read_role_member_at_proj_sim
+      codes env state_base memory sim (role account : U256.t) :
+    let v := StorableValue.map_get_u256
+               (role_member_map sim) (role, account) in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      read_from_storage_split_offset_0_t_bool
+        (keccak256_tuple2 account (keccak256_tuple2 role 0)) ⇓
+      Result.Ok v
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_storage_split_offset_0_t_bool.
+    lu. l. { c. { apply run_sload_role_member_at_proj_sim. }
+             c. { apply run_extract_from_storage_value_offset_0_t_bool. }
+             apply RunO.PureEq; [|reflexivity].
+             rewrite (land_0xff_bool _ (role_member_map_values_bool sim (role, account))).
+             reflexivity. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** ----- Main equivalence theorem for fun_hasRole_1292 -----
+
+      Body shape:
+        slot ← 0 (the [_roles] mapping base)
+        slot ← mapping_index_access_bytes32_struct_RoleData(0, role)
+             = keccak256_tuple2(role, 0)
+        slot ← add(slot, 0)  (* members field offset *)
+        slot ← mapping_index_access_address_bool(slot, account)
+             = keccak256_tuple2(account, keccak256_tuple2(role, 0))
+        ret ← read_from_storage_split_offset_0_t_bool(slot)
+            = role_member_map[(role, account)]
+
+      The proof composes the two mapping_index_access lemmas (with
+      memory threading via the cons-of-3 structure) and the
+      read-from-storage lemma. *)
+  Theorem run_hasRole_equivalent
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : Guardian.State.t) (role account : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_role : U256.Valid.t role)
+      (H_account : 0 <= account < 2^160)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    let expected := StorableValue.map_get_u256
+                      (role_member_map sim) (role, account) in
+    exists state',
+    {{? codes, env, Some state |
+      fun_hasRole_1292 role account ⇓
+      Result.Ok expected
+    | Some state' ?}}.
+  Proof.
+    intros state expected.
+    (* First mapping_index_access: role → struct ptr *)
+    pose proof (MappingIndexAccessBytes32RoleData.run_mapping_index_access
+                  codes env state_base 0 role (proj_sim sim) memory H_mem) as Hmia1.
+    destruct Hmia1 as (w0_a & w1_a & rest_a & Hmia1).
+    set (mem_after1 := w0_a :: w1_a :: rest_a).
+    (* Second mapping_index_access: account → bool slot, threaded from post-state of first *)
+    pose proof (MappingIndexAccessAddressBool.run_mapping_index_access
+                  codes env state_base (keccak256_tuple2 role 0) account
+                  (proj_sim sim) mem_after1
+                  H_account (ex_intro _ w0_a (ex_intro _ w1_a (ex_intro _ rest_a eq_refl))))
+      as Hmia2.
+    destruct Hmia2 as (w0_b & w1_b & rest_b & Hmia2).
+    (* Derive a Pure.add-wrapped form of Hmia2 — the Yul body uses
+       add(structPtr, 0) for the members field offset, producing
+       Pure.add (keccak256_tuple2 role 0) 0 as the slot. The offset-
+       bound axiom discharges the U256-fits-after-add side condition. *)
+    assert (H_pa1 : Pure.add (keccak256_tuple2 role 0) 0
+                  = keccak256_tuple2 role 0).
+    { rewrite Pure_add_keccak_offset by lia. lia. }
+    assert (H_pa2 :
+      Pure.add (keccak256_tuple2 account (keccak256_tuple2 role 0)) 0
+      = keccak256_tuple2 account (keccak256_tuple2 role 0)).
+    { rewrite Pure_add_keccak_offset by lia. lia. }
+    assert (Hmia2_add :
+      {{? codes, env, Some (make_state env state_base mem_after1 (proj_sim sim))
+      | mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address
+          (Pure.add (keccak256_tuple2 role 0) 0) account
+        ⇓ Result.Ok (keccak256_tuple2 account (keccak256_tuple2 role 0))
+      | Some (make_state env state_base (w0_b :: w1_b :: rest_b) (proj_sim sim)) ?}}).
+    { rewrite H_pa1. exact Hmia2. }
+    eexists.
+    cbv zeta.
+    unfold fun_hasRole_1292.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _
+            ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_RoleData_ₓ1233_storage_ₓ_of_t_bytes32 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia1 | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia2_add | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call (read_from_storage_split_offset_0_t_bool _) _
+            ⇓ _ | _ ?}} =>
+          try rewrite H_pa2;
+          c; [ apply run_read_role_member_at_proj_sim | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    (* Residual: the outer continuation's [match ?output_inter with ...]
+       reduces once ?output_inter is instantiated by the body's
+       [apply RunO.Pure]. Force the reduction and close. *)
+    all: cbn match.
+    all: apply RunO.Pure.
+  Qed.
 
 End GuardianEquivalence.

@@ -376,57 +376,18 @@ Module MappingIndexAccess.
 
 End MappingIndexAccess.
 
-(** ----- The main equivalence theorem (Admitted; see header note) ----- *)
+(** ----- Legacy [storage_matches_sim] form: superseded by Phase E -----
 
-Theorem run_getProposalsAvailable_equivalent
-    (codes : Codes.t) (env : Environment.t) (state : State.t)
-    (base_slot : U256.t) (account : Address.t)
-    (sim : ThrottleLibStorage.t) (now : U256.t)
-    (memory : SimulatedMemory.t)
-    (H_valid_sim     : Valid.state sim)
-    (H_valid_account : Address.Valid.t account)
-    (H_valid_now     : U256.Valid.t now)
-    (H_storage       : storage_matches_sim codes env state base_slot sim)
-    (H_timestamp     : state.(State.block_timestamp) = now)
-    (H_memory        : state.(State.memory) = Memory.of_u256_list memory)
-    (H_scratch       : memory_has_scratch memory)
-    (H_no_overflow   : (** charge computation does not revert via checked_*: *)
-       let throttle := ThrottleLibStorage.get_throttle sim account in
-       now >= throttle.(Throttle.lastUpdated) /\
-       throttle.(Throttle.currentCharge)
-         + ((now - throttle.(Throttle.lastUpdated)) * ProposerThrottle.FIX_ONE)
-           / ProposerThrottle.PROPOSAL_THROTTLE_PERIOD < 2 ^ 256 /\
-       sim.(ThrottleLibStorage.capacity) * ProposerThrottle.FIX_ONE < 2 ^ 256) :
-  let throttle  := ThrottleLibStorage.get_throttle sim account in
-  let charge    := ProposerThrottle.readCharge throttle now in
-  let available := ProposerThrottle.proposalsAvailable
-                     throttle sim.(ThrottleLibStorage.capacity) now in
-  exists memory',
-  {{? codes, env, Some state |
-    ThrottleLib_153.ThrottleLib_153_deployed.fun__getProposalsAvailable_152
-      base_slot account ⇓
-    Result.Ok (available, charge)
-  | Some (state <| State.memory := Memory.of_u256_list memory' |>) ?}}.
-Proof.
-  (** Proof body: walks the shallow body of
-      [fun__getProposalsAvailable_152]. The named tactic chain
-      [unfold + lu; repeat (lu || cu || p)] handles the trivial let-
-      bindings; sub-call discharge via apply on leaf lemmas; Shallow.if_
-      via destruct on the clamp condition.
-
-      Closure of this theorem requires:
-        - Phase 1 leaves: all closed (no Admits in the leaf layer).
-        - Memory + keccak: apply [run_mapping_index_access]
-          (Phase C) once at the right spot.
-        - Storage reads: discharge via [H_storage] specialized to
-          each [SlotKind.t].
-        - Arithmetic: [run_checked_*] leaves close each step.
-
-      The proof body is mechanically tractable but consists of ~150
-      lines of l/c/CanonizeState.execute plumbing. Until that is
-      written out, Admitted. The dependent theorems (Phase E/F,
-      Phase 1.3) carry the same shape. *)
-Admitted.
+    The legacy [run_getProposalsAvailable_equivalent] theorem (formerly
+    here) took per-slot sload hypotheses via [storage_matches_sim] and
+    a [state.(State.memory) = of_u256_list memory] precondition. With
+    Phase A's [StorableValue.MapStruct] variant landing upstream and
+    Phase E ([run_getProposalsAvailable_equivalent_make_state] below)
+    closing the equivalent statement in [make_state] form, the legacy
+    theorem is redundant. Callers are migrated to the [make_state] form;
+    the [storage_matches_sim] helper definition is retained because the
+    [storage_slot_value] projection it depends on is still useful as a
+    per-slot specification language. *)
 
 (** ----- Phase B: [make_state] form (task #187) -----
 
