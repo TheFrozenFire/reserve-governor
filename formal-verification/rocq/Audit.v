@@ -206,7 +206,7 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
     [../../notes/yul_equivalence_upgrade_authorized.md] identifies
     the work needed for one example.
 
-    Equivalence-tier progress (commit e6e8269, May 2026):
+    Equivalence-tier progress (May 2026):
 
       - The upstream apparatus has been extended for governor's
         struct-mapping storage: [StorableValue.MapStruct] variant +
@@ -216,13 +216,22 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
       - Per-contract equivalence proofs land under
         [proofs/equivalence/]. ThrottleLib.v is the proof-of-method
         target: full storage projection, 20+ leaf lemmas closed,
-        AND the main-internal + public-wrapper theorems
-        ([run_getProposalsAvailable_equivalent_make_state] and its
-        wrapper) NOW CLOSE WITH Qed — see WISDOM R032 for the
-        RunO.PureEq pattern that bridged the syntactic-vs-algebraic
-        gap on Z.min FIX_ONE raw. Phase 1.3 (consumeProposalCharge
-        mutator) is still Admitted pending the per-account proj_sim
-        update equivalence work.
+        the main-internal + public-wrapper theorems close with Qed
+        (WISDOM R032/R033 — RunO.PureEq + Z.min_l/Z.min_r pattern).
+        The structural-equality lemma
+        [throttles_packed_set_throttle_two_sstores] (WISDOM R034)
+        now CLOSES WITH Qed via the rewrite-Hkneb + simpl cascade.
+        Phase 1.3 (consumeProposalCharge mutator) has its prelude
+        composed (pose Phase E witness, destruct, eexists) and a
+        walker that dispatches 8 routing arms; remaining work is
+        layering side-condition discharges for the leaf applications
+        (require_helper, checked_*, update_storage_value_offset_0).
+
+      - Shallow forms wired into the main build for ThrottleLib,
+        VersionRegistry, RewardTokenRegistry, Guardian. Only
+        UnstakingManager_shallow remains blocked (WISDOM R035 —
+        shallow_embed.py switch-binding bug for switches that compute
+        a value).
 
       - Sandbox.v exercises the upstream's [Stdlib.timestamp /
         block_number] (R020) and [RunO.CallContract] (R021) — both
@@ -231,18 +240,29 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
     Status by contract:
 
       ThrottleLib       View functions (_getProposalsAvailable and
-                        its public wrapper) close with Qed via
-                        the RunO.PureEq + Z.min_l/Z.min_r pattern.
-                        Mutator (consumeProposalCharge) Admitted —
-                        depends on sstore + per-account projection
-                        update equivalence.
-      Other contracts   Untouched. Will land under proofs/equivalence/
-                        once R022 is resolved upstream.
+                        its public wrapper) close with Qed.
+                        Structural projection-update equivalence
+                        (R034) closes with Qed.
+                        Mutator (consumeProposalCharge) walker
+                        partial — Admitted at the side-condition
+                        discharges.
+      VersionRegistry   Equivalence scaffold theorem stated
+                        (isDeprecated reader); proof body Admitted
+                        pending walker composition.
+      RewardTokenRegistry,
+      Guardian          Substrate ready (shallow forms compile);
+                        full equivalence parked behind Phase 4
+                        decision (OZ EnumerableSet /
+                        AccessControlEnumerable mechanization).
+      UnstakingManager  Substrate blocked (WISDOM R035). Equivalence
+                        theorems use placeholder bodies until the
+                        shallow embedding tool is fixed.
 
     For contracts whose equivalence files are fully closed (no
     Admits in the body), the divergence between that contract's
     simulation and its bytecode is mechanically ruled out.
-    ThrottleLib's view functions are the first to reach that bar.
+    ThrottleLib's view functions and projection-update structural
+    lemma are at that bar.
 
     Caveat-6 (Sim/contract precondition gap on several operations).
     ---------------------------------------------------------------
