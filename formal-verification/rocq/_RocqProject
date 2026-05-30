@@ -1,5 +1,10 @@
 -R . ReserveGovernor
--Q /work/rocq/RocqOfSolidity RocqOfSolidity
+# Path to the rocq-of-solidity library's RocqOfSolidity module.
+# scripts/rocq-build overrides this with $ROCQ_TREE at coqc invocation
+# time, so the value here is only used by editor / LSP / petanque
+# consumers that read _RocqProject directly. Default to the standard
+# dev-clone location; override locally if your layout differs.
+-Q /Users/jmart/git/reserve/formal-verification/rocq-of-solidity/rocq/RocqOfSolidity RocqOfSolidity
 
 -arg -impredicative-set
 -arg -w
