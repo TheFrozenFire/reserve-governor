@@ -1723,48 +1723,52 @@ Module MakeStateForm.
       Result.Ok tt
     | Some state' ?}}.
   Proof.
-    (** All blockers are now resolved:
+    (* Apparatus all in place (Phase E, require_helper, mapping_index_access,
+       update_storage_value_offset_0 wrapper, timestamp, R034 structural lemma).
+       The proof body needs a fully-routed walker covering ~15 distinct
+       sub-call patterns plus the final state-equality discharge via
+       throttles_packed_set_throttle_two_sstores.
 
-          - Phase E (run_getProposalsAvailable_equivalent_make_state):
-            Qed-closed.
-          - require_helper success leaf (run_require_helper_succeeds):
-            Qed-closed.
-          - mapping_index_access (run_mapping_index_access):
-            Qed-closed.
-          - update_storage_value_offset_0 wrapper
-            (run_update_storage_value_offset_0_t_uint256_to_t_uint256):
-            Qed-closed (uses Storage.run_sstore_struct_field axiom).
-          - timestamp primitive (R020 resolved upstream).
-          - throttles_packed_set_throttle_two_sstores (R034): Qed-closed
-            with the rewrite Hkneb + simpl pattern.
+       Sketch (each line is a `c;` dispatch arm):
+         - fun__getProposalsAvailable_152 → exact HE
+         - cleanup_t_uint256 → ThrottleLibLeaves.run_cleanup_t_uint256
+         - convert_t_rational_1_by_1_to_t_uint256 → leaf
+         - require_helper_t_error_179 → run_require_helper_succeeds
+           with side proof: H_sufficient_available implies the iszero
+           argument is non-zero.
+         - mapping_index_access → MappingIndexAccess.run_mapping_index_access
+         - convert_t_struct_ProposalThrottle_storage_to_ptr → leaf
+         - read_from_storage_split_offset_0_t_uint256 → leaf
+           (capacity slot read)
+         - convert_t_rational_1000000000000000000_by_1_to_t_uint256 → leaf
+         - checked_div_t_uint256 → leaf (with overflow guard)
+         - checked_sub_t_uint256 → leaf
+         - update_storage_value_offset_0_t_uint256_to_t_uint256 → wrapper
+           with side proof: H_v (new value in range) + H_nth (MapStruct
+           at slot 1).
+         - timestamp (Primitive.GetBlockTimestamp) → pr; H_timestamp
+         - Second update_storage_value_offset_0 (with offset 1) → wrapper
+         - LowM.Pure (Result.Ok tt) → RunO.Pure
 
-        Body composition skeleton (~150 lines of mechanical proof):
+       Each `c;` produces 2 subgoals (body + continuation); the walker
+       must drain both. The CanonizeState.execute pattern after each
+       sstore normalizes the state shape so the next call sees
+       Some (make_state env state_base memory <updated_storage>).
 
-          pose proof (run_getProposalsAvailable_equivalent_make_state ...) as HE.
-          destruct HE as [state' HE].
-          eexists <post-state derived from R034>.
-          unfold fun_consumeProposalCharge_72.
-          unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
-          repeat (lazymatch goal with
-            | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
-            | |- {{? _, _, _ | LowM.Call (fun__getProposalsAvailable_152 _ _) _ ⇓ _ | _ ?}} =>
-                c; [ exact HE | ]
-            | |- {{? _, _, _ | LowM.Call (require_helper_t_error_179_... _) _ ⇓ _ | _ ?}} =>
-                c; [ apply run_require_helper_succeeds; <discharge: available >= 1> | ]
-            | |- {{? _, _, _ | LowM.Call (mapping_index_access_... _ _) _ ⇓ _ | _ ?}} =>
-                c; [ apply run_mapping_index_access; <bounds> | ]
-            | |- {{? _, _, _ | LowM.Call (update_storage_value_offset_0_... _ _) _ ⇓ _ | _ ?}} =>
-                c; [ apply run_update_storage_value_offset_0_t_uint256_to_t_uint256; <H_v + H_nth> | ]
-            | |- {{? _, _, _ | LowM.Primitive Primitive.GetBlockTimestamp _ ⇓ _ | _ ?}} =>
-                pr; <H_timestamp>
-            | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
-            | |- _ => s
-            end).
-          (* Final state equality uses throttles_packed_set_throttle_two_sstores. *)
+       Final goal after walker: the post-state equals
+       make_state env state_base <final_memory> (proj_sim new_sim).
+       Closure via:
+         apply throttles_packed_set_throttle_two_sstores. (* via R034 *)
 
-        Open work item: writing this out properly with all the
-        intermediate hypotheses lined up. The composition is no longer
-        gated on a missing lemma — every leaf is closed. *)
+       Total: ~150 lines mechanical. The pose/destruct/eexists prelude
+       compiles; the walker stops at unrouted sub-calls. *)
+    pose proof (run_getProposalsAvailable_equivalent_make_state
+                  codes env state_base account sim now memory
+                  H_valid_sim H_valid_account H_valid_now
+                  H_timestamp H_memory_scratch H_no_overflow) as HE.
+    destruct HE as [state_E HE].
+    eexists.
+    admit.
   Admitted.
 
   (** ----- Phase 1.4: audit transfer through the equivalence -----
