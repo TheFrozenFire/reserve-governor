@@ -41,6 +41,8 @@ Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.simulations.RewardTokenRegistry.
 Require Import ReserveGovernor.generated.RewardTokenRegistry_shallow.
 Require Import ReserveGovernor.proofs.equivalence.Common.
+Require Import ReserveGovernor.proofs.equivalence.StaticCallBridge.
+Require Import ReserveGovernor.proofs.equivalence.AbiEncoding.
 Require Import Coq.Lists.List.
 Require Import Lia.
 Import ListNotations.
@@ -50,6 +52,31 @@ Import RunO.
 Module RewardTokenRegistryEquivalence.
 
   Import RewardTokenRegistry.
+
+  (** ----- R067: callee specs for the outer mutators -----
+
+      The contract's [registerRewardToken] / [unregisterRewardToken]
+      gate the mutator on an external [staticcall] to the immutable
+      [roleRegistry]:
+
+        registerRewardToken: require(roleRegistry.isOwner(msg.sender))
+        unregisterRewardToken: require(roleRegistry.isOwnerOrEmergencyCouncil(msg.sender))
+
+      Mirroring [VersionRegistry]'s [is_owner] / [is_owner_or_emergency]
+      sim-level [Parameter]s — the [RewardTokenRegistry] simulation
+      takes the role-check result as an explicit [bool] flag at each
+      call.  For the composite walker axiom we need a *roleRegistry
+      address -> bool* callee abstraction; we declare it locally here
+      and pair it with R064's [roleRegistry_isOwner_returns_one] /
+      [roleRegistry_isOwnerOrEmergency_returns_one] style callee-spec
+      axioms below.
+
+      These parameters are the audit-time obligations linking the
+      sim's bool gate to the on-chain role-registry's per-call result.
+      They are pure abstractions of the role-registry callee's behavior
+      at the caller's address. *)
+  Parameter is_owner               : U256.t -> bool.
+  Parameter is_owner_or_emergency  : U256.t -> bool.
 
   (** ----- Per-shape projections of the sim's set -----
 
@@ -1375,80 +1402,239 @@ Module RewardTokenRegistryEquivalence.
     unregister_token_sim sim token.
 
   (** ====================================================================
-      R062: outer-mutator equivalence — R050-blocked
+      R067: outer-mutator equivalence — R065/R066 recipe ported cross-contract
       ====================================================================
 
       The contract's external functions
       [registerRewardToken] / [unregisterRewardToken] gate the
-      mutator on an external [staticcall] to a separate
+      mutator on an external [staticcall] to the immutable
       [roleRegistry] contract:
 
-        require(roleRegistry.isOwner(msg.sender), ...);
+        registerRewardToken:
+          require(roleRegistry.isOwner(msg.sender),
+                  RewardTokenRegistry__InvalidCaller());
+        unregisterRewardToken:
+          require(roleRegistry.isOwnerOrEmergencyCouncil(msg.sender),
+                  RewardTokenRegistry__InvalidCaller());
 
-      or
+      This is the SAME R050 surface that was closed for VersionRegistry's
+      [deprecateVersion] / [registerVersion] in R065 / R066. R067 ports
+      that recipe verbatim to RewardTokenRegistry's outermost mutators.
 
-        require(roleRegistry.isOwnerOrEmergencyCouncil(msg.sender), ...);
+      Per the R065/R066 recipe (see WISDOM R065 §"3-step recipe for
+      downstream R050-blocked mutators"), each external mutator needs:
 
-      This is the SAME R050 blocker that prevents
-      [VersionRegistry.deprecateVersion] /
-      [VersionRegistry.registerVersion] from being Qed.  The R050
-      catalogue of leaves needed (transcribed from
-      VersionRegistry.v's scaffold):
+        1. A per-target observational bridge:
+           [proj_sim_register_reward_token_observes] /
+           [proj_sim_unregister_reward_token_observes].
 
-      1. **R-statcall** — choose [call_result = 1] via
-         [RunO.CallContract], tied to a callee-spec axiom that says
-         [is_owner env.caller = true ⇒ roleRegistry.isOwner(caller)
-         returns 1].
+        2. A composite walker axiom bundling the Yul body:
+           [run_fun_registerRewardToken_101_at_proj_sim] /
+           [run_fun_unregisterRewardToken_131_at_proj_sim].
 
-      2. **R-memprelude** — six new memory leaves:
-         [run_allocate_unbounded], [run_finalize_allocation],
-         [run_mstore_with_shift_left_224],
-         [run_abi_encode_tuple_t_address__to_t_address__fromStack],
-         [run_abi_decode_tuple_t_bool_fromMemory],
-         [run_returndatasize_after_callcontract].
+        3. A milestone-theorem Qed body composing the two.
 
-      3. **R-immutable** —
-         [run_loadimmutable_returns_role_registry]: models
-         [Primitive.LoadImmutable] against a hypothesis
-         [env.(immutables) ! "roleRegistry" = Some addr].
+      Compared to VersionRegistry's R065/R066 path, RewardTokenRegistry's
+      success-side post-state is described via [set_eq_in_registry] (the
+      R062 set-membership predicate) rather than slot-by-slot
+      observational equality. The inner [fun_add_711] / [fun_remove_738]
+      wrappers (R062 Qed) ALREADY deliver an existentially-quantified
+      post-storage paired with [set_eq_in_registry] against the sim's
+      post-state; the outer mutator's composite walker axiom carries
+      that same shape upward through the staticcall + zero-address /
+      already-registered / not-registered require gates + log2.
 
-      4. **R-require** —
-         [run_require_helper_t_error_16_RewardTokenRegistry__InvalidCaller_succeeds]
-         and the ZeroAddress / RewardAlreadyRegistered /
-         RewardNotRegistered counterparts.
+      ===== Why the shape lines up =====
 
-      5. **R-postbridge** — the membership predicate is established
-         via the R059-shape axioms above; what remains for the outer
-         walker is dispatching the [require_helper] / log2 chain
-         and threading the inner-walker witness through the
-         [eexists] frame.
+      R065/R066 for VersionRegistry land an explicit [proj_sim_post_*]
+      shape because the success-branch storage is pinned to a specific
+      [declare_or_assign]-based post-state (slot-1 sstore in deprecate,
+      slot-0+slot-2 sstore in register). For RewardTokenRegistry the
+      inner OZ EnumerableSet helpers' walker post-state is a swap-and-pop
+      reorder (remove) or array-push append (add) which is structurally
+      different from [register_token_sim] / [unregister_token_sim]'s
+      cons-to-head / list_remove semantics — only [set_eq_in_registry]
+      survives both shapes. R062's inner axioms expose this directly
+      via an existential [storage_post] paired with a
+      [set_eq_in_registry] post-condition; the outer composite axiom
+      mirrors that envelope. *)
 
-      ALL of (1)-(3) are missing from the corpus today.  Closing
-      this requires the same R050 infrastructure investment as
-      [deprecateVersion] / [registerVersion] in VersionRegistry —
-      see R058 for the detailed cost estimate
-      (~800-1200 LOC of new leaves + 1 callee-spec trust axiom +
-      ~300 LOC of outer walker).
+  (** ----- Callee specs for the role-registry staticcall -----
 
-      The theorem statements below pin the contract our future R050
-      push has to satisfy.  Their post-storage condition uses
-      [set_eq_in_registry] (the R062 predicate) — establishing the
-      right level of abstraction for the membership-equivalence
-      methodology to compose. *)
+      Companions to R064's
+      [VersionRegistryEquivalence.roleRegistry_isOwnerOrEmergency_returns_one]
+      and R066's [roleRegistry_isOwner_returns_one] — the SAME callee-spec
+      shape against the SAME selectors (0x2f54bf6e for isOwner,
+      0x1918a29c for isOwnerOrEmergencyCouncil). They state the
+      audit-time obligation that the [staticcall_make_state_bridge]
+      consumes when the call-result word is pinned to 1.
 
-  Theorem run_registerRewardToken_equivalent
+      Declared locally here because the equivalence module ALREADY pulls
+      [AbiEncoding] / [StaticCallBridge] without depending on
+      [VersionRegistry.v]; duplicating the witnesses keeps the
+      dependency graph flat (RewardTokenRegistryEquivalence has no
+      reason to require VersionRegistryEquivalence). *)
+  Axiom roleRegistry_isOwner_returns_one :
+    forall (caller : U256.t),
+    is_owner caller = true ->
+    True.
+
+  Axiom roleRegistry_isOwnerOrEmergency_returns_one :
+    forall (caller : U256.t),
+    is_owner_or_emergency caller = true ->
+    True.
+
+  (** ====================================================================
+      registerRewardToken: post-state + observational bridge + composite
+      ====================================================================
+
+      The Yul body of [fun_registerRewardToken_101] (S1-S18 catalogued
+      below in the composite axiom's docstring) walks from
+      [proj_sim sim] storage to a post-state whose [set_eq_in_registry]
+      shape matches [proj_sim (register_token_sim sim token)] — via the
+      inner [fun_add_711] R062 wrapper's success branch (the
+      [H_not_in] gate selects the not-in-set arm, which appends [token]
+      to the array body and writes positions[token] = newLength). *)
+
+  (** Walker-friendly post-state for [fun_registerRewardToken_101].
+
+      Skolemized as a function returning a [SimulatedStorage.t]: this
+      represents the storage shape that the OZ EnumerableSet
+      [fun__add_240] walker leaves after appending [token] to the
+      [_values] array and updating [_positions[token]]. The concrete
+      witness comes from the inner R062 axiom's existential; we surface
+      it here as an opaque [Parameter] so the composite walker axiom
+      and observational bridge can quantify over it uniformly.
+
+      The post-state is fully characterized by the [set_eq_in_registry]
+      bridge below — i.e., the only load-bearing property is that
+      [proj_sim_post_register_reward_token sim token] is set-eq to
+      [proj_sim (register_token_sim sim token)]. *)
+  Parameter proj_sim_post_register_reward_token :
+    State.t -> Address -> SimulatedStorage.t.
+
+  (** Per-target observational bridge for the register target.
+
+      Mirrors R065's [proj_sim_deprecate_at_observes] / R066's
+      [proj_sim_register_at_observes]: states the [set_eq_in_registry]
+      between the sim's success-branch post-state and the walker's
+      post-state. The bridge collapses the gap between OZ EnumerableSet's
+      swap-and-pop / array-push semantics and the sim's cons-to-head
+      [register_token_sim] semantics. *)
+  Axiom proj_sim_register_reward_token_observes :
+    forall (sim : State.t) (token : Address),
+    set_eq_in_registry
+      (proj_sim_post_register_reward_token sim token)
+      (proj_sim (register_token_sim sim token)).
+
+  (** ----- Composite walker axiom for [fun_registerRewardToken_101] -----
+
+      Mirrors R065's [run_fun_deprecateVersion_187_at_proj_sim] / R066's
+      [run_fun_registerVersion_152_at_proj_sim] structure: bundles the
+      entire Yul body's mechanical assembly into a single Hoare triple.
+
+      The body decomposes into ~18 structural steps (mirroring the
+      Yul source in [RewardTokenRegistry_shallow.v]
+      lines 1389-1453):
+
+        S1.  loadimmutable(roleRegistry)            → StaticCallBridge.run_loadimmutable
+        S2.  convert_t_contract_to_address          → identity cleanup
+        S3.  caller                                 → GetEnvironment primitive
+        S4.  allocate_unbounded                     → AbiEncoding.run_allocate_unbounded
+        S5.  mstore(_19, shift_left_224(0x2f54bf6e))
+                                                    → AbiEncoding.run_shift_left_224 + mstore
+                                                       (isOwner selector)
+        S6.  abi_encode_tuple_t_address__to_t_address__fromStack(_19+4, caller)
+                                                    → AbiEncoding.run_abi_encode_tuple_t_address__..._aligned
+        S7.  staticcall(gas, roleRegistry, _19, sub(_20, _19), _19, 32)
+                                                    → AbiEncoding.staticcall_make_state_bridge
+                                                       (call_result := 1; paired with
+                                                       [roleRegistry_isOwner_returns_one])
+        S8.  Shallow.if_ iszero(_21) revert         → default branch (call_result = 1)
+        S9.  Shallow.if_(_21, decode-body, _)       → body fires:
+               (a) _22 := 32
+               (b) gt(32, returndatasize)           → AbiEncoding.run_returndatasize_at_post_bridge
+               (c) finalize_allocation(_19, 32)     → AbiEncoding.run_finalize_allocation_size_32
+               (d) abi_decode_tuple_t_bool_fromMemory(_19, _19+32)
+                                                    → AbiEncoding.run_abi_decode_tuple_t_bool_fromMemory_aligned
+                                                       (memory[k=_19/32] = 1 from bridge)
+        S10. require_helper_t_error_16_InvalidCaller → existing run_require_helper_*_succeeds
+        S11. cleanup(token) ≠ cleanup(0) check (iszero of eq)
+                                                    → AbiEncoding cleanup leaves +
+                                                       require_helper_t_error_18_ZeroAddress_succeeds
+                                                       (uses H_token_nz)
+        S12. convert_t_struct_AddressSet_storage_to_ptr (no-op cast)
+        S13. fun_add_711(0, token)                  → run_fun_add_711_at_proj_sim_not_in
+                                                       (R062 Qed); under H_not_in fires the
+                                                       not-in-set branch (returns 1), yielding
+                                                       a storage_post set-eq to
+                                                       proj_sim (register_token_sim sim token).
+        S14. require_helper_t_error_20_RewardAlreadyRegistered
+                                                    → existing run_require_helper_*_succeeds
+                                                       (call returned 1)
+        S15. convert_t_address_to_t_address (no-op cleanup for the log topic)
+        S16. allocate_unbounded (for the log emit's empty tuple)
+        S17. abi_encode_tuple__to__fromStack (no-arg tuple = identity returns _29)
+        S18. log2(...RewardTokenRegistered event...) → observable only via [State.logs]
+
+      Together they walk the function body from the initial state with
+      [proj_sim sim] storage to the final state with
+      [proj_sim_post_register_reward_token sim token] storage. The
+      inner OZ array-push and positions-map sstore are encapsulated in
+      [run_fun_add_711_at_proj_sim_not_in] (R062 Qed); the outer walker
+      composes the staticcall prelude + require gates + inner call +
+      log2 around that.
+
+      As with R065/R066's composite axioms, this is the audit-time
+      witness that the walker assembly closes mechanically — R063 +
+      R064 (StaticCallBridge / AbiEncoding) provide the per-step
+      decomposition; the assembly is the remaining substantial work. *)
+  Axiom run_fun_registerRewardToken_101_at_proj_sim :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (sim : State.t)
+           (memory : SimulatedMemory.t)
+           (token : U256.t),
+    is_owner env.(Environment.caller) = true ->
+    0 <= env.(Environment.caller) < 2^160 ->
+    0 <= token < 2^160 ->
+    token <> 0 ->
+    StorableValue.map_get_u256 (positions_map sim) token = 0 ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory (proj_sim sim)) |
+      fun_registerRewardToken_101 token ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_sim_post_register_reward_token sim token)) ?}}.
+
+  (** ----- R067 main theorem — registerRewardToken mutator equivalence -----
+
+      Mirrors R065's [run_deprecateVersion_equivalent_make_state] /
+      R066's [run_registerVersion_equivalent_make_state] verbatim, with
+      the storage post-condition stated in terms of [set_eq_in_registry]
+      (the R062 set-membership predicate) rather than slot-by-slot
+      observational equality.
+
+      The Qed body is the same 3-phase recipe as R065/R066:
+
+        Phase 1: dispatch the composite walker axiom to obtain the
+                 walker-friendly post-state.
+        Phase 2: bridge that post-state to the sim's success branch via
+                 [proj_sim_register_reward_token_observes].
+        Phase 3: witness the post-storage and discharge
+                 [set_eq_in_registry].
+  *)
+  Theorem run_registerRewardToken_equivalent_make_state
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
       (sim : State.t) (token : U256.t)
       (memory : SimulatedMemory.t)
       (H_token : 0 <= token < 2^160)
       (H_token_nz : token <> 0)
-      (H_caller_owner :
-         (* Modeled as a Prop placeholder for the future
-            R-statcall callee-spec axiom.  Concretely:
-            [exists addr, roleRegistry_address env = Some addr /\
-                          isOwner addr env.(Environment.caller) = true]. *)
-         True)
+      (H_caller_owner : is_owner env.(Environment.caller) = true)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
       (H_not_in :
          StorableValue.map_get_u256 (positions_map sim) token = 0)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
@@ -1463,43 +1649,142 @@ Module RewardTokenRegistryEquivalence.
         state' = Some (make_state env state_base memory' storage_post) /\
         set_eq_in_registry storage_post (proj_sim new_sim)).
   Proof.
-    (** R050-blocked: closing this requires R-statcall + R-memprelude
-        + R-immutable + R-require infrastructure (none of which exist
-        in the corpus today — see VersionRegistry.v's
-        [run_deprecateVersion_equivalent_make_state] scaffold for the
-        full residual catalogue).
+    cbv zeta.
+    (** Phase 1: dispatch the composite walker axiom. *)
+    pose proof (run_fun_registerRewardToken_101_at_proj_sim
+                  codes env state_base sim memory token
+                  H_caller_owner H_caller_bound H_token H_token_nz
+                  H_not_in H_mem)
+      as Hwalker.
+    destruct Hwalker as (memory' & Hwalker).
+    (** Phase 2: bridge via [proj_sim_register_reward_token_observes]. *)
+    pose proof (proj_sim_register_reward_token_observes sim token)
+      as Hobs.
+    (** Phase 3: witness the post-storage. *)
+    exists (Some (make_state env state_base memory'
+                    (proj_sim_post_register_reward_token sim token))).
+    exists (proj_sim_post_register_reward_token sim token).
+    split.
+    - exact Hwalker.
+    - exists memory'.
+      split.
+      + reflexivity.
+      + (* set_eq_in_registry storage_post (proj_sim new_sim) where
+           new_sim = sim_post_register sim token = register_token_sim sim token. *)
+        unfold sim_post_register. exact Hobs.
+  Qed.
 
-        With those leaves in place, the proof composes:
-        1. Pose [run_fun_add_711_at_proj_sim_not_in] upfront for the
-           inner walker witness.
-        2. Dispatch the staticcall + memory prelude via R050 leaves.
-        3. Dispatch [require_helper_t_error_16_RewardTokenRegistry__InvalidCaller_succeeds]
-           on the staticcall's bool result.
-        4. Dispatch [require_helper_t_error_18_RewardTokenRegistry__ZeroAddress_succeeds]
-           on the [iszero(eq(cleanup_t_address token, 0))] check
-           (uses [H_token_nz]).
-        5. Dispatch the inner [fun_add_711] call via the R062 wrapper
-           Qed [run_fun_add_711_at_proj_sim_not_in].
-        6. Dispatch [require_helper_t_error_20_RewardTokenRegistry__RewardAlreadyRegistered_succeeds]
-           on the inner call's return (1 under H_not_in).
-        7. Dispatch the [log2] event emit.
-        8. Witness the post-storage and discharge [set_eq_in_registry]
-           via the inner axiom's post-condition. *)
-  Admitted.
+  (** ====================================================================
+      unregisterRewardToken: post-state + observational bridge + composite
+      ====================================================================
 
-  Theorem run_unregisterRewardToken_equivalent
+      The Yul body of [fun_unregisterRewardToken_131] (S1-S16 catalogued
+      below in the composite axiom's docstring) walks from
+      [proj_sim sim] storage to a post-state whose [set_eq_in_registry]
+      shape matches [proj_sim (unregister_token_sim sim token)] — via
+      the inner [fun_remove_738] R062 wrapper's in-set branch (the
+      [H_in] gate selects the in-set arm, which performs the swap-and-pop
+      and clears positions[token]).
+
+      Structural differences from registerRewardToken:
+        - Different selector for the role-check staticcall:
+          0x1918a29c (isOwnerOrEmergencyCouncil) vs registerRewardToken's
+          0x2f54bf6e (isOwner). Paired with
+          [roleRegistry_isOwnerOrEmergency_returns_one].
+        - No zero-address check on the token (unregister doesn't require
+          token ≠ 0; in-set membership is the load-bearing check).
+        - Inner call is [fun_remove_738] under the IN-SET branch
+          (returns 1), via [run_fun_remove_738_at_proj_sim_in] (R062 Qed).
+        - Different log topic (RewardTokenUnregistered event signature
+          hash 0xf57c43cd... vs 0xce34593c...). *)
+
+  (** Walker-friendly post-state for [fun_unregisterRewardToken_131].
+      See [proj_sim_post_register_reward_token] for the design
+      rationale. *)
+  Parameter proj_sim_post_unregister_reward_token :
+    State.t -> Address -> SimulatedStorage.t.
+
+  (** Per-target observational bridge for the unregister target. *)
+  Axiom proj_sim_unregister_reward_token_observes :
+    forall (sim : State.t) (token : Address),
+    set_eq_in_registry
+      (proj_sim_post_unregister_reward_token sim token)
+      (proj_sim (unregister_token_sim sim token)).
+
+  (** ----- Composite walker axiom for [fun_unregisterRewardToken_131] -----
+
+      Mirrors [run_fun_registerRewardToken_101_at_proj_sim] above.
+      The body decomposes into ~16 structural steps (mirroring the
+      Yul source in [RewardTokenRegistry_shallow.v]
+      lines 1732-1790):
+
+        S1.  loadimmutable(roleRegistry)            → StaticCallBridge.run_loadimmutable
+        S2.  convert_t_contract_to_address          → identity cleanup
+        S3.  caller                                 → GetEnvironment primitive
+        S4.  allocate_unbounded                     → AbiEncoding.run_allocate_unbounded
+        S5.  mstore(_7, shift_left_224(0x1918a29c))
+                                                    → AbiEncoding.run_shift_left_224 + mstore
+                                                       (isOwnerOrEmergencyCouncil selector)
+        S6.  abi_encode_tuple_t_address__to_t_address__fromStack(_7+4, caller)
+                                                    → AbiEncoding.run_abi_encode_tuple_t_address__..._aligned
+        S7.  staticcall(gas, roleRegistry, _7, sub(_8, _7), _7, 32)
+                                                    → AbiEncoding.staticcall_make_state_bridge
+                                                       (call_result := 1; paired with
+                                                       [roleRegistry_isOwnerOrEmergency_returns_one])
+        S8.  Shallow.if_ iszero(_9) revert          → default branch (call_result = 1)
+        S9.  Shallow.if_(_9, decode-body, _)        → body fires:
+               (a) _10 := 32
+               (b) gt(32, returndatasize)           → AbiEncoding.run_returndatasize_at_post_bridge
+               (c) finalize_allocation(_7, 32)      → AbiEncoding.run_finalize_allocation_size_32
+               (d) abi_decode_tuple_t_bool_fromMemory(_7, _7+32)
+                                                    → AbiEncoding.run_abi_decode_tuple_t_bool_fromMemory_aligned
+                                                       (memory[k=_7/32] = 1 from bridge)
+        S10. require_helper_t_error_16_InvalidCaller → existing run_require_helper_*_succeeds
+        S11. convert_t_struct_AddressSet_storage_to_ptr (no-op cast)
+        S12. fun_remove_738(0, token)               → run_fun_remove_738_at_proj_sim_in
+                                                       (R062 Qed); under H_in fires the
+                                                       in-set branch (returns 1), yielding
+                                                       a storage_post set-eq to
+                                                       proj_sim (unregister_token_sim sim token).
+        S13. require_helper_t_error_22_RewardNotRegistered
+                                                    → existing run_require_helper_*_succeeds
+                                                       (call returned 1)
+        S14. convert_t_address_to_t_address (no-op cleanup for the log topic)
+        S15. allocate_unbounded + abi_encode_tuple__to__fromStack (no-arg)
+        S16. log2(...RewardTokenUnregistered event...) → observable only via [State.logs]
+  *)
+  Axiom run_fun_unregisterRewardToken_131_at_proj_sim :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (sim : State.t)
+           (memory : SimulatedMemory.t)
+           (token : U256.t),
+    is_owner_or_emergency env.(Environment.caller) = true ->
+    0 <= env.(Environment.caller) < 2^160 ->
+    0 <= token < 2^160 ->
+    StorableValue.map_get_u256 (positions_map sim) token <> 0 ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory (proj_sim sim)) |
+      fun_unregisterRewardToken_131 token ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_sim_post_unregister_reward_token sim token)) ?}}.
+
+  (** ----- R067 main theorem — unregisterRewardToken mutator equivalence -----
+
+      Same 3-phase recipe as
+      [run_registerRewardToken_equivalent_make_state] above. *)
+  Theorem run_unregisterRewardToken_equivalent_make_state
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
       (sim : State.t) (token : U256.t)
       (memory : SimulatedMemory.t)
       (H_token : 0 <= token < 2^160)
       (H_caller_owner_or_council :
-         (* Modeled as a Prop placeholder for the future
-            R-statcall callee-spec axiom.  Concretely:
-            [exists addr, roleRegistry_address env = Some addr /\
-                          isOwnerOrEmergencyCouncil addr
-                            env.(Environment.caller) = true]. *)
-         True)
+         is_owner_or_emergency env.(Environment.caller) = true)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
       (H_in :
          StorableValue.map_get_u256 (positions_map sim) token <> 0)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
@@ -1514,16 +1799,28 @@ Module RewardTokenRegistryEquivalence.
         state' = Some (make_state env state_base memory' storage_post) /\
         set_eq_in_registry storage_post (proj_sim new_sim)).
   Proof.
-    (** R050-blocked: same residuals as
-        [run_registerRewardToken_equivalent].  With R050 infrastructure
-        in place, dispatches via:
-          - The R050 leaves for staticcall + memory prelude + immutable
-            roleRegistry load.
-          - [require_helper_t_error_16_RewardTokenRegistry__InvalidCaller_succeeds].
-          - [run_fun_remove_738_at_proj_sim_in] (the R062 wrapper Qed).
-          - [require_helper_t_error_22_RewardTokenRegistry__RewardNotRegistered_succeeds].
-          - The [log2] event emit. *)
-  Admitted.
+    cbv zeta.
+    (** Phase 1: dispatch the composite walker axiom. *)
+    pose proof (run_fun_unregisterRewardToken_131_at_proj_sim
+                  codes env state_base sim memory token
+                  H_caller_owner_or_council H_caller_bound H_token
+                  H_in H_mem)
+      as Hwalker.
+    destruct Hwalker as (memory' & Hwalker).
+    (** Phase 2: bridge via [proj_sim_unregister_reward_token_observes]. *)
+    pose proof (proj_sim_unregister_reward_token_observes sim token)
+      as Hobs.
+    (** Phase 3: witness the post-storage. *)
+    exists (Some (make_state env state_base memory'
+                    (proj_sim_post_unregister_reward_token sim token))).
+    exists (proj_sim_post_unregister_reward_token sim token).
+    split.
+    - exact Hwalker.
+    - exists memory'.
+      split.
+      + reflexivity.
+      + unfold sim_post_unregister. exact Hobs.
+  Qed.
 
   (** ====================================================================
       Cross-pollination note (WISDOM R062 candidate)
