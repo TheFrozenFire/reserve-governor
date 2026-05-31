@@ -3708,3 +3708,114 @@ The `Admitted` count went from 2 (`run_grantRole_1468_observed_behavior`
 at commit `3e6ca1a`. Two commits:
 - `feat(fv): MILESTONE preliminaries — chainable hasRole + checkRole admin gate`
 - `feat(fv): MILESTONE preliminaries — modifier_onlyRole + grantRole_1468 stub`
+
+## R054: grantRole milestone — Phase 1 strengthened; Phase 5 blocked on Dict shape
+
+**Status: Phase 1 refactor LANDED (2026-05-31); Phase 5 milestone still
+blocked. The blocker is now structurally diagnosed.**
+
+Phase 1 (`run_fun__grantRole_1468_at_proj_sim_not_member`) refactored
+from `exists state'` to `exists w0' w1' rest'` with the post-state
+pinned to `Some (make_state env state_base (w0' :: w1' :: rest')
+proj_sim')`. Walker steps post-sstore (msgSender, allocate_unbounded /
+MLoad, abi_encode, log4) are all state-preserving in the sim model
+(MLoad's eval_primitive returns same state; log4 reduces to `M.pure
+tt`), so the post-state is observationally `state_after_sstore`. The
+refactor closes Qed cleanly. Total file delta: -8/+9 lines, no new
+axioms.
+
+This was the prerequisite step Phase 5 had been waiting on (per R053's
+"3-existential" needed for `Hnotmem` composition into Phase 3's
+not-member branch).
+
+### Phase 5 milestone still blocked — structural Dict shape mismatch
+
+Attempting the Phase 5 assembly surfaces a structural blocker that
+**cannot be resolved from Phase 5 alone**:
+
+The post-Phase-1 storage's slot 0 is
+`Dict.declare_or_assign (role_member_map sim) (role, account) 1`,
+which (for `account` not a member) is observationally
+`role_member_map sim ++ [((role, account), 1)]` — key APPENDED at the
+dict-list tail. `Dict.declare_or_assign`'s definition walks the dict
+left-to-right; if the key is never found, it appends at the very end
+(see `RocqOfSolidity.v::declare_or_assign_function`).
+
+The bridge lemma `role_member_map_add_admin_not_in` (a R051 leaf)
+produces `((DEFAULT_ADMIN_ROLE_bytes32, addr), 1) :: role_member_map
+s` — key CONS-PREPENDED.
+
+These two dicts are **observationally equal** for lookup (the only
+`((DEFAULT, account), _)` key in either yields `1`; all other keys
+unchanged) but NOT `Dict.t (U256.t * U256.t) U256.t`-equal: the new
+entry sits at different list positions. Slot 1 (positions) and slot
+3 (values body) face the same append-vs-prepend mismatch via their
+respective bridge lemmas. Slot 2 (length, fixed 3-entry dict with
+DEFAULT first) DOES line up syntactically — `Dict.declare_or_assign`
+updates in place when the key matches the first entry.
+
+### Why no Guardian.State.t fits
+
+We considered choosing a different `sim'` than `add_admin sim account`
+— specifically, one whose `role_member_map` ENDS with `((DEFAULT,
+account), 1)` so it lines up syntactically with the
+declare-or-assign-tail form. Impossible: the projection's role-block
+ordering is hard-coded as
+
+```
+role_member_map s
+  = members_for_role DEFAULT s.admins
+  ++ members_for_role OPT_G s.optimisticGuardians
+  ++ members_for_role OPT_GM s.optimisticGuardianManagers
+```
+
+Any new `(DEFAULT, addr)` entry coming from a sim variant lands in the
+DEFAULT block — necessarily BEFORE the OPT_G block, not after the
+OPT_GM block where declare-or-assign places it.
+
+### Resolution options (all out of scope for this session)
+
+Per the task constraints ("DO NOT modify any other existing landed
+proofs except Phase 1"), all three potential resolutions modify
+either landed lemmas or the theorem statement:
+
+1. **New cons-prepend sstore axiom variant.** Replace / add a new
+   `run_sstore_role_member_at_proj_sim_cons` whose post-storage is
+   `((role, account), value) :: role_member_map sim` when the key
+   is provably absent. Requires changing the underlying framework
+   `Storage.run_sstore_map2_u256` axiom or layering a new wrapper on
+   top of it that proves the dict-equality post-fact via an `H_not_in`
+   precondition.
+
+2. **Setoid framework for dict equality.** Define an equivalence
+   relation on `Dict.t` for "same lookups", carry it through the
+   sstore axiom + bridge lemmas as a setoid. Heavy refactor — touches
+   many landed proofs.
+
+3. **Weaken the theorem's post-state clause.** Replace
+   `state' = Some (make_state ... (proj_sim sim'))` with an
+   observational variant like `project_sim_to_ac (storage of state')
+   = sim_ac'`. This is the cleanest option but changes the equivalence
+   guarantee the theorem provides — callers now get observational
+   equivalence instead of representational equality.
+
+### What landed this session
+
+One commit on `agent-a79c8c6c327890293-grantRole-milestone` (worktree
+`.claude/worktrees/agent-a79c8c6c327890293`, forked from
+`feature/formal-verification@1ccbde7`):
+
+- **`fv(R053): strengthen Phase 1 to expose concrete post-state shape`**
+  — the Phase 1 refactor, ~8 lines net change, builds cleanly.
+
+Plus a follow-up commit replacing `run_grantRole_1359_equivalent`'s
+inline residual catalogue with the R054 diagnosis.
+
+### Build status
+
+`bash formal-verification/scripts/rocq-build proofs/equivalence/Guardian.v`
+green. `Admitted` count unchanged (2 —
+`run_grantRole_1468_observed_behavior` and the still-open
+`run_grantRole_1359_equivalent`). Phase 1 closes Qed both before and
+after the refactor — the difference is the strength of its
+postcondition.
