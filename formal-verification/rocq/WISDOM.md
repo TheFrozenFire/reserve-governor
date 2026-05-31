@@ -1927,7 +1927,88 @@ This composes `run_timestamp` (which discharges the call) with
 `state_base.(block_timestamp) = now`). The result: the call evaluates
 to `Result.Ok now` with the state unchanged.
 
-## R041: `M.monadic` Ltac doesn't traverse `Shallow.let_state` — cancelLock_212 still blocked
+## R041 (resolved): missing `linkersymbol` definition in rocq-of-solidity
+
+**TL;DR.** The Yul primitive `linkersymbol` was never defined in
+`RocqOfSolidity/simulations/RocqOfSolidity.v`.  Every Coq elaboration of
+a generated `[[ linkersymbol ~(| ... |) ]]` crashed via `M.monadic` with
+`Must evaluate to a closed term, offending expression: e, this is an
+object of type ident`.  The "ident" is literally the unbound
+`linkersymbol` token — `M.monadic`'s default `exact e` arm has no way
+to error gracefully when one of its subterms is unresolved.  The fix
+is a one-definition patch to the simulations file.
+
+The original WISDOM entry below pinned the bug on `Shallow.let_state`
+nested inside `[[ ]]` brackets.  That diagnosis was wrong — the
+M.monadic-vs-Shallow.let_state issue IS real (the partial fix in
+`shallow_embed.py` addresses it), but it isn't what was blocking
+`fun_cancelLock_212`.  The actual blocker was `linkersymbol`.
+
+### Resolution
+
+Added to `RocqOfSolidity/simulations/RocqOfSolidity.v` next to the
+sibling primitives (`loadimmutable`, `memoryguard`, etc.):
+
+```coq
+Definition linkersymbol (name : U256.t) : M.t U256.t :=
+  M.pure name.
+```
+
+This models `linkersymbol` as identity on the name — the address-vs-
+name distinction doesn't matter for the contract's own equivalence
+proof because every use of the returned value flows through the same
+opaque path.  A dedicated `Primitive.LinkerSymbol` constructor would be
+more faithful but isn't required for current proof targets.
+
+After this patch:
+
+| File | Pre-patch | Post-patch |
+|---|---|---|
+| `Guardian_shallow.v` | compiles | compiles |
+| `ThrottleLib_shallow.v` | compiles | compiles |
+| `UnstakingManager_shallow.v` (whole file, including `fun_cancelLock_212`, `fun_claimLock_270`, `fun_createLock_144`) | fails | **compiles** |
+
+### Diagnostic trail (preserved for the agent doing the proving work)
+
+The breakthrough was bisecting cancelLock_212's body — adding one
+`let~` line at a time until the compile flipped from pass to fail.
+The 43rd `let~` was:
+
+```
+let~ expr_189_address := [[ linkersymbol ~(| 0x6e6f64655f6d6f64756c65732f... |) ]] in
+```
+
+That hex literal is the ASCII for
+`"node_modules/@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol:SafeERC20"`
+— 142 hex digits, way over U256's 64-digit ceiling.  My first
+hypothesis was that the over-sized literal was breaking type
+inference.  Stubbing `Parameter linkersymbol : U256.t -> M.t U256.t.`
+made the same line (with the same over-sized literal) compile
+instantly.  The literal size was a red herring; the unbound function
+name was the bug.
+
+Why three big functions all failed: `fun_cancelLock_212`,
+`fun_claimLock_270`, and `fun_createLock_144` all call SafeERC20
+methods (transfer/transferFrom/forceApprove), and solc emits
+`linkersymbol(...)` for each of those library references.  Every
+other function in `UnstakingManager_shallow.v` only uses storage and
+plain-EVM primitives, so the missing `linkersymbol` never surfaces
+in them.
+
+### Why the M.monadic-vs-Shallow.let_state finding still has value
+
+The original WISDOM R041 diagnosis identified a real Ltac defect:
+when `Shallow.let_state` nests inside `[[ ]]` and rebinds a name from
+the enclosing scope, `M.monadic`'s `context [run ?x]` traversal can
+produce an unbound metavariable error.  That defect was just not what
+was triggering on the contracts we have.  The partial fix in
+`shallow_embed.py` (CPS pre-bind for YulIf, outer-bracket drop for
+YulSwitch) pre-empts the defect by never emitting that shape, and is
+worth keeping in case future contracts emit the offending pattern.
+
+### Where the original (now-superseded) diagnosis lived
+
+## R041 (original, now-superseded diagnosis): `M.monadic` Ltac doesn't traverse `Shallow.let_state` — cancelLock_212 still blocked
 
 Diagnosed end-of-session 2026-05-30 while attempting to wire
 UnstakingManager_shallow.v into _RocqProject. The R035 switch-binding
@@ -1982,7 +2063,7 @@ the outer expression, it `exact e`s a term where the inner `_78`
 hasn't been bound yet by the lambda — leaving a hole that surfaces
 as "must evaluate to a closed term".
 
-### Two possible fixes (neither attempted)
+### Fix paths considered
 
 **Option A: extend M.monadic with a Shallow.let_state arm.**
 Add a lazymatch arm matching `Shallow.let_state ?e1 (fun ?v => @?f v)`
@@ -1991,29 +2072,204 @@ that recursively monadic-izes `e1` and `f v`. Risk: the typing of
 fit M.monadic's `let_` constructor signature. Significant upstream
 refactor needed.
 
-**Option B: restructure the generator to lift inner let_state~ out of
-`[[ ]]` brackets.** The current shallow_embed.py emits `Shallow.if_(|
-condition, then_body, else_value |)` where `then_body` contains
-`let_state~` notations expanded raw. If we lifted those out (pre-bound
-them before the `[[ Shallow.if_ ]]`), M.monadic would see only the
-condition + value expressions inside the brackets. This is the cleaner
-fix but requires major shallow_embed.py restructuring — needs a CPS
-transform of YulIf bodies.
+**Option B: pull `Shallow.if_` out of `[[ ]]` brackets in
+shallow_embed.py.** The current emission wraps the whole
+`Shallow.if_(| cond, body, fail |)` in `[[ ]]` so M.monadic can
+process M.run markers in the condition. Pulling it out keeps
+M.monadic from descending into Shallow.* DSL constructs.
 
-### Workaround used in this session
+### Trap: the naive Option B doesn't compile
 
-Defer. UnstakingManager equivalence theorems retain placeholder bodies
-proving `LowM.Pure (Result.Ok tt) ⇓ Result.Ok tt`. The audit-facing
-language in Audit.v Caveat-5 documents this as a gap (sim-level
-theorems hold; contract-level theorems are placeholders).
+The simple "drop the outer `[[ ]]`" change fails before even
+reaching cancelLock_212. The reason is a type asymmetry I missed
+the first time round:
+
+| Construct | Condition type |
+|---|---|
+| `Shallow.for_` | `State -> M.t U256.t` (monadic) |
+| `Shallow.if_`  | `U256.t` (pure)              |
+
+`[[ e ]]` always elaborates to a term of type `M.t _` (M.monadic's
+default arm wraps non-`t _` terms with `M.pure`). So
+`[[ iszero ~(| eq ~(| value, cleanup ~(| value |) |) |) ]]` has
+type `M.t U256.t` — which fits `Shallow.for_`'s slot but not
+`Shallow.if_`'s. Every `YulIf` with an effectful condition fails
+at type-checking. Verified empirically in this session.
+
+YulForLoop bracketing its condition works because of its slot's
+type. Reusing the pattern for YulIf without adjustment doesn't.
+
+### Option B done correctly: CPS-bind the condition first
+
+The principled fix is to **pre-bind the condition via `let~`**
+before the `Shallow.if_`, so the slot receives a pure `U256.t`
+variable:
+
+```
+let_state~ outer_var :=
+  let~ _condition := [[ original_condition ]] in
+  Shallow.if_ (|
+    _condition,         (* pure U256.t, no type mismatch *)
+    then_body,          (* unbracketed; let_state~ inside is fine *)
+    fallback
+  |)
+default~ ... in
+```
+
+The `let~` is `M.strong_let_`, which evaluates `[[ condition ]]`
+(handling M.run markers), then binds the result to `_condition`
+in scope as a pure value. The `Shallow.if_` lives outside any
+`[[ ]]`, so M.monadic never has to descend into Shallow.* — which
+is the layering rule that dissolves R041.
+
+YulSwitch already pre-binds its discriminant (`let~ δ := [[ expr ]] in`)
+inside the outer brackets, so its fix is simpler: just drop the
+outer `[[ ]]`. No new pre-bind needed.
+
+### Status — partial fix landed, cancelLock_212 still blocked
+
+**Implemented** in `_tools/rocq-of-solidity/rocq/scripts/shallow_embed.py`
+(and mirrored to `formal-verification/rocq-of-solidity/...`):
+
+- YulIf: pre-bind condition via `let~ γ_cond := [[ condition ]] in`
+  before calling `Shallow.if_ γ_cond success failure` (direct function
+  application, NOT the `(| |)` notation which forces `M.run` and
+  strips the monad off the result).
+- YulSwitch: drop the outer `[[ ]]` around the if-then-else chain;
+  the inner `let~ δ := [[ expression ]] in` already pre-binds the
+  discriminant.
+
+Verification with this fix:
+
+| File | Result |
+|---|---|
+| `ThrottleLib_shallow.v` | compiles (unchanged behaviour vs pre-fix) |
+| `Guardian_shallow.v` | compiles (unchanged behaviour) |
+| Minimal hand-written repro of the nested-rebind pattern | compiles |
+| `UnstakingManager_shallow.v` `fun_cancelLock_212` | **still fails** with the same `Must evaluate to a closed term, offending expression: e` |
+
+So the CPS shape is *correct* for the abstract pattern (minimal
+repro compiles) and doesn't regress simpler files — but the real
+trigger isn't what WISDOM originally diagnosed.
+
+### Bisection findings — the failure is broader than cancelLock_212
+
+When `fun_cancelLock_212`'s body is stubbed to `M.pure tt`, the
+error moves to `fun_claimLock_270`.  Stub that too, and it moves
+to `fun_createLock_144`.  All three are the three "big" Yul
+entrypoints — 50+ `let~` bindings each.  Every earlier (smaller)
+function compiles fine, including ones with `let_state~`/
+`Shallow.if_`/nested rebinds inside.  So:
+
+- The failure is correlated with **function size**, not with the
+  nested-rebind pattern specifically.
+- A hand-written 12-`let~` chain with no Shallow constructs
+  compiles fine standalone — but the first ~12 `let~` bindings of
+  `fun_cancelLock_212` (with all helpers in scope, no
+  `let_state~`/`Shallow.if_`) fail.  So it's not a Coq-side
+  property of plain `let~`-chains either — it depends on either
+  the surrounding module context or the specific function calls
+  these definitions make.
+
+### pet/coq-lsp disagrees with coqc
+
+`pet.get_state_at_pos` reports `proof_finished=true` and no errors
+at any position inside `fun_cancelLock_212`'s body — coq-lsp's
+incremental processor elaborates the definition cleanly.  But
+`coqc`-driven `rocq_compile_file` rejects the same definition
+with the `Must evaluate to a closed term` error.  Two interactive
+clients see different things from the same source.  Hypothesis:
+coq-lsp's Fleche defers or sidesteps an M.monadic elaboration
+step that strict coqc forces, so the failure surfaces only under
+coqc.  This would explain why WISDOM's original diagnosis (made
+during an interactive session) didn't catch what the batch
+compile actually trips on.
+
+### Next-step suggestions
+
+For an agent picking this up:
+
+1. Verify pet-vs-coqc discrepancy in isolation: regenerate
+   `UnstakingManager_shallow.v`, run `pet` on `fun_cancelLock_212`
+   directly, run `coqc -I ... -R ...` on the same file, compare
+   exit codes and stderr.
+2. If discrepancy holds, file upstream against coq-lsp / Coq
+   — this is potentially a strict-vs-lenient elaboration bug
+   rather than a generator issue.
+3. If the discrepancy is illusory (e.g. pet IS reporting errors
+   but rocq-mcp's `rocq_start` is hiding them), trace via raw
+   pet protocol logs.
+4. Independent approach: instrument the generator to add explicit
+   type annotations (`: U256.t`) on every `let~` binding, removing
+   any inference latitude that might trip M.monadic's
+   `lazymatch type of e`.
+
+The fix in shallow_embed.py is kept (no regressions; lifts the
+ceiling on what compiles cleanly for smaller contracts).  The
+placeholder-equivalence workaround below remains in effect for
+the three big entrypoints — `cancelLock_212`, `claimLock_270`,
+`createLock_144`.
+
+### Why the original outer-bracket pattern was fragile
+
+`M.monadic`'s `context ctxt [run ?x]` arm is a *global* term
+traversal: it can reach an `M.run` marker anywhere inside the
+bracketed expression, including inside lambda bodies. That's how
+the original wrap-the-whole-`Shallow.if_` pattern worked for
+non-nested cases — M.monadic walks past `Shallow.if_` treating it
+as an opaque function call, finds the M.run markers in subterms,
+binds them.
+
+The fragility shows up with `Shallow.let_state` nested inside the
+body. When M.monadic's `context` matcher reaches inside the
+`let_state` lambda's body, the lambda binder isn't yet introduced
+into the proof context (M.monadic hasn't recursed *through* the
+lambda yet). Names bound by the outer `let~` chain that appear in
+the `let_state` continuation's state pair end up as unbound
+metavariables — surfacing as `Must evaluate to a closed term`.
+
+This is the precise defect. The CPS-bind fix avoids it by never
+putting `Shallow.let_state` inside brackets in the first place.
+
+### Workaround in effect (2026-05-30, ORIGINAL)
+
+Defer for `fun_cancelLock_212` specifically.  UnstakingManager
+equivalence theorems retain placeholder bodies proving
+`LowM.Pure (Result.Ok tt) ⇓ Result.Ok tt`.
+
+### Resolution update (2026-05-30, LATER same day)
+
+The deeper hypothesis above turned out to be wrong. The "still
+blocked" state was real DURING the bisection but resolved once a
+clean regeneration ran against the linkersymbol-patched library.
+Empirical test post-fixes: `coqc -R . ReserveGovernor -R ...
+RocqOfSolidity ... generated/UnstakingManager_shallow.v` returns
+exit code 0. All three big entrypoints (cancelLock_212,
+claimLock_270, createLock_144) elaborate cleanly.
+
+The CPS-pre-bind change in shallow_embed.py (commit c7d737aee0)
+was reverted because it materially altered Shallow.if_ emission
+shape in a way that broke ThrottleLib's existing Phase 1.3 walker
+(the walker matches on the old `Shallow.if_(| ... |)` call form,
+the CPS variant emits `let~ γ_cond := [[ ... ]] in Shallow.if_
+γ_cond ...`). The defensive CPS layering rule is technically
+correct for the abstract pattern, but it's a breaking change for
+consumer codebases with walkers tuned to the prior emission. Worth
+keeping in a separate branch upstream for future contracts that
+hit the M.monadic-vs-Shallow.let_state defect, but not applied as
+a global migration without coordinating walker updates.
 
 ### When this might matter elsewhere
 
 Any contract with **nested if-then-else where the inner if rebinds a
-local declared in the outer if's then-block** will hit this. The
-pattern shows up in Solidity's safe-call patterns (try/catch),
-ERC-style returndata-handling, and any code using `returndatasize`
-+ memory clamping (which `cancelLock` does for the
-`SafeERC20.safeTransfer` return-value decode). Cross-reference with
-[[R035]] (the surface-level fix that unblocked YulSwitch) — this is
-the residual issue that fix's commit message flagged.
+local declared in the outer if's then-block** can still hit the
+underlying M.monadic-vs-Shallow.let_state defect — even with
+linkersymbol defined, if some future Yul pattern emits that exact
+shape inside `[[ ]]`. The pattern shows up in Solidity's safe-call
+patterns (try/catch), ERC-style returndata-handling, and any code
+using `returndatasize` + memory clamping. The CPS pre-bind fix in
+shallow_embed.py defends against this; reapply it (or write
+walkers against the CPS shape from the start) if a future
+contract surfaces the error genuinely. Cross-reference with
+[[R035]] (the YulSwitch surface fix) — these are sibling
+generator-side hardenings.

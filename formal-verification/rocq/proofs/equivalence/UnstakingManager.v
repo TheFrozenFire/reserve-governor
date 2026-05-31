@@ -39,14 +39,16 @@ Require Import simulations.RocqOfSolidity.
 Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.proofs.equivalence.Common.
 Require Import ReserveGovernor.simulations.UnstakingManager.
-(** [UnstakingManager_shallow.v] is generated but doesn't compile under
-    Coq 8.20. The earlier YulSwitch let_state binding bug is now fixed
-    upstream (TheFrozenFire/rocq-of-solidity 8421532309). A separate
-    structural issue still blocks compile: cancelLock_212 and
-    claimLock_270 nest `let_state~` inside `[[ ]]` brackets, and the
-    `M.monadic` Ltac doesn't traverse `Shallow.let_state` notation
-    expansion. Until that's fixed upstream, this file keeps placeholder
-    bodies. Tracked under WISDOM R035. *)
+Require Import ReserveGovernor.generated.UnstakingManager_shallow.
+(** [UnstakingManager_shallow.v] now compiles. The compile blocker
+    turned out to be the missing [linkersymbol] Yul primitive in
+    rocq-of-solidity's simulations/RocqOfSolidity.v — emitted by solc
+    for every SafeERC20 reference. With that primitive defined upstream
+    (TheFrozenFire/rocq-of-solidity 2646cf555a), all three big
+    entrypoints (createLock_144, cancelLock_212, claimLock_270)
+    elaborate cleanly. The original WISDOM R041 diagnosis on
+    `M.monadic`-vs-`Shallow.let_state` was a real but unrelated defect;
+    see the resolved R041 entry. *)
 
 Import Stdlib.
 Import RunO.
@@ -571,21 +573,20 @@ Module UnstakingManagerEquivalence.
     |} in
     exists state',
     {{? codes, env, Some state |
-      (** Placeholder until UnstakingManager_shallow.v compiles. When
-          available, replace with
-          UnstakingManager_271_deployed.fun_createLock_144 user amount unlockTime.
-          Body operations:
-            - require msg.sender == vault (revert via require_helper);
-            - SafeERC20.safeTransferFrom (cc — cross-contract call);
-            - sload slot 0 (nextLockId);
-            - sstore slot 0 := nextLockId + 1;
-            - 4× sstore at keccak256(lockId, 1) + offset for fields. *)
-      LowM.Pure (Result.Ok tt) ⇓
+      UnstakingManager_271.UnstakingManager_271_deployed.fun_createLock_144
+        user amount unlockTime ⇓
       Result.Ok tt
     | Some state' ?}}.
   Proof.
-    eexists. p.
-  Qed.
+    (** Proof body: walks fun_createLock_144 — require msg.sender ==
+        vault (via run_require_helper_t_error pattern), SafeERC20.
+        safeTransferFrom (cross-contract call via [cc] tactic), sload
+        slot 0 (nextLockId), sstore slot 0 := nextLockId + 1, 4× sstore
+        at keccak256(lockId, 1) + offset to write the new Lock's fields.
+        Closure follows the Phase 1.3 pattern (ThrottleLib's
+        consumeProposalCharge), with the addition of [cc] for the
+        SafeERC20 call. Estimated 120-160 lines once attempted. *)
+  Admitted.
 
   (** ----- Phase 2.3 (task #178): cancelLock + claimLock equivalence ----- *)
 
@@ -599,16 +600,21 @@ Module UnstakingManagerEquivalence.
     let new_sim := set_lock sim lockId default_lock in
     exists state',
     {{? codes, env, Some state |
-      (** Placeholder; when shallow form compiles, replace with
-          UnstakingManager_271_deployed.fun_cancelLock_212 lockId.
-          Body: writes default_lock (zeros) to the 4 field slots and
-          transfers tokens out (cc). *)
-      LowM.Pure (Result.Ok tt) ⇓
+      UnstakingManager_271.UnstakingManager_271_deployed.fun_cancelLock_212
+        lockId ⇓
       Result.Ok tt
     | Some state' ?}}.
   Proof.
-    eexists. p.
-  Qed.
+    (** Proof body: walks fun_cancelLock_212 — mapping_index_access
+        for lockId at slot 1, reads user + amount + claimedAt via 3
+        sloads, require msg.sender == user (via cleanup_t_address +
+        run_require_helper), require claimedAt == 0,
+        storage_set_to_zero_t_struct (clears the 4 field slots),
+        SafeERC20.safeTransfer (cc), event emit (log1). Closure needs
+        a mapping_index_access for [t_mapping_t_uint256_to_t_struct_Lock]
+        port from ThrottleLib's address-keyed analogue. Estimated
+        140-180 lines. *)
+  Admitted.
 
   Theorem run_claimLock_make_state
       (codes : Codes.t) (env : Environment.t) (state_base : RocqOfSolidity.State.t)
@@ -629,16 +635,20 @@ Module UnstakingManagerEquivalence.
     let new_sim := set_lock sim lockId l' in
     exists state',
     {{? codes, env, Some state |
-      (** Placeholder; when shallow form compiles, replace with
-          UnstakingManager_271_deployed.fun_claimLock_270 lockId.
-          Body: single sstore at offset 3 (claimedAt) of the lockId's
-          data slot; SafeERC20.safeTransfer (cc). *)
-      LowM.Pure (Result.Ok tt) ⇓
+      UnstakingManager_271.UnstakingManager_271_deployed.fun_claimLock_270
+        lockId ⇓
       Result.Ok tt
     | Some state' ?}}.
   Proof.
-    eexists. p.
-  Qed.
+    (** Proof body: walks fun_claimLock_270 — mapping_index_access for
+        lockId at slot 1, reads user/amount/unlockTime/claimedAt via 4
+        sloads, require unlockTime != 0, require now >= unlockTime,
+        require claimedAt == 0, sstore the claimedAt slot with now (via
+        the timestamp arm from ThrottleLib's Phase 1.3),
+        SafeERC20.safeTransfer (cc). Smallest of the three; closes
+        first as the proof-of-method for cancelLock + createLock.
+        Estimated 100-140 lines. *)
+  Admitted.
 
   (** ----- Phase 2.4 (task #179): no_double_spend transfer -----
 

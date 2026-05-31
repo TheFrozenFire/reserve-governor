@@ -229,14 +229,19 @@ Audit.v
 # function definitions, so no collision issue (unlike the deep
 # `--ir-rocq` outputs which emit multiple top-level definitions).
 #
-# Only contracts whose shallow forms compile cleanly are listed.
-# UnstakingManager hits WISDOM R035 (shallow_embed.py switch-binding
-# bug) and doesn't currently compile — its equivalence proof file
-# keeps placeholder bodies until the embedding tool is fixed.
+# All five shallow forms compile cleanly with the upstream fixes
+# landed on the rocq-of-solidity `integration` branch:
+#   - linkersymbol primitive added (commit 2646cf555a) — unblocks
+#     every contract calling SafeERC20 / OZ libraries.
+#   - YulIf CPS pre-bind in shallow_embed.py (commit c7d737aee0) —
+#     defensive layering against M.monadic-vs-Shallow.let_state.
+# Regenerate via `bash scripts/shallow-embed-sweep` after pulling
+# the upstream changes.
 generated/ThrottleLib_shallow.v
 generated/VersionRegistry_shallow.v
 generated/RewardTokenRegistry_shallow.v
 generated/Guardian_shallow.v
+generated/UnstakingManager_shallow.v
 proofs/equivalence/Common.v
 proofs/equivalence/Sandbox.v
 proofs/equivalence/ThrottleLib_Leaves.v

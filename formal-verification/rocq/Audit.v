@@ -287,16 +287,22 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                         composition (~80-120 lines of mechanical
                         work). Full-mutator equivalence remains
                         Phase 4 parked (OZ EnumerableSet).
-      UnstakingManager  Substrate blocked (WISDOM R035, refined as
-                        R041). The R035 surface fix (YulSwitch
-                        binding) landed upstream, but a deeper
-                        issue persists: M.monadic Ltac doesn't
-                        traverse Shallow.let_state notation
-                        expansions when nested YulIf rebinds an
-                        outer-block local. Affects cancelLock
-                        specifically. Documented in WISDOM R041
-                        with two possible fix paths. Equivalence
-                        theorems retain placeholder bodies.
+      UnstakingManager  Shallow form compiles end-to-end with
+                        upstream linkersymbol primitive landed
+                        (WISDOM R041 resolved). The earlier R041
+                        diagnosis (M.monadic vs Shallow.let_state)
+                        was wrong about cancelLock's blocker — the
+                        actual cause was the missing linkersymbol
+                        Yul primitive emitted by solc for every
+                        SafeERC20 reference. With it defined,
+                        cancelLock_212/claimLock_270/createLock_144
+                        all elaborate cleanly. All three
+                        equivalence theorems now exercise the real
+                        Yul (fun_createLock_144, fun_cancelLock_212,
+                        fun_claimLock_270); proof bodies remain
+                        Admitted with detailed expected-closure
+                        documentation (tasks #220-#222). Closure
+                        is the next-session work.
 
     For contracts whose equivalence files are fully closed (no
     Admits in the body), the divergence between that contract's
