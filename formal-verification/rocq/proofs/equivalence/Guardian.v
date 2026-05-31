@@ -8430,11 +8430,70 @@ Module GuardianEquivalence.
       [subst role | destruct H_role_or as [H_role_eq | H_role_eq]; subst role].
     { (** ===== BRANCH 1: role = DEFAULT_ADMIN_ROLE_bytes32 ===== *)
       destruct (Guardian.addr_in sim.(State.admins) account) eqn:H_addr_in.
-      - (** ===== Was-member branch (does the swap-and-pop) ===== *)
-        (* R056 BLOCKER: the was-member branch requires the
-           swap-and-pop walker + observational bridges for
-           [remove_role]. Path forward documented in
-           [run_revokeRole_1378_member_default_blocker] below. *)
+      - (** ===== Was-member branch (does the swap-and-pop) =====
+
+           ===== R056 BLOCKER: EnumerableSet remove walker =====
+
+           The Phase 1 was-member walker
+           [run_fun__revokeRole_1506_at_proj_sim_member] is Qed
+           (this commit) — it walks hasRole = 1 + sstore 0 to slot 0
+           + log4, yielding post-storage with slot 0 mutated to
+           [Dict.declare_or_assign (role_member_map sim) (DEFAULT, account) 0].
+
+           What remains for this branch: a Phase 2 walker
+           [run_fun_remove_2112_at_proj_sim_member] that walks the
+           EnumerableSet swap-and-pop. The walker has to handle:
+
+           1. sload positions[role][value] → some position ≥ 1
+              (precondition derived from H_member ⇒ positions =
+              Z.of_nat idx + 1 for the idx at which account sits).
+           2. Switch on (position == 0): impossible under H_member
+              by [positions_for_role_position_iff_In_addr] — closes
+              the false arm via lia.
+           3. checked_sub: valueIndex = position - 1.
+           4. sload array_length → length sim.(admins).
+           5. checked_sub: lastIndex = length - 1.
+           6. Switch on (valueIndex != lastIndex):
+              a. EQUAL (last-element fast path): skip the swap, go
+                 directly to pop + position zeroing.
+              b. NEQUAL: read lastValue, write
+                 values[valueIndex] := lastValue, then
+                 positions[lastValue] := position.
+           7. array_pop: pop the last element (clears
+              values[lastIndex], decrements length).
+           8. Set positions[value] := 0.
+
+           Storage writes (5 in the swap case, 3 in last-element case):
+             slot 0: (already done in Phase 1) members[role][account] := false
+             slot 1 (positions): positions[lastValue] := position (only swap case)
+             slot 1 (positions): positions[value] := 0
+             slot 2 (length): length := length - 1
+             slot 3 (values): values[valueIndex] := lastValue (only swap case)
+             slot 3 (values): values[lastIndex] := 0 (zero-on-pop)
+
+           Sim-side post: [revoke_role_sim DEFAULT_ADMIN_ROLE_bytes32
+                                            sim account]
+           which is [{ admins := remove_role sim.admins account; ... }].
+
+           Observational bridges needed (new):
+             role_member_map_sstore_observes_remove_admin_in
+             role_positions_map_sstore_observes_remove_admin_in
+             role_values_length_map_sstore_eq_remove_admin_in
+             role_values_body_map_sstore_observes_remove_admin_in
+
+           Estimated effort: ~400 lines for the Phase 2 walker plus
+           ~400 lines for the four observational bridges (8 covering
+           all three roles via the mid-list-insertion pattern from R055).
+
+           NEW AXIOMS REQUIRED (mirroring slot-3 array_pop axioms):
+             - [run_storage_set_to_zero_t_bytes32_at_proj_sim]
+               (clears values[lastIndex] — slot 3 sstore of 0)
+             - [run_array_pop_at_proj_sim] (decrements slot-2 length)
+             - [run_storage_set_to_zero_t_uint256_at_positions_proj_sim]
+               (clears positions[value] := 0 — slot 1 sstore of 0)
+
+           These mirror the existing array_push axioms from R051.c
+           but for the inverse direction. *)
         admit.
       - (** ===== Was-not-member branch (no-op, reflexive) ===== *)
         apply (proj1 (addr_in_false_iff_not_In _ _)) in H_addr_in.
@@ -8584,7 +8643,13 @@ Module GuardianEquivalence.
     }
     { (** ===== BRANCH 2: role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 ===== *)
       destruct (Guardian.addr_in sim.(State.optimisticGuardians) account) eqn:H_addr_in.
-      - (** Was-member branch — swap-and-pop. *)
+      - (** Was-member branch — swap-and-pop.
+           Same shape as the DEFAULT branch but with the OG block.
+           Needs the mid-list-insertion variants of the four
+           observational bridges (analogs of grantRole's
+           role_X_map_sstore_observes_add_optimistic_guardian_not_in,
+           but for remove). See the DEFAULT branch's structural
+           diagnosis above. *)
         admit.
       - (** Was-not-member branch — no-op, reflexive. *)
         apply (proj1 (addr_in_false_iff_not_In _ _)) in H_addr_in.
@@ -8730,7 +8795,11 @@ Module GuardianEquivalence.
     { (** ===== BRANCH 3: role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 ===== *)
       destruct (Guardian.addr_in sim.(State.optimisticGuardianManagers) account)
         eqn:H_addr_in.
-      - (** Was-member branch — swap-and-pop. *)
+      - (** Was-member branch — swap-and-pop.
+           Same shape as the DEFAULT branch but with the OGM block,
+           which sits at the END of the three-block role maps and
+           needs the app_assoc re-association for the bridges (see
+           R055 follow-up's notes on the OGM case for grantRole). *)
         admit.
       - (** Was-not-member branch — no-op, reflexive. *)
         apply (proj1 (addr_in_false_iff_not_In _ _)) in H_addr_in.

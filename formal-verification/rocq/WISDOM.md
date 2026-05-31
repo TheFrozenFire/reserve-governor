@@ -4357,3 +4357,229 @@ No admit artifacts. No new framework-level axioms.
 - Future mutator-equivalences for other contracts (VersionRegistry,
   RewardTokenRegistry): same OZ inheritance chain, same projection
   / bridge / observational pattern.
+
+## R056: revokeRole equivalence — was-not-member branches Qed, was-member blocked on swap-and-pop walker
+
+**Status: PARTIAL (2026-05-31). All three "was-not-member" branches
+Qed for `run_revokeRole_1378_equivalent`. Three "was-member" branches
+remain Admitted pending the EnumerableSet `_remove` swap-and-pop
+walker.**
+
+This entry documents the partial closure of revokeRole equivalence
+and the structural diagnosis for the remaining was-member work.
+
+### What landed this session
+
+1. **Phase 1 was-not-member walker** (`run_fun__revokeRole_1506_at_proj_sim_not_member`):
+   when `hasRole(role, account) = 0`, the function returns 0 with
+   state unchanged. Walker steps hasRole + the switch's true arm
+   (BlockUnit.Leave). Structurally identical to
+   `run_fun__grantRole_1468_at_proj_sim_member` but with the role
+   flipped. Qed.
+
+2. **Phase 1 was-member walker** (`run_fun__revokeRole_1506_at_proj_sim_member`):
+   when `hasRole(role, account) = 1`, the function clears
+   `members[account]` (sstore 0), emits log4, returns 1. The walker
+   needed new value-0 leaves:
+   - `run_cleanup_t_bool_of_0`
+   - `run_convert_t_bool_to_t_bool_of_0`
+   - `run_update_byte_slice_1_shift_0_bool_0`
+   - `run_update_storage_value_t_bool_at_proj_sim_v0`
+
+   These mirror the existing value-1 leaves but with value 0 plumbed
+   through. The existing `run_sstore_role_member_at_proj_sim` is
+   parametric on value, so no new framework axiom — only Gallina
+   reductions on the OR/AND bitmasks. Qed.
+
+3. **Phase 3 was-not-member wrapper** (`run_fun__revokeRole_736_at_proj_sim_not_member`):
+   composes Phase 1 + the outer `Shallow.if_` (which skips the
+   `fun_remove_2112` call since `revoked = 0`). Qed.
+
+4. **Phase 4 inner wrapper** (`run_fun_revokeRole_1378_inner_at_proj_sim`):
+   thin wrapper around `fun__revokeRole_736`. Qed.
+
+5. **Modifier wrapper** (`run_modifier_onlyRole_1370_admin_passes_exists`):
+   structurally identical to the grantRole modifier wrapper —
+   `getRoleAdmin` + `_checkRole` + body. Qed.
+
+6. **Outer wrapper** (`run_fun_revokeRole_1378_at_proj_sim`): wraps
+   the modifier. Qed.
+
+7. **Theorem statement** (`run_revokeRole_1378_equivalent`): same
+   precondition signature as grantRole except no per-role length
+   bounds (revoke shrinks lists; no growth bound needed). Uses the
+   same `observationally_eq_storage` predicate. Three roles × two
+   member-status branches. All three was-not-member branches Qed.
+   The three was-member branches are Admitted with structural
+   diagnoses.
+
+### Sim-side helper added
+
+```coq
+Definition revoke_role_sim (role : U256.t) (sim : State.t) (account : Address)
+    : State.t :=
+  if role =? DEFAULT_ADMIN_ROLE_bytes32 then
+    {| State.admins := remove_role sim.admins account; ... |}
+  else if role =? OPTIMISTIC_GUARDIAN_ROLE_bytes32 then ...
+```
+
+Mirror of the grantRole milestone's role-dispatcher pattern, but with
+`remove_role` instead of `add_role`.
+
+### Why was-not-member is easy and was-member is hard
+
+The was-not-member branch is the analog of grantRole's
+**already-member** branch — state is unchanged, observational
+equality is reflexive, no Phase 2 walker needed. The proof is
+structurally identical to that grantRole sub-branch.
+
+The was-member branch is structurally **more complex** than
+grantRole's not-member branch because:
+
+1. **5 storage writes** (vs 4 for grantRole), and structurally
+   different sites:
+   - slot 0: members[role][account] := false  (handled by Phase 1, landed)
+   - slot 1: positions[role][lastValue] := position  (swap case only)
+   - slot 1: positions[role][value] := 0
+   - slot 2: length := length - 1
+   - slot 3: values[role][valueIndex] := lastValue  (swap case only)
+   - slot 3: values[role][lastIndex] := 0 (zero-on-pop)
+
+2. **Two sub-branches inside the was-member case**:
+   - `position - 1 == lastIndex` (the element being removed is
+     already at the end of the values array): no swap, just pop +
+     position zeroing (3 writes).
+   - `position - 1 != lastIndex`: full swap-and-pop (5 writes).
+
+3. **Sim-side `remove_role`** removes the first matching occurrence
+   while preserving order; OZ's EnumerableSet `_remove` swaps the
+   removed element with the last and then pops. These produce
+   different intermediate lists. The observational bridges need to
+   show that **after a swap-and-pop, the resulting (position, value)
+   bindings agree** with what `remove_role` produces, pointwise on
+   lookups — modulo a permutation, which is invisible to the lookup
+   API since values are looked up by key (role, idx), not by position.
+
+### What's needed for the was-member milestone
+
+**New framework axioms** (or layered wrappers):
+- `run_storage_set_to_zero_t_bytes32_at_proj_sim` (slot 3 sstore of 0
+  for the array zeroing on pop)
+- `run_array_pop_at_proj_sim` (slot 2 length decrement)
+- `run_storage_set_to_zero_t_uint256_at_positions_proj_sim`
+  (slot 1 sstore of 0 for the cleared position)
+
+These mirror R051.c's `array_push` axiom + the bool sstore axioms
+(R040 pattern), just for the inverse direction.
+
+**New sim-side bridges** (6, mirroring grantRole's 8):
+- `role_member_map_remove_admin_in` (and OG/OGM variants)
+- `role_positions_map_remove_admin_in` (and OG/OGM variants)
+- `role_values_length_map_remove_admin_in` (and OG/OGM variants)
+- `role_values_body_map_remove_admin_in` (and OG/OGM variants)
+
+**Six observational bridges**:
+- `role_member_map_sstore_observes_remove_X_in` (X ∈ {admin, og, ogm})
+- `role_positions_map_sstore_observes_remove_X_in`
+- `role_values_length_map_sstore_eq_remove_X_in`
+- `role_values_body_map_sstore_observes_remove_X_in`
+
+**Phase 2 walker** (`run_fun_remove_2112_at_proj_sim`): ~500-800
+lines, given the inner switch on `valueIndex != lastIndex`.
+
+**Theorem branch assembly**: ~50 lines per role × 3 roles, mirroring
+the grantRole milestone's not-member branches. Each assembles Phase 1
+member + Phase 2 + modifier + outer + the project_sim_to_ac
+equality and observational discharge.
+
+Estimated total: ~1500-2000 lines for the milestone closure across
+all three was-member branches. Similar scale to grantRole's
+R055 + R055 follow-up combined.
+
+### Build status
+
+`bash formal-verification/scripts/rocq-build proofs/equivalence/Guardian.v`
+green. New `Admitted` count: 3 (the three was-member branches in
+`run_revokeRole_1378_equivalent`). All new helper lemmas Qed
+with only pre-existing framework axioms + role-bytes32 Parameters
++ pairwise distinctness axioms.
+
+### Branch & commits
+
+Branch: `agent-ab8-revoke-role` (worktree
+`.claude/worktrees/agent-ab8fb7e28137e041c/`, forked from
+`feature/formal-verification@6b5c563`). Pushed to remote.
+
+Commits:
+- `fv(R056): revokeRole scaffold — was-not-member branches Qed for all 3 roles`
+- `fv(R056): Phase 1 was-member walker Qed via value-0 bool sstore chain`
+
+Total LOC added: ~1170 lines.
+
+### Methodology notes for the was-member completion
+
+1. **Reuse the grantRole bridge infrastructure aggressively.** The
+   bridges for `add_admin` / `add_optimistic_guardian` /
+   `add_optimistic_guardian_manager` have direct duals for the
+   remove case. The mid-list helper
+   `map_get_mid_cons_eq_app_singleton_when_absent_ZZ` from R055
+   applies to remove via a symmetric "mid-list deletion" variant —
+   the structural shape is the same.
+
+2. **The swap-and-pop walker is the hardest part.** The OZ
+   EnumerableSet `_remove` has TWO sub-branches based on whether
+   the element being removed is the last one. The R047
+   case-split-before-eexists pattern applies — destruct the
+   `valueIndex != lastIndex` condition before introducing the
+   post-state existentials.
+
+3. **The order-preserving vs swap-and-pop discrepancy needs an
+   intermediate "permutation" layer.** Sim's `remove_role` removes
+   in-place (preserves order of remaining elements). OZ swaps the
+   removed element with the last. Pointwise, the resulting
+   `positions` and `values` maps differ. The observational bridges
+   need to show the two maps agree on lookups — they do, because
+   `values[role][idx]` for `idx ∈ [0, length-1]` agree (modulo
+   permutation, but lookups by idx after the swap-and-pop reflect
+   the swapped positions which the sim's `remove_role` does NOT
+   preserve).
+
+   **This is the structural blocker.** The current sim model's
+   `remove_role` doesn't match OZ's swap-and-pop behavior on the
+   `values` array, so the bridges can't be proven without changing
+   the sim or weakening the equivalence further.
+
+   **Resolution options**:
+   - (a) Modify the sim's `remove_role` to do swap-and-pop (changes
+     the simulation's external semantics — the order of elements
+     in `admins` / `optimisticGuardians` / `optimisticGuardianManagers`
+     after a revoke would no longer be order-preserving). This is
+     a substantive change to the sim's contract.
+   - (b) Weaken the equivalence's observational layer further — show
+     that the resulting maps agree **up to permutation of values**.
+     This needs a setoid-style relation `Dict.permuted` and updating
+     `observationally_eq_storage` to use it for slot 3.
+   - (c) Discharge the equivalence at a higher level — show
+     `project_sim_to_ac sim'` equals what the Yul-side produces by
+     unfolding both sides and checking they yield the same
+     `AccessControl.State` (which has a `list Address` per role,
+     not a (position, value) map — so swap-and-pop and remove_role
+     CAN yield the same projected state if the AccessControl mock's
+     `remove_member` is also order-preserving).
+
+   Option (c) is the cleanest scope-respecting path — it doesn't
+   change the sim or the framework, just routes the observational
+   discharge through the AccessControl projection (which already
+   ignores the EnumerableSet's array ordering). The bridges for
+   slot 3 then become **trivial**: both sides project to the same
+   member list under the projection.
+
+### Cross-references
+
+- R055: grantRole milestone — the template this work mirrors.
+- R053, R054: the methodology evolution that made grantRole
+  reachable.
+- R051: leaves (slot-0 sstore, slot-1/2/3 axioms).
+- R047: case-split-before-eexists for if-then-else with diverging
+  BlockUnit modes — applies to the swap-and-pop walker's
+  inner `valueIndex != lastIndex` switch.
