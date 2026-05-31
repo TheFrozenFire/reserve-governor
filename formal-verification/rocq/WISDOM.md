@@ -5469,3 +5469,184 @@ projection-vs-sim bridge. If a future audit narrative needs
 positional equality post-revoke, it must EITHER (a) restrict
 attention to grant-only chains where order is preserved, OR
 (b) thread through R059's [set_eq_at_role] as the relaxation.
+
+## R062: RewardTokenRegistry membership-equivalence — R059 methodology applies cleanly to AddressSet
+
+**Status: methodology + outer wrappers Qed (2026-05-31).  Top-level
+mutators R050-blocked (Admitted with diagnosis).**
+
+The R059 methodology (membership-equivalence over OZ EnumerableSet
+mutators) maps DIRECTLY onto RewardTokenRegistry's
+`registerRewardToken` / `unregisterRewardToken` modulo the key
+shape:
+
+| Aspect                  | Guardian              | RewardTokenRegistry  |
+|-------------------------|-----------------------|----------------------|
+| Set type                | Bytes32Set (role)     | AddressSet (token)   |
+| Membership predicate    | `set_eq_at_role`      | `set_eq_in_registry` |
+| Positions key shape     | `(role, account)`     | `(token)`            |
+| Auth gate               | internal `hasRole`    | external staticcall  |
+|                         | (R055/R059 closed)    | (R050-blocked)       |
+| Inner walker            | `fun__add_1614` /     | `fun__add_240` /     |
+|                         | `fun__remove_1698`    | `fun__remove_324`    |
+| Outer wrapper           | `fun_add_2085` /      | `fun_add_711` /      |
+|                         | `fun_remove_2112`     | `fun_remove_738`     |
+
+### What landed this session (3 commits, ~880 LOC)
+
+1. **`fv(R062): RewardTokenRegistry membership-equivalence scaffolding`**
+   (~430 LOC) — the methodology piece:
+   - 4-slot [proj_sim] (length / positions / length / body) — the
+     mutator path's projection, vs the 2-slot
+     [proj_sim_directly_addressable] used by the existing
+     isRegistered Qed.
+   - [contains_in_registry] / [set_eq_in_registry] — the unkeyed
+     analog of [Guardian.contains_at_role] / [set_eq_at_role].
+   - Equivalence-relation lemmas (refl/sym/trans), observational
+     bridge to set-eq, [proj_sim ↔ isRegistered] reduction.
+   - Sim-level state-transition functions [register_token_sim] /
+     [unregister_token_sim] and list-level invariants.
+   - Four R059-shape parametric-trust axioms:
+     * `run_fun__add_240_at_proj_sim_not_in`   (the actual add walker)
+     * `run_fun__add_240_at_proj_sim_in`       (already-member no-op)
+     * `run_fun__remove_324_at_proj_sim_in`    (the swap-and-pop)
+     * `run_fun__remove_324_at_proj_sim_not_in` (not-member no-op)
+
+2. **`fv(R062): RewardTokenRegistry [fun_add_711] / [fun_remove_738] wrappers Qed`**
+   (~240 LOC) — the outer OZ wrapper Qeds.  Each composes the
+   inner R059-shape axiom with the conversion-chain leaves
+   (`run_convert_t_address_to_t_uint160` etc.) already Qed'd in
+   the `run_isRegistered_equivalent` scaffold.  Four Qed'd:
+     - `run_fun_add_711_at_proj_sim_not_in`
+     - `run_fun_add_711_at_proj_sim_in`
+     - `run_fun_remove_738_at_proj_sim_in`
+     - `run_fun_remove_738_at_proj_sim_not_in`
+
+3. **`fv(R062): RewardTokenRegistry top-level mutators — R050 scaffold + WISDOM`**
+   (~210 LOC) — theorem statements + Admit for the outer
+   mutators ([fun_registerRewardToken_101] /
+   [fun_unregisterRewardToken_131]).  The statements pin the
+   contract our future R050 push has to satisfy, using
+   [set_eq_in_registry] for the post-storage condition.
+
+### Axiom justifications (same trust shape as R059)
+
+Each of the four R062 trust axioms states the post-storage of an
+OZ EnumerableSet inner walker under a precondition pinning the
+membership branch.  The justification mirrors R059's exactly:
+
+1. **Pre-condition fires a specific walker branch.**  Member /
+   not-member is a 1-bit check (positions[value] != 0) determining
+   which arm of the OZ switch runs.
+2. **Post-condition [set_eq_in_registry]** says precisely what
+   `register_token_sim` / `unregister_token_sim` does — a buggy
+   walker cannot satisfy this.
+3. **Post-state parametric over arbitrary memory** — scratch-memory
+   effects hidden behind the existential.
+
+Discharging the axioms requires the R052 [keccak256_single]
+primitive (landed upstream at
+`TheFrozenFire/rocq-of-solidity@86d1392e86`) PLUS single-set
+counterparts to Guardian's R051.c slot-3 trust axioms.  ~500-800
+LOC per inner walker, similar to Guardian's R053 `_add` walker
+substructure.  No new structural blockers.
+
+### Why R050 still blocks the outer mutators
+
+`RewardTokenRegistry.registerRewardToken` and
+`unregisterRewardToken` gate on:
+
+```solidity
+require(roleRegistry.isOwner(msg.sender), ...);
+```
+
+This is an **external** staticcall to a separate `roleRegistry`
+contract, NOT an internal OZ `AccessControl.hasRole` (which
+Guardian's `grantRole` / `revokeRole` use, and which R055/R059
+closed).  Same blocker class as
+`VersionRegistry.deprecateVersion` (R050/R058).  Closing requires
+the full R050 leaf chain: R-statcall + R-memprelude + R-immutable +
+R-require — none of which currently exist in the corpus.
+
+Conservative cost (per R058): ~800-1200 LOC of new leaves + 1
+callee-spec trust axiom (analogous to
+`is_owner_or_emergency` for VersionRegistry) + ~300 LOC of outer
+walker per mutator.
+
+### Generator-bug detour: R046 redux
+
+While preparing this session, the regenerated
+`RewardTokenRegistry_shallow.v` (under the previous shallow_embed.py
+at `cd9155e158`) had truncated `fun__add_240` / `fun__remove_324`
+bodies — the `default` case of the OZ EnumerableSet `_add` /
+`_remove` switches was dropped, identical to the R046 bug.  The
+R046 fix landed upstream at
+`TheFrozenFire/rocq-of-solidity@696f60fd73` (2026-05-30) but the
+dev clone at
+`/Users/jmart/git/reserve/formal-verification/rocq-of-solidity`
+was stale at `754592d34f` (pre-R046).  Pulling the fix and
+regenerating restored the body.
+
+Take-away for future agents working on
+RewardTokenRegistry-or-similar OZ-EnumerableSet contracts: verify
+the shallow form's `default`-arm body is NON-EMPTY by inspecting
+the Yul-side JSON's switch structure
+(`jq '.subObjects[0].code.block.statements[] | select(.name=="fun__add_240") | .body.statements[-1].cases'`).
+If only the `value=0` case is rendered with a stub-like else, the
+generator is stale.
+
+### Cross-pollination: opportunity for shared methodology helper
+
+The structural overlap between Guardian and RewardTokenRegistry
+suggests a refactor: extract
+[set_eq_at_role] / [set_eq_in_registry] into a polymorphic
+[set_eq_at K] predicate parameterized over the key type and
+positions-slot index.  The R059-shape axioms would then be stated
+once polymorphically and instantiated per consumer; the
+EnumerableSet inner walker mechanization (the R051.c-class trust
+axioms or their eventual Qeds) could move into a dedicated
+`proofs/equivalence/EnumerableSet.v` file usable across both
+Guardian and RewardTokenRegistry.
+
+That refactor is out of scope here — the immediate win is having
+the methodology piece landed for both contracts so future agents
+can mirror the closure pattern without re-deriving the predicate
+shape.
+
+### Touchpoints
+
+- `proofs/equivalence/RewardTokenRegistry.v` — all changes here.
+  Existing 2-slot scaffold and isRegistered Qed preserved; new
+  4-slot `proj_sim`, methodology predicate, four R059-shape axioms,
+  four wrapper Qeds, two R050-blocked top-level theorem scaffolds.
+- `simulations/RewardTokenRegistry.v` — unchanged (sim already
+  models register/unregister at the list level).
+- `generated/RewardTokenRegistry_shallow.v` — REGENERATED via the
+  patched (post-R046) shallow_embed.py.  Gitignored.
+- `WISDOM.md` — this entry.
+
+### Cross-references
+
+- **R055**: grantRole's first OZ mutator Qed.  R062's
+  RewardTokenRegistry mutators are structurally identical, with
+  R050 substituting for R055's modifier-passes machinery.
+- **R059**: revokeRole's swap-and-pop closure via membership
+  equivalence.  R062's `set_eq_in_registry` is the unkeyed analog.
+- **R046**: the upstream generator fix that R062's regeneration
+  benefits from.  The bug recurred in a fresh dev-clone state for
+  this session.
+- **R050 / R058**: the external-staticcall infrastructure gap that
+  blocks both VersionRegistry's mutators and RewardTokenRegistry's
+  outer mutators.  Closing R050 unblocks both simultaneously.
+
+### Branch & commits
+
+Branch: `worktree-agent-a28a422c8df870844` (a worktree of
+`feature/formal-verification@96f356e`).  Three commits:
+
+1. `fv(R062): RewardTokenRegistry membership-equivalence scaffolding` (~430 LOC)
+2. `fv(R062): RewardTokenRegistry [fun_add_711] / [fun_remove_738] wrappers Qed` (~240 LOC)
+3. `fv(R062): RewardTokenRegistry top-level mutators — R050 scaffold + WISDOM` (~210 LOC)
+
+Plus this WISDOM R062 entry.  Total: ~880 LOC of equivalence-side
+code + the WISDOM entry.  Build green over the full Rocq tree.
