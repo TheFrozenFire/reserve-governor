@@ -67,6 +67,10 @@ SHALLOW_TARGETS=(
   "contracts/Guardian.sol:Guardian"
   # Phase 4: ProposalLib (governor proposal-lifecycle helpers).
   "contracts/governance/lib/ProposalLib.sol:ProposalLib"
+  # Phase 4.5: OptimisticSelectorRegistry.
+  "contracts/governance/OptimisticSelectorRegistry.sol:OptimisticSelectorRegistry"
+  # Phase 5: TimelockControllerOptimistic (last OZ-4 single-contract target).
+  "contracts/governance/TimelockControllerOptimistic.sol:TimelockControllerOptimistic"
 )
 
 keep_json=0
