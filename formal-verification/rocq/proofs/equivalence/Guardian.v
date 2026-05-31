@@ -742,6 +742,241 @@ Module GuardianEquivalence.
 
   End ArrayDataslotBytes32.
 
+  (** ===== R051.c Phase 3 — Per-contract trust axioms for the
+      `_values` array slot expressions =====
+
+      Background. The framework's Map / Map2 / MapStruct axioms expose
+      sload / sstore at NESTED-KECCAK slot shapes
+      ([keccak256_tuple2 key (Z.of_nat index)] for Map,
+      [keccak256_tuple2 key2 (keccak256_tuple2 key1 (Z.of_nat index))]
+      for Map2, [keccak256_tuple2 key (Z.of_nat index) + offset] for
+      MapStruct). OZ's EnumerableSet [_values] array is laid out using
+      Solidity's dynamic-array convention, which uses the ARRAY-shape
+      slot expressions [array_anchor] (for length) and
+      [keccak256_single array_anchor + i] (for body element [i]) —
+      where [array_anchor = keccak256_tuple2 role 1] in OZ-actual.
+
+      Slots 2 and 3 of [proj_sim] (added in R051.c Phases 1+2) carry
+      this data — slot 2 is a Map (role → length), slot 3 is a Map2
+      ((role, idx) → value). The framework axioms applied at slot 2
+      route through [keccak256_tuple2 role 2] (since slot 2's index is
+      2); the OZ-actual length slot is [keccak256_tuple2 role 1] — an
+      OFF-BY-1 in the inner keccak's index input. Similarly for slot 3
+      the framework Map2 axiom uses
+      [keccak256_tuple2 idx (keccak256_tuple2 role 3)] but OZ uses
+      [keccak256_single (keccak256_tuple2 role 1) + idx]. The two
+      shapes are distinct symbolic terms.
+
+      The axioms below close the gap the same way the slot-1
+      positions modeling does (R049 docstring): we accept the
+      array-shape slot expression as the trusted point at which the
+      sload / sstore is dispatched against [proj_sim]'s slot 2 / slot
+      3. R052 Option 1 (per-shape opaque-rewriting axioms) — accepted
+      here because R052's Option 2 (a [StorableValue.Array]
+      constructor) is the long-term clean upstream extension but
+      not yet built.
+
+      Documented as an audit caveat: the equation between
+      [keccak256_single (keccak256_tuple2 role 1) + i] and a
+      hypothetical "keccak (idx, keccak(role, 3))" is FALSE in any
+      honest model. It is parametric trust the same way R021's
+      [RunO.CallContract] rule and the slot-1 positions approximation
+      are. The trade-off is documented in Audit.v's
+      caveat-on-EnumerableSet-modeling entry. *)
+
+  (** ----- Axiom: sload at array length anchor =====
+
+      The OZ-actual array length slot is [keccak256_tuple2 role 1].
+      Under [proj_sim sim], that slot's value is
+      [StorableValue.map_get_u256 (role_values_length_map sim) role]
+      (slot 2 of [proj_sim] is the per-role length map). *)
+  Axiom run_sload_role_values_length_at_proj_sim :
+    forall codes env state_base memory sim (role : U256.t),
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      Stdlib.sload (keccak256_tuple2 role 1) ⇓
+      Result.Ok (StorableValue.map_get_u256
+                   (role_values_length_map sim) role)
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+
+  (** ----- Axiom: sstore at array length anchor =====
+
+      Writing [value] at the OZ-actual array length slot updates
+      slot 2's per-role length map at key [role]. *)
+  Axiom run_sstore_role_values_length_at_proj_sim :
+    forall codes env state_base memory sim (role value : U256.t),
+    let length_map' :=
+      Dict.declare_or_assign (role_values_length_map sim) role value in
+    let proj_sim' :=
+      [ StorableValue.Map2 (role_member_map sim);
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map length_map';
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      Stdlib.sstore (keccak256_tuple2 role 1) value ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_sim') ?}}.
+
+  (** ----- Axiom: sstore at array body element =====
+
+      Writing [value] at slot [keccak256_single (keccak256_tuple2 role 1) + i]
+      updates slot 3's per-(role, idx) body map at key [(role, i)].
+      This is the slot expression emitted by OZ's dynamic-array body
+      element write after [array_dataslot] resolves the data area to
+      [keccak256_single (set_slot)]. *)
+  Axiom run_sstore_role_values_body_at_proj_sim :
+    forall codes env state_base memory sim (role idx value : U256.t)
+        (length_map' : Dict.t U256.t U256.t),
+    let body_map' :=
+      Dict.declare_or_assign (role_values_body_map sim) (role, idx) value in
+    let proj_sim_pre :=
+      [ StorableValue.Map2 (role_member_map sim);
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map length_map';
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    let proj_sim' :=
+      [ StorableValue.Map2 (role_member_map sim);
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map length_map';
+        StorableValue.Map2 body_map' ] in
+    {{? codes, env, Some (make_state env state_base memory proj_sim_pre) |
+      Stdlib.sstore (keccak256_single (keccak256_tuple2 role 1) + idx) value ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_sim') ?}}.
+
+  (** ===== Composite: [run_array_push_at_proj_sim] =====
+
+      Steps the EnumerableSet [_values] [array_push] body against the
+      [proj_sim sim] projection. The body sequence (from
+      [Guardian_shallow.v::array_push_from_t_bytes32_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr]):
+
+        oldLen     := sload(array)                      (* length read *)
+        if oldLen >= 2^64 panic                         (* overflow guard *)
+        sstore(array, oldLen + 1)                       (* length bump *)
+        (slot, off) := storage_array_index_access(array, oldLen)
+                    = (keccak256_single array + oldLen, 0)
+        update_storage_value_t_bytes32_to_t_bytes32(slot, 0, value)
+                                                         (* body write *)
+
+      Where [array = keccak256_tuple2 role 1] is the OZ EnumerableSet
+      anchor. The walker chains:
+        - [run_sload_role_values_length_at_proj_sim] for the length read,
+        - the [oldLen + 1 < 2^64] precondition discharges the overflow
+          guard (sim invariant: lists have at most 2^64 - 1 members),
+        - [run_sstore_role_values_length_at_proj_sim] for the length bump,
+        - [apply_run_mstore] + [apply_run_keccak256_single] for the
+          array_dataslot composite (mirrors [ArrayDataslotBytes32]),
+        - [run_sstore_role_values_body_at_proj_sim] for the body write,
+        - threads through [update_byte_slice_dynamic32 ... 0 ...] which
+          for offset=0 + bytes32 reduces to the plain value
+          (full-mask identity).
+
+      ===== Status =====
+
+      Statement landed; proof is a mechanical assembly of the three
+      axioms above plus the framework's keccak / mstore /
+      update_byte_slice / convert chain. Left [Admitted] until the
+      walker's bit-mask sub-chain is mechanically dispatched — the
+      remaining work is roughly the same shape as ThrottleLib's
+      [run_update_storage_offset_0_at_two_slot_list] but routed through
+      the array-body shape and with the [keccak256_single] dataslot
+      step in the middle. ~100 lines once the inner walker arms are
+      assembled. *)
+  Lemma run_array_push_at_proj_sim
+      codes env state_base memory sim (role value : U256.t)
+      (* The overflow guard requires the new length to fit in 2^64. *)
+      (H_len_bound :
+         StorableValue.map_get_u256 (role_values_length_map sim) role
+         + 1 < 18446744073709551616)
+      (* The memory layout has at least one word so mstore at offset 0
+         lands cleanly. *)
+      (H_mem : exists w0 rest, memory = w0 :: rest) :
+    let oldLen :=
+      StorableValue.map_get_u256 (role_values_length_map sim) role in
+    let length_map' :=
+      Dict.declare_or_assign (role_values_length_map sim) role
+        (oldLen + 1) in
+    let body_map' :=
+      Dict.declare_or_assign (role_values_body_map sim) (role, oldLen)
+        value in
+    let proj_sim' :=
+      [ StorableValue.Map2 (role_member_map sim);
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map length_map';
+        StorableValue.Map2 body_map' ] in
+    exists memory' state',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      array_push_from_t_bytes32_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr
+        (keccak256_tuple2 role 1) value ⇓
+      Result.Ok tt
+    | Some state' ?}}
+    /\ state' = make_state env state_base memory' proj_sim'.
+  Proof.
+    (** Walker outline (intentionally Admitted — see status note above):
+
+        1. Destruct [H_mem] to expose the memory list.
+        2. [unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+            Shallow.let_state, Shallow.if_].
+        3. Step the length sload via [run_sload_role_values_length_at_proj_sim].
+        4. Discharge the overflow guard ([iszero (lt oldLen 2^64)]):
+           [H_len_bound] gives [oldLen + 1 < 2^64], hence [oldLen < 2^64],
+           so [lt oldLen 2^64 = 1] and [iszero ... = 0]; the [Shallow.if_]
+           failure branch fires (tt-default).
+        5. Step the length sstore via
+           [run_sstore_role_values_length_at_proj_sim] — note the
+           value is [Pure.add oldLen 1] which equals [oldLen + 1]
+           under [H_len_bound] (since the sum fits in 2^64 ⊆ 2^256).
+        6. Step [storage_array_index_access(array, oldLen)]: this body
+           is [sload(array) for arrayLength → if (oldLen >= arrayLength)
+           panic → array_dataslot(array) → mul(oldLen, 1) → add].
+           - Re-fire the length sload via the axiom (yields the new
+             length, i.e. [oldLen + 1] after step 5; need to make sure
+             the state's storage matches the [proj_sim'] shape from
+             step 5).
+           - The inner overflow guard:
+             [iszero (lt oldLen (oldLen + 1))] = [iszero 1] = 0,
+             so the failure branch fires.
+           - [array_dataslot]: mirrors [ArrayDataslotBytes32.run_array_dataslot]
+             — [apply_run_mstore] + [apply_run_keccak256_single],
+             producing [keccak256_single (keccak256_tuple2 role 1)].
+           - [add(dataArea, mul(oldLen, 1))]: [Pure.mul oldLen 1 = oldLen]
+             (modular but oldLen < 2^256), then [Pure.add dataArea oldLen]
+             equals [dataArea + oldLen] under a [keccak256_single + oldLen
+             < 2^256] cryptographic bound (same shape as the existing
+             [keccak256_tuple2_offset_bound]; would add a sibling
+             [keccak256_single_offset_bound] axiom).
+        7. Step [update_storage_value_t_bytes32_to_t_bytes32 slot 0 value]:
+           - [convert_t_bytes32_to_t_bytes32 value] = identity.
+           - [sload slot] — we need an additional axiom that the body
+             slot reads 0 pre-write (it's a fresh array index just
+             allocated). Or, the [update_byte_slice_dynamic32] body
+             with [shiftBytes=0] reduces algebraically to [toInsert]
+             (full-mask identity) regardless of the [sload] result —
+             this is the cleaner closure.
+           - [prepare_store_t_bytes32] = identity at offset 0.
+           - [update_byte_slice_dynamic32 (sload slot) 0 (value)] =
+             [or (and (sload slot) (not 0xff..ff)) (and value 0xff..ff)]
+             = [or 0 (and value 0xff..ff)] = [value] (assuming
+             [0 <= value < 2^256]).
+           - Final [sstore slot value] via
+             [run_sstore_role_values_body_at_proj_sim] applied at
+             [idx = oldLen]. The final state's slot 3 entry
+             [(role, oldLen) → value] matches [body_map'].
+        8. Existential witnesses: [memory'] is whatever memory ends
+           up as after the mstore in step 6's array_dataslot
+           (one-word write at offset 0). [state'] = the final
+           [make_state] after step 7.
+
+        Each step is mechanical but cumulative — the inner
+        bit-mask reduction (step 7) alone is ~30 lines of careful
+        rewrites, and step 6's overflow guard threading needs care
+        because the storage shape mutates mid-walker (between length
+        sstore and the re-fire of length sload).
+
+        Leaving this [Admitted] in this session per the time budget;
+        the axioms and statement are sufficient infrastructure for
+        the next session to land the walker in isolation. *)
+  Admitted.
+
   (** ----- Bool-path leaves (offset-0 static variants) ----- *)
 
   Lemma run_cleanup_from_storage_t_bool codes env state v :
@@ -1363,20 +1598,30 @@ Module GuardianEquivalence.
                       anchor → keccak (the dataslot) → sstore body],
                       threading state through.
                   Phases 1 + 2 (slots 2/3 + projection bridge) landed
-                  in task #264. Phase 3 (the walker leaf) was
-                  attempted and deferred — see WISDOM R052 on the
-                  array-shape vs nested-keccak gap.
+                  in task #264. Phase 3 (the walker leaf) — PARTIAL:
+                  the three governor-local trust axioms have landed
+                  ([run_sload_role_values_length_at_proj_sim],
+                  [run_sstore_role_values_length_at_proj_sim],
+                  [run_sstore_role_values_body_at_proj_sim]) and the
+                  [run_array_push_at_proj_sim] STATEMENT is in place
+                  with the [Admitted] mechanical body. The remaining
+                  walker work is the bit-mask / convert / dataslot
+                  chain interior — same shape as ThrottleLib's
+                  [run_update_storage_offset_0_at_two_slot_list] but
+                  routed through [array_dataslot] in the middle.
 
         (D) Caller bridge: [run_fun__msgSender_3197] reads the
             [Stdlib.caller] primitive and returns [env.(Environment.caller)].
             CLOSED — see lemma of the same name above.
 
-      Status as of task #264: residuals (A), (B), and (D) closed
-      (slots 2/3 + bridge extended for R051.c). Residuals (C.1),
-      (C.2), and (C.3-walker) remain. The proof body below sets up
-      the R047 case-split structure (case on [AccessControl.grantRole]'s
-      result) and poses [run_hasRole_equivalent] for the modifier's
-      auth check, then [Admitted]s on the residuals. *)
+      Status as of R051.c Phase 3 partial: residuals (A), (B),
+      and (D) closed; (C.3) partially closed (axioms + statement
+      landed, walker body still Admitted). Residuals (C.1),
+      (C.2), and the (C.3)-walker-interior remain. The proof body
+      below sets up the R047 case-split structure (case on
+      [AccessControl.grantRole]'s result) and poses
+      [run_hasRole_equivalent] for the modifier's auth check, then
+      [Admitted]s on the residuals. *)
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)

@@ -3421,4 +3421,39 @@ is smaller.)
 - R049 — slot-1 approximation precedent; the same pattern that
   R052's Option 1 would extend to slots 2/3.
 - R051 — the parent task; R051.c Phases 1-2 close here; Phase 3
-  remains for the next session.
+  partially closed (see update below).
+
+### R051.c Phase 3 update — axioms + statement landed, walker body Admitted
+
+A subsequent session (this one) opted for R052 Option 1 — the
+per-shape opaque-rewriting axioms — to unblock the
+[run_array_push_at_proj_sim] walker. Three governor-local trust
+axioms landed in `proofs/equivalence/Guardian.v`:
+
+  - [run_sload_role_values_length_at_proj_sim] — sload at
+    [keccak256_tuple2 role 1] returns the per-role length from
+    [proj_sim sim]'s slot 2.
+  - [run_sstore_role_values_length_at_proj_sim] — sstore at
+    [keccak256_tuple2 role 1] updates slot 2's length map.
+  - [run_sstore_role_values_body_at_proj_sim] — sstore at
+    [keccak256_single (keccak256_tuple2 role 1) + idx] updates
+    slot 3's body map at key [(role, idx)].
+
+The [run_array_push_at_proj_sim] composite lemma's STATEMENT
+landed alongside; its proof is [Admitted] with a detailed
+inline outline of the eight walker steps. The remaining work is
+mechanical bit-mask / convert / dataslot composition (~100
+lines once attempted in isolation) plus a small companion axiom
+([keccak256_single_offset_bound], a sibling to the existing
+[keccak256_tuple2_offset_bound]) for the [Pure.add (dataArea)
+oldLen = dataArea + oldLen] step in the dataslot path.
+
+### Cross-references (updated)
+
+- R040 — wrapper-shape sstore (uint256 flavor; the C.1 / C.3
+  positions-sstore would mirror this for the bool / uint256
+  flavors against the projection's slot-0 / slot-1).
+- R049 — slot-1 approximation precedent; the new R052 Option-1
+  axioms here mirror that pattern for slots 2/3.
+- R051 — parent task; the C.3 walker leaf is now infrastructure-
+  in-place but the composite proof body remains Admitted.
