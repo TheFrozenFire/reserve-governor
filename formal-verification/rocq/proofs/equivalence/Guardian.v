@@ -1466,6 +1466,251 @@ Module GuardianEquivalence.
     repeat (lu || cu || p).
   Qed.
 
+  (** ===== R051.b — bool sstore at slot 0's Map2 (proj_sim shape) =====
+
+      The slot-0 sstore in [_grantRole_1468]'s success arm fires:
+        update_storage_value_offset_0_t_bool_to_t_bool slot 1
+      where [slot = keccak256_tuple2 account (keccak256_tuple2 role 0)]
+      — i.e., the OZ-actual [_roles[role].members[account]] address.
+      That slot expression IS the framework's [Map2] shape at index 0,
+      so the framework's [run_sstore_map2_u256] axiom applies cleanly
+      after the standard list-shape unfold (no per-shape trust axiom
+      needed, unlike the R051.c slot-3 case where the array body has
+      an array-shape slot).
+
+      This block lands two pieces (mirroring R051.c Phase 3 for slot 3):
+
+        - [run_sstore_role_member_at_proj_sim]: thin wrapper that
+          bakes in [proj_sim]'s 4-slot list shape so the
+          [List.update_nth] match reduces and the wrapper's conclusion
+          is a clean Hoare triple (R040 pattern, uint256 flavor).
+
+        - [run_update_storage_value_t_bool_at_proj_sim]: the
+          composite walker leaf for the full
+          [update_storage_value_offset_0_t_bool_to_t_bool] body
+          (R040 pattern, bool flavor — the sister of
+          [run_update_storage_value_t_bytes32_at_proj_sim] for the
+          slot-3 array body write).
+
+      Used by the [fun_grantRole_1359] walker proof (residual C.1
+      in [run_grantRole_1359_equivalent]'s docstring). *)
+
+  (** ----- Bool-leaf sub-lemmas: convert / prepare / shift / update_byte_slice ----- *)
+
+  (** [convert_t_bool_to_t_bool v] = [cleanup_t_bool v] = [iszero(iszero v)].
+      For [v = 1], both [iszero]s flip the bit-twice → [1]. *)
+  Lemma run_cleanup_t_bool_of_1 codes env state :
+    {{? codes, env, Some state |
+      cleanup_t_bool 1 ⇓ Result.Ok 1
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_bool.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_bool_to_t_bool_of_1 codes env state :
+    {{? codes, env, Some state |
+      convert_t_bool_to_t_bool 1 ⇓ Result.Ok 1
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_bool_to_t_bool.
+    lu. l. { c. { apply run_cleanup_t_bool_of_1. } p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** [prepare_store_t_bool v = v] — Yul body is just an assignment. *)
+  Lemma run_prepare_store_t_bool codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      prepare_store_t_bool v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold prepare_store_t_bool.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** [shift_left_0 v = shl 0 v = v] for [v ∈ [0, 2^256)]. Local copy
+      of [ThrottleLib_Leaves.run_shift_left_0] (not imported here). *)
+  Lemma run_shift_left_0_local codes env state (v : U256.t)
+      (H_v : 0 <= v < 2^256) :
+    {{? codes, env, Some state |
+      shift_left_0 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_left_0.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.shl.
+    rewrite Z.mul_1_r.
+    rewrite Z.mod_small by exact H_v.
+    pe; reflexivity.
+  Qed.
+
+  (** [update_byte_slice_1_shift_0 prev toInsert]:
+        mask     := 255
+        toInsert := shl(0, toInsert)            (* = toInsert if < 2^256 *)
+        value    := prev AND NOT mask           (* clears low byte *)
+        result   := value OR (toInsert AND mask) (* bottom byte = toInsert AND 0xff *)
+
+      For [prev ∈ {0, 1}] (the bool-typed Map2 values) and
+      [toInsert = 1]:
+        prev AND NOT 0xff = 0 (both 0 and 1 fit in low byte)
+        result = 0 OR (1 AND 0xff) = 1. *)
+  Lemma run_update_byte_slice_1_shift_0_bool_1
+      codes env state (prev : U256.t)
+      (H_prev : prev = 0 \/ prev = 1) :
+    {{? codes, env, Some state |
+      update_byte_slice_1_shift_0 prev 1 ⇓ Result.Ok 1
+    | Some state ?}}.
+  Proof.
+    unfold update_byte_slice_1_shift_0.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (shift_left_0 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_shift_left_0_local;
+               change (2^256) with 115792089237316195423570985008687907853269984665640564039457584007913129639936;
+               lia | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.not _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.not, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.and _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.and, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.or _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.or, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    (* Final reduction: result = or(and(prev, not 255), and(1, 255)).
+       For prev ∈ {0, 1}, the [and prev (not 255)] term is 0 (since both
+       0 and 1 have their bits 8+ clear), and [and 1 255] = 1. So the
+       full expression reduces to 1 — close by direct computation in
+       each prev case. *)
+    s.
+    apply RunO.PureEq; [|reflexivity].
+    destruct H_prev as [-> | ->]; vm_compute; reflexivity.
+  Qed.
+
+  (** ----- Slot-0 Map2 sstore wrapper (R040 pattern, framework-shape) =====
+
+      The framework's [run_sstore_map2_u256] gives the sstore at
+      slot expression [keccak256_tuple2 key2 (keccak256_tuple2 key1
+      (Z.of_nat index))] — for [index = 0], exactly OZ's
+      [_roles[role].members[account]] slot. The wrapper bakes in
+      [proj_sim]'s 4-slot list shape so the [List.update_nth] match
+      reduces.
+
+      Sister to [run_sstore_role_values_body_at_proj_sim] (R051.c
+      slot-3 axiom) but proven from the framework lemma — slot 0's
+      Map2 shape aligns with the framework's nested-keccak axiom, so
+      no per-contract trust is needed (unlike slot 3, where the
+      array-shape slot expression diverges from the framework's
+      nested-keccak Map2). *)
+  Lemma run_sstore_role_member_at_proj_sim
+      codes env state_base memory sim (role account value : U256.t) :
+    let member_map' :=
+      Dict.declare_or_assign (role_member_map sim) (role, account) value in
+    let proj_sim' :=
+      [ StorableValue.Map2 member_map';
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map (role_values_length_map sim);
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      Stdlib.sstore (keccak256_tuple2 account (keccak256_tuple2 role 0)) value ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_sim') ?}}.
+  Proof.
+    cbv zeta.
+    pose proof (Storage.run_sstore_map2_u256
+                  (proj_sim sim) 0%nat role account value
+                  codes env (make_state env state_base memory (proj_sim sim)))
+      as H.
+    (* Discharge the [get_current_storage] precondition: [make_state]
+       unfolds to a [with_current_storage], and the framework lemma
+       [get_current_storage_with_current_storage_eq] closes the
+       resulting equation. *)
+    unfold make_state in H at 1.
+    specialize (H (State.get_current_storage_with_current_storage_eq _ _ _)).
+    (* Reduce the [nth_error] and [update_nth] matches: unfold
+       [proj_sim] so the 4-element list is concrete, then [simpl]
+       the list ops. *)
+    unfold proj_sim in H at 1.
+    simpl List.nth_error in H.
+    cbv beta iota in H.
+    simpl List.update_nth in H.
+    cbv beta iota in H.
+    change (Z.to_nat 0) with 0%nat in H.
+    change (Z.of_nat 0) with 0 in H.
+    (* H's post-state is [with_current_storage env (make_state ...) (...)] —
+       unfold the inner [make_state] to expose the double
+       [with_current_storage], collapse via
+       [with_current_storage_twice_eq], then refold to [make_state] on
+       the goal side. *)
+    unfold make_state in H at 2.
+    rewrite CanonizeState.with_current_storage_twice_eq in H.
+    unfold make_state at 2.
+    exact H.
+  Qed.
+
+  (** ----- Bool sstore wrapper at slot 0's Map2 (R040 pattern) =====
+
+      Composes the convert / sload / bit-mask / sstore chain inside
+      [update_storage_value_offset_0_t_bool_to_t_bool slot 1] at the
+      OZ-actual [_roles[role].members[account]] slot. The post-state
+      is the proj_sim with slot 0's [role_member_map] updated via
+      [Dict.declare_or_assign] at key [(role, account)] to value [1].
+
+      The chain inside [update_storage_value_offset_0_t_bool_to_t_bool]:
+        convertedValue := convert_t_bool_to_t_bool 1         (* = 1 *)
+        prev           := sload slot                          (* = role_member_map[(role,account)] ∈ {0,1} *)
+        toInsert       := prepare_store_t_bool convertedValue (* = 1 *)
+        new            := update_byte_slice_1_shift_0 prev 1  (* = 1 *)
+        sstore slot new                                       (* sets to 1 *)
+
+      Sister to [run_update_storage_value_t_bytes32_at_proj_sim] for
+      the slot-3 array body write. Closes R051.b (~80 lines as
+      forecast in WISDOM R051). *)
+  Lemma run_update_storage_value_t_bool_at_proj_sim
+      codes env state_base memory sim (role account : U256.t) :
+    let member_map' :=
+      Dict.declare_or_assign (role_member_map sim) (role, account) 1 in
+    let proj_sim' :=
+      [ StorableValue.Map2 member_map';
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map (role_values_length_map sim);
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      update_storage_value_offset_0_t_bool_to_t_bool
+        (keccak256_tuple2 account (keccak256_tuple2 role 0)) 1 ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_sim') ?}}.
+  Proof.
+    cbv zeta.
+    unfold update_storage_value_offset_0_t_bool_to_t_bool.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    pose proof (role_member_map_values_bool sim (role, account)) as H_prev_bool.
+    cbv zeta in H_prev_bool.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_bool_to_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_bool_to_t_bool_of_1 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_sload_role_member_at_proj_sim | ]
+      | |- {{? _, _, _ |
+            LowM.Call (prepare_store_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_prepare_store_t_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (update_byte_slice_1_shift_0 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_update_byte_slice_1_shift_0_bool_1;
+               exact H_prev_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply (run_sstore_role_member_at_proj_sim
+                       codes env state_base memory sim role account 1) | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
+
   (** ----- Main equivalence theorem for fun_hasRole_1292 -----
 
       Body shape:
@@ -1891,17 +2136,26 @@ Module GuardianEquivalence.
 
         (C) Walker leaves — three distinct gaps remain:
 
-            (C.1) [run_update_storage_value_offset_0_t_bool_to_t_bool]
-                  — R040 pattern for the bool-slot sstore. The Yul
-                  body is [convert + sstore (slot, update_byte_slice_1_shift_0
-                  (sload slot) (prepare_store_t_bool convertedValue))].
-                  Needs a wrapper that bakes in the proj_sim slot-0
-                  Map2 layout: pre-sstore the slot reads 0 (not yet
-                  a member), update_byte_slice merges 1 into the
-                  low byte yielding 1, sstore writes 1 to slot 0's
-                  Map2 entry. ~80 lines once attempted; analogous to
-                  ThrottleLib's [run_update_storage_offset_0_at_two_slot_list]
-                  but for the bool flavor and Map2 (not MapStruct).
+            (C.1) [CLOSED — R051.b]
+                  [run_update_storage_value_t_bool_at_proj_sim]
+                  landed above (sister to the slot-3 bytes32 wrapper
+                  [run_update_storage_value_t_bytes32_at_proj_sim]).
+                  It composes the convert / sload / bit-mask / sstore
+                  chain against [proj_sim]'s slot-0 Map2 and yields a
+                  post-state with [role_member_map] updated to 1 at
+                  key [(role, account)] via [Dict.declare_or_assign].
+                  Sub-lemmas added alongside:
+                  [run_sstore_role_member_at_proj_sim] (slot-0 sstore
+                  wrapper, proven from the framework's
+                  [run_sstore_map2_u256] — no per-shape trust needed
+                  because slot 0's nested-keccak shape aligns with
+                  the framework's Map2 axiom),
+                  [run_update_byte_slice_1_shift_0_bool_1] (bit-mask
+                  reduction under the bool-typed slot's
+                  [prev ∈ {0,1}] invariant from
+                  [role_member_map_values_bool]),
+                  [run_convert_t_bool_to_t_bool_of_1] / [run_prepare_store_t_bool]
+                  / [run_shift_left_0_local] / [run_cleanup_t_bool_of_1].
 
             (C.2) [run_fun_getRoleAdmin_1340] — reads
                   [_roles[role].adminRole] at slot
@@ -1979,14 +2233,12 @@ Module GuardianEquivalence.
             [Stdlib.caller] primitive and returns [env.(Environment.caller)].
             CLOSED — see lemma of the same name above.
 
-      Status as of R051.c Phase 3 partial: residuals (A), (B),
-      and (D) closed; (C.3) partially closed (axioms + statement
-      landed, walker body still Admitted). Residuals (C.1),
-      (C.2), and the (C.3)-walker-interior remain. The proof body
-      below sets up the R047 case-split structure (case on
-      [AccessControl.grantRole]'s result) and poses
-      [run_hasRole_equivalent] for the modifier's auth check, then
-      [Admitted]s on the residuals. *)
+      Status as of R051.b: residuals (A), (B), (C.1), (C.3) — full
+      Qed for [run_array_push_at_proj_sim] — and (D) closed. The
+      only remaining structural gap is (C.2) — the slot-1 admin-field
+      read in [fun_getRoleAdmin_1340]. The R047 case-split walker
+      below still [Admitted]s on (C.2) and on threading the per-leaf
+      lemmas through the outer chain. *)
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -2073,13 +2325,17 @@ Module GuardianEquivalence.
                     DEFAULT_ADMIN_ROLE_bytes32 (env.(Environment.caller))
                     memory H_role H_account H_mem) as Hhr_admin. *)
 
-    (** Residuals (C.1) (bool sstore wrapper), (C.2) (getRoleAdmin
-        slot+1 read — structural proj_sim gap), and (C.3)
-        (EnumerableSet array_push — needs new slot in proj_sim)
-        remain. (A), (B), (D) closed. The R049 follow-on for the
-        EnumerableSet _values array is the deepest blocker; until
-        proj_sim grows that slot the walker for [fun_add_2085] has
-        nowhere to discharge the array_push sstores. *)
+    (** Residual (C.2) — the slot-1 admin-field read in
+        [fun_getRoleAdmin_1340] — remains. (A), (B), (C.1) (R051.b
+        bool sstore wrapper, [run_update_storage_value_t_bool_at_proj_sim]),
+        (C.3) (R051.c array_push wrapper, [run_array_push_at_proj_sim]),
+        and (D) closed. What remains for grantRole's full Qed is
+        threading these leaves through the outer chain
+        ([fun_grantRole_1359] → [modifier_onlyRole_1351] →
+        [fun_getRoleAdmin_1340] + [fun__checkRole_1305] →
+        [fun_grantRole_1359_inner] → [fun__grantRole_704] →
+        [fun__grantRole_1468] + [fun_add_2085]), plus the (C.2)
+        structural lift for the admin-field read. *)
   Admitted.
 
 End GuardianEquivalence.

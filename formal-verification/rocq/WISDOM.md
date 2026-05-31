@@ -3119,14 +3119,40 @@ This breaks the existing slot-0 read path; it's a half-day refactor.
 
 ### R051.b — bool sstore wrapper (`update_storage_value_offset_0_t_bool_to_t_bool`)
 
-The R046-restored sstore in `_grantRole_1468`'s success arm goes
-through `sload + update_byte_slice_1_shift_0 + prepare_store_t_bool
-+ sstore` (the bool flavor of the R040 chain). An R040-style
-wrapper baked against `proj_sim sim`'s slot-0 Map2 must close to
-the cons-prefixed shape from `proj_sim_add_admin_not_in`. The
-inner-walker math is identical to ThrottleLib's uint256 wrapper but
-the prepare/extract leaves are bool-flavored. ~80 lines once
-attempted.
+**Status: CLOSED (2026-05-31).**
+`run_update_storage_value_t_bool_at_proj_sim` landed at
+`proofs/equivalence/Guardian.v`. Sister to the slot-3 bytes32
+wrapper `run_update_storage_value_t_bytes32_at_proj_sim` from
+R051.c Phase 3. The R046-restored sstore in `_grantRole_1468`'s
+success arm goes through `convert_t_bool_to_t_bool + sload +
+update_byte_slice_1_shift_0 + prepare_store_t_bool + sstore` (the
+bool flavor of the R040 chain).
+
+The walker composes:
+- `run_sload_role_member_at_proj_sim` (slot-0 sload, already
+  existed pre-R051.b)
+- `run_convert_t_bool_to_t_bool_of_1` + `run_prepare_store_t_bool`
+  + `run_update_byte_slice_1_shift_0_bool_1` (bit-mask reduction
+  under the bool invariant `prev ∈ {0,1}` from
+  `role_member_map_values_bool`)
+- `run_sstore_role_member_at_proj_sim` (slot-0 sstore wrapper —
+  proven directly from the framework's `run_sstore_map2_u256`
+  because slot 0's nested-keccak Map2 shape ALIGNS with the
+  framework axiom; NO per-shape trust axiom is required, unlike
+  R051.c slot-3 where the array body's `keccak256_single`-based
+  slot shape diverges from the framework's nested-keccak).
+
+The post-state is `Dict.declare_or_assign role_member_map (role,
+account) 1` — i.e., the framework-shape Map2 update. The
+projection bridge `proj_sim_add_admin_not_in` then converts this
+to the cons-prefixed shape used by the outer grantRole walker.
+
+What `run_update_storage_value_t_bool_at_proj_sim` does NOT
+include: the bridge from `Dict.declare_or_assign` to the
+cons-prefix shape itself. That conversion is a separate
+`declare_or_assign_eq_cons_when_absent`-style lemma (R049
+docstring describes it) which is downstream of where this wrapper
+lands; the grantRole outer walker calls it after this leaf fires.
 
 ### R051.c — EnumerableSet `_values` array (`fun_add_2085`)
 
@@ -3157,20 +3183,24 @@ walker needs leaves to discharge them. This is multi-day work:
 The "first OZ mutator equivalence Qed" milestone target (originally
 nominated for `run_grantRole_1359_equivalent` after R050 retargeted
 away from VersionRegistry.deprecateVersion) requires R051.a, .b,
-and .c. Of the three, only .b is bounded-effort once the other two
-land. .c is the long pole.
+and .c. Of the three, .b and .c (both walker leaves) have now
+LANDED with Qed; .a (the slot-1 admin-field read, a structural
+proj_sim refactor) is the only remaining gap for
+`Guardian.grantRole`.
 
 Re-evaluating the corpus's OZ mutator targets:
-  - `Guardian.grantRole` — needs R051.a + .b + .c.
-  - `Guardian.revokeRole` — needs R051.a + .b + a swap-and-pop
-    variant of .c (harder than .c because the positions invariant
-    needs a tail-rewrite per R049's deferred-revoke note).
+  - `Guardian.grantRole` — needs R051.a only (.b and .c CLOSED).
+  - `Guardian.revokeRole` — needs R051.a + a swap-and-pop variant
+    of .c (harder than .c because the positions invariant needs a
+    tail-rewrite per R049's deferred-revoke note).
   - `VersionRegistry.deprecateVersion` — needs R050.full.
   - `Guardian.renounceRole` — same shape as revoke.
 
-There is no OZ mutator equivalence currently within ~1-day reach.
-The next session should pick ONE of the three structural lifts
-(R051.a, R051.c, or R050.full) as a standalone landing.
+`Guardian.grantRole` is now within reach of a single ~half-day
+session on the R051.a structural lift, plus a few-hour outer-walker
+threading pass that composes the per-leaf lemmas through the
+[fun_grantRole_1359 → modifier → _grantRole_1468 + fun_add_2085]
+chain.
 
 ### What this session landed
 
