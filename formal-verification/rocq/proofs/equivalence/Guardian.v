@@ -7803,6 +7803,314 @@ Module GuardianEquivalence.
     all: try apply RunO.Pure.
   Qed.
 
+  (** ===== Value-0 specializations for the bool sstore chain =====
+
+      grantRole only ever writes value 1 to the slot-0 member map.
+      revokeRole writes value 0 (clearing membership). These leaves
+      mirror the existing value-1 leaves but specialized to v=0. *)
+  Lemma run_cleanup_t_bool_of_0 codes env state :
+    {{? codes, env, Some state |
+      cleanup_t_bool 0 ⇓ Result.Ok 0
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_bool.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.iszero, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
+
+  Lemma run_convert_t_bool_to_t_bool_of_0 codes env state :
+    {{? codes, env, Some state |
+      convert_t_bool_to_t_bool 0 ⇓ Result.Ok 0
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_bool_to_t_bool.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (cleanup_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_cleanup_t_bool_of_0 | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
+
+  Lemma run_update_byte_slice_1_shift_0_bool_0
+      codes env state (prev : U256.t)
+      (H_prev : prev = 0 \/ prev = 1) :
+    {{? codes, env, Some state |
+      update_byte_slice_1_shift_0 prev 0 ⇓ Result.Ok 0
+    | Some state ?}}.
+  Proof.
+    unfold update_byte_slice_1_shift_0.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (shift_left_0 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_shift_left_0_local;
+               change (2^256) with 115792089237316195423570985008687907853269984665640564039457584007913129639936;
+               lia | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.not _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.not, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.and _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.and, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.or _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.or, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    s.
+    apply RunO.PureEq; [|reflexivity].
+    destruct H_prev as [-> | ->]; vm_compute; reflexivity.
+  Qed.
+
+  (** v=0 analogue of [run_update_storage_value_t_bool_at_proj_sim]. *)
+  Lemma run_update_storage_value_t_bool_at_proj_sim_v0
+      codes env state_base memory sim (role account : U256.t) :
+    let member_map' :=
+      Dict.declare_or_assign (role_member_map sim) (role, account) 0 in
+    let proj_sim' :=
+      [ StorableValue.Map2 member_map';
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map (role_values_length_map sim);
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      update_storage_value_offset_0_t_bool_to_t_bool
+        (keccak256_tuple2 account (keccak256_tuple2 role 0)) 0 ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_sim') ?}}.
+  Proof.
+    cbv zeta.
+    unfold update_storage_value_offset_0_t_bool_to_t_bool.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    pose proof (role_member_map_values_bool sim (role, account)) as H_prev_bool.
+    cbv zeta in H_prev_bool.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_bool_to_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_bool_to_t_bool_of_0 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_sload_role_member_at_proj_sim | ]
+      | |- {{? _, _, _ |
+            LowM.Call (prepare_store_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_prepare_store_t_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (update_byte_slice_1_shift_0 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_update_byte_slice_1_shift_0_bool_0;
+               exact H_prev_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply (run_sstore_role_member_at_proj_sim
+                       codes env state_base memory sim role account 0) | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
+
+  (** ===== Phase 1 was-member walker for [fun__revokeRole_1506] =====
+
+      When the account IS currently a member (slot-0 member lookup
+      returns 1), the function steps:
+        hasRole = 1 → δ = 1 → take the [else] branch (not [δ =? 0])
+        → MIA chain to slot-0 sub-mapping at (role, account)
+        → sstore 0 (slot-0 write — sets members[account] := false)
+        → log4 (RoleRevoked event, state-preserving)
+        → return 1
+
+      Post-state has slot 0 mutated; slots 1/2/3 unchanged. The
+      mutation is [Dict.declare_or_assign (role_member_map sim)
+      (role, account) 0] — observationally a "delete" since the
+      stored value is 0 (the default for missing keys).
+
+      The walker mirrors [run_fun__grantRole_1468_at_proj_sim_not_member]
+      precisely (same structural shape — the only delta is the
+      sstore value of 0 instead of 1, which uses [_t_bool] sstore as
+      well since the underlying type is bool offset 0).
+
+      We use the same [run_update_storage_value_t_bool_at_proj_sim]
+      leaf — its signature accepts an arbitrary value being written
+      (parameterized over the [v] argument). The stored value here
+      is 0, which still respects the t_bool clean form. *)
+  Lemma run_fun__revokeRole_1506_at_proj_sim_member
+      codes env state_base memory sim (role account : U256.t)
+      (H_role : 0 <= role < 2 ^ 256)
+      (H_account : 0 <= account < 2^160)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_member :
+         StorableValue.map_get_u256 (role_member_map sim) (role, account) = 1)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let member_map' :=
+      Dict.declare_or_assign (role_member_map sim) (role, account) 0 in
+    let proj_sim' :=
+      [ StorableValue.Map2 member_map';
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map (role_values_length_map sim);
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    exists w0' w1' rest',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__revokeRole_1506 role account ⇓
+      Result.Ok 1
+    | Some (make_state env state_base (w0' :: w1' :: rest') proj_sim') ?}}.
+  Proof.
+    cbv zeta.
+    (* hasRole pre-walk: in the member branch, returns 1. Rewrite. *)
+    pose proof (run_fun_hasRole_1292_at_proj_sim
+                  codes env state_base memory sim role account
+                  H_account H_mem) as Hhr.
+    cbv zeta in Hhr.
+    rewrite H_member in Hhr.
+    destruct Hhr as (w0_hr & w1_hr & rest_hr & Hhr).
+    set (mem_after_hr := w0_hr :: w1_hr :: rest_hr).
+    (* MIA chain (bytes32 → struct ptr → address → bool). *)
+    pose proof (MappingIndexAccessBytes32RoleData.run_mapping_index_access
+                  codes env state_base 0 role (proj_sim sim) mem_after_hr
+                  (ex_intro _ w0_hr (ex_intro _ w1_hr
+                    (ex_intro _ rest_hr eq_refl)))) as Hmia1.
+    destruct Hmia1 as (w0_a & w1_a & rest_a & Hmia1).
+    set (mem_after_mia1 := w0_a :: w1_a :: rest_a).
+    pose proof (MappingIndexAccessAddressBool.run_mapping_index_access
+                  codes env state_base (keccak256_tuple2 role 0) account
+                  (proj_sim sim) mem_after_mia1 H_account
+                  (ex_intro _ w0_a (ex_intro _ w1_a
+                    (ex_intro _ rest_a eq_refl)))) as Hmia2.
+    destruct Hmia2 as (w0_b & w1_b & rest_b & Hmia2).
+    set (mem_after_mia2 := w0_b :: w1_b :: rest_b).
+    assert (H_pa1 : Pure.add (keccak256_tuple2 role 0) 0
+                  = keccak256_tuple2 role 0).
+    { rewrite Pure_add_keccak_offset by lia. lia. }
+    assert (Hmia2' :
+      {{? codes, env,
+          Some (make_state env state_base mem_after_mia1 (proj_sim sim))
+      | mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address
+          (Pure.add (keccak256_tuple2 role 0) 0) account
+        ⇓ Result.Ok (keccak256_tuple2 account (keccak256_tuple2 role 0))
+      | Some (make_state env state_base mem_after_mia2 (proj_sim sim)) ?}}).
+    { rewrite H_pa1. exact Hmia2. }
+    (* sstore at slot 0's Map2 — for revoke, we write 0 (false). *)
+    (* run_update_storage_value_t_bool_at_proj_sim writes value 1
+       hardcoded. We need a 0-value variant — luckily its proof
+       reuses [run_sstore_role_member_at_proj_sim] directly, so we
+       can do the sstore inline. Actually, the existing wrapper
+       passes the value through — let's check it. *)
+    (* The wrapper [run_update_storage_value_t_bool_at_proj_sim]'s
+       proof writes the value passed in via prepare_store_t_bool.
+       For revoke, the source's expr_1488 = 0x00, so the wrapper
+       at proj_sim writes 0. We re-derive the proof inline since
+       the wrapper was specialized for value=1. *)
+    pose proof (run_update_storage_value_t_bool_at_proj_sim_v0
+                  codes env state_base mem_after_mia2 sim role account)
+      as Hsstore.
+    cbv zeta in Hsstore.
+    set (proj_sim_post :=
+           [ StorableValue.Map2
+               (Dict.declare_or_assign (role_member_map sim)
+                  (role, account) 0);
+             StorableValue.Map2 (role_positions_map sim);
+             StorableValue.Map (role_values_length_map sim);
+             StorableValue.Map2 (role_values_body_map sim) ]).
+    fold proj_sim_post in Hsstore.
+    set (state_after_sstore :=
+           make_state env state_base mem_after_mia2 proj_sim_post).
+    (* msgSender: state-preserving leaf. *)
+    pose proof (run_fun__msgSender_3197 codes env state_after_sstore)
+      as Hms.
+    (* Post-state: pin to the post-sstore state. log4/MLoad are
+       state-preserving in our sim model. *)
+    exists w0_b, w1_b, rest_b.
+    fold proj_sim_post.
+    change (make_state env state_base (w0_b :: w1_b :: rest_b) proj_sim_post)
+      with state_after_sstore.
+    unfold fun__revokeRole_1506.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.strong_let_, M.generic_let
+      | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.let_, M.generic_let
+      | |- {{? _, _, _ | M.do _ _ ⇓ _ | _ ?}} =>
+          unfold M.do
+      | |- {{? _, _, _ | Shallow.let_state _ _ ⇓ _ | _ ?}} =>
+          unfold Shallow.let_state
+      | |- {{? _, _, _ | Shallow.if_ _ _ _ ⇓ _ | _ ?}} =>
+          unfold Shallow.if_
+      | |- {{? _, _, _ | M.call _ ⇓ _ | _ ?}} =>
+          unfold M.call
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_hasRole_1292 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hhr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.iszero, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_cleanup_t_bool_of_bool; right; reflexivity | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_RoleData_ₓ1233_storage_ₓ_of_t_bytes32 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia1 | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia2' | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (update_storage_value_offset_0_t_bool_to_t_bool _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ exact Hsstore | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__msgSender_3197) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hms | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_bytes32_to_t_bytes32 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_bytes32_to_t_bytes32 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_address_to_t_address _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_address_to_t_address;
+               first [ exact H_account
+                     | exact H_caller_bound ] | ]
+      | |- {{? _, _, _ |
+            LowM.Call allocate_unbounded _ ⇓ _ | _ ?}} =>
+          unfold allocate_unbounded; cu
+      | |- {{? _, _, _ |
+            LowM.Call (abi_encode_tuple__to__fromStack _) _ ⇓ _ | _ ?}} =>
+          unfold abi_encode_tuple__to__fromStack; cu
+      | |- {{? _, _, _ | LowM.Call (Stdlib.mload _) _ ⇓ _ | _ ?}} =>
+          unfold Stdlib.mload; cu
+      | |- {{? _, _, _ |
+            LowM.Primitive (Primitive.MLoad _ _) _ ⇓ _ | _ ?}} =>
+          pr
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sub _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.sub, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.log4 _ _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.log4, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
   (** ===== Phase 3 — [fun__revokeRole_736] outer mutator wrapper =====
 
       [fun__revokeRole_736] composes:
