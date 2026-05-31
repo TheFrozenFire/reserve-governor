@@ -676,6 +676,74 @@ Module VersionRegistryEquivalence.
     - lu. repeat (lu || cu || p).
   Qed.
 
+  (** ----- Offset-0 bool storage leaves -----
+
+      The Yul body of [fun_deprecateVersion_187] uses
+      [read_from_storage_split_offset_0_t_bool] (NOT the
+      [_dynamic_] variant), so we port the existing dynamic-flavor
+      leaves to the offset-0 variant. The offset-0 form skips
+      [shift_right_unsigned_dynamic] in favor of the static
+      [shift_right_0_unsigned] — semantically identical (both yield
+      the value unchanged when offset = 0), but the Yul-translated
+      function names differ. *)
+
+  Lemma run_shift_right_0_unsigned codes env state v
+      (H_v : 0 <= v < 2^256) :
+    {{? codes, env, Some state |
+      shift_right_0_unsigned v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_right_0_unsigned.
+    lu. repeat (lu || cu || p). s.
+    apply RunO.PureEq; [|reflexivity].
+    unfold Pure.shr. simpl. rewrite Z.div_1_r. reflexivity.
+  Qed.
+
+  Lemma run_extract_from_storage_value_offset_0_t_bool
+      codes env state v
+      (H_v : 0 <= v < 2^256) :
+    {{? codes, env, Some state |
+      extract_from_storage_value_offset_0_t_bool v ⇓
+      Result.Ok (Z.land v 0xff)
+    | Some state ?}}.
+  Proof.
+    unfold extract_from_storage_value_offset_0_t_bool,
+           shift_right_0_unsigned, cleanup_from_storage_t_bool.
+    lu. repeat (lu || cu || p). s.
+    apply RunO.PureEq; [|reflexivity].
+    unfold Pure.and, Pure.shr. simpl. rewrite Z.div_1_r. reflexivity.
+  Qed.
+
+  (** [read_from_storage_split_offset_0_t_bool slot] at [proj_sim sim]
+      with [slot = keccak256_tuple2 key 1] returns the
+      [isDeprecated_map] lookup, cleaned to 0/1 via the [land 0xff]
+      mask. The [isDeprecated_map_values_bool] domain bound discharges
+      the mask. *)
+  Lemma run_read_isDeprecated_offset_0_at_proj_sim
+      codes env state_base memory sim key :
+    let v := StorableValue.map_get_u256
+               (isDeprecated_map sim.(VersionRegistry.State.history)) key in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      read_from_storage_split_offset_0_t_bool (keccak256_tuple2 key 1) ⇓
+      Result.Ok v
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_storage_split_offset_0_t_bool.
+    pose proof (isDeprecated_map_values_bool
+                  sim.(VersionRegistry.State.history) key) as H_bool.
+    cbv zeta in H_bool.
+    lu.
+    l. {
+      c. { apply run_sload_isDeprecated_at_proj_sim. }
+      c. { apply run_extract_from_storage_value_offset_0_t_bool.
+           destruct H_bool as [-> | ->]; lia. }
+      apply RunO.PureEq; [|reflexivity].
+      rewrite (land_0xff_bool _ H_bool). reflexivity.
+    }
+    repeat (lu || cu || p).
+  Qed.
+
   (** ----- Phase 3.2 — deprecateVersion mutator equivalence scaffold -----
 
       Target: prove [fun_deprecateVersion_187] is equivalent to the
