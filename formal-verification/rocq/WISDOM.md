@@ -2409,3 +2409,94 @@ typically need BOTH patterns:
 RewardTokenRegistry.run_isRegistered_equivalent is the canonical
 example. Same shape generalizes to any
 `view_function token → helper_chain → leaf_view` composition.
+
+## R045: OZ modifier mocks — symbolic [with_X body] expansion in lieu of shallow form
+
+### The problem
+
+OZ modifiers (`nonReentrant`, `whenNotPaused`, `onlyRole`, etc.) expand
+inline in Solidity as wrapper statements bracketing the body:
+
+```
+modifier nonReentrant() {
+  _nonReentrantBefore();
+  _;                // <user body>
+  _nonReentrantAfter();
+}
+```
+
+After `solc`, the modifier expansion may not be visible in either the
+shallow or deep generated form: solc compresses the wrapper into a
+named helper (`modifier_<name>_<id>`) that the call site dispatches
+through, rather than inlining the pre/post sstore + check sequence at
+the call site. For some contracts (`StakingVault.claimRewards`), the
+shallow form isn't generated at all because the contract is large and
+the equivalence tier hasn't reached it.
+
+This blocks the natural equivalence approach — there's no Yul-side
+call chain to thread the pre/post checks through.
+
+### The pattern: symbolic `with_X` expansion against the mock
+
+Mock the modifier's storage semantics ([State.t], [enter], [exit])
+exactly per OZ source. Then define a Gallina-level wrapper that
+models the modifier's expansion shape:
+
+```coq
+Definition with_nonReentrant {A : Set}
+    (s : State.t) (body : State.t -> Result.t (State.t * A)) :
+    Result.t (State.t * A) :=
+  match nonReentrant_enter s with
+  | Result.Revert p q => Result.Revert p q
+  | Result.Success s_entered =>
+      match body s_entered with
+      | Result.Revert p q => Result.Revert p q
+      | Result.Success (s_after_body, a) =>
+          Result.Success (nonReentrant_exit s_after_body, a)
+      end
+  end.
+```
+
+Prove the headline properties against this wrapper:
+
+- `with_X_post_status_invariant` — storage-trace property (status
+  unchanged across boundary).
+- `with_X_nested_call_reverts` — OWASP SC01 form.
+- `with_X_already_X_short_circuits` — pre-check fail-fast.
+- `with_X_passthrough_output` — modifier is transparent on success.
+- `with_X_body_sees_X` — characterises the state the body observes.
+
+Each is a 5-10 line direct destruct/rewrite proof. All close with Qed.
+
+### When this beats waiting for the shallow form
+
+- **Right now**: lets you state machine-checkable properties of the
+  modifier's effect (used by Audit.v / Caveat-5 to claim coverage of
+  OWASP SC01 etc.) without waiting for the equivalence tier to catch
+  up.
+- **Later**: when the shallow form lands, the `with_X` wrapper
+  becomes the bridge — equivalence proof rewrites the Yul call
+  sequence into `with_X body` shape, then the existing lemmas close.
+
+### When NOT to use this
+
+If the shallow form already inlines the pre/post check sequence
+visibly (ThrottleLib's modifiers do this), bind directly to the
+shallow form via R040 (wrapper-shape sstore leaves) + R033 (PureEq
+for branches). The symbolic-expansion path is for the case where the
+shallow form doesn't exist OR compresses the modifier into a helper.
+
+### Touchpoints
+
+- `mocks/ReentrancyGuard.v` — mock with [State.t], [nonReentrant_enter],
+  [nonReentrant_exit] semantics.
+- `proofs/equivalence/ReentrancyGuard.v` — `with_nonReentrant` symbolic
+  wrapper + 5 headline lemmas.
+- Future: `mocks/Pausable.v` (whenNotPaused / whenPaused), `mocks/AccessControlEnumerable.v`'s onlyRole expansion.
+
+### Catalog reference
+
+OZ has ~14 modifier-class items in the catalog. Treating each via
+this pattern lets the foundation tier progress in parallel with the
+equivalence tier, with mechanical promotion to real bindings as
+shallow forms become available.
