@@ -2555,7 +2555,50 @@ shallow forms become available.
 
 ## R046: shallow_embed.py drops sstore in OZ _grantRole — generator bug
 
-**Status: blocks ALL OZ AccessControl mutator-equivalence proofs.**
+**Status: RESOLVED upstream at
+`TheFrozenFire/rocq-of-solidity:integration@696f60fd73` (2026-05-30).**
+
+The fix was a 33-line patch to `shallow_embed.py`'s `YulSwitch`
+handler: previously the list comprehension filtered out the default
+case (`if case.get('value') != "default"`) and replaced its body with
+a synthetic `else M.pure (BlockUnit.Tt, …)` no-op. The patch now
+emits the default's body as the `else` branch (with the same
+`lift_state_update` shape used for value cases) and folds the
+default's `updated_vars` into `commonly_updated_vars` so the
+surrounding `let_state~` binding picks up everything.
+
+Affected contracts beyond Guardian: any OZ AccessControl mutator
+(`_grantRole`, `_revokeRole`, `_setRoleAdmin`) AND every
+`EnumerableSet` mutator (`_add`, `_remove`) — solc lowers these to
+Yul switches where the entire mutation body lives in the default arm.
+RewardTokenRegistry_shallow.v regenerated locally shows ~80 lines
+recovered in `fun__add_…` and `fun__remove_…` alone.
+
+Verification (2026-05-30, against the regenerated Guardian_shallow.v):
+- `fun__grantRole_1468`'s `else` arm now contains the expected
+  `update_storage_value_offset_0_t_bool_to_t_bool` call, the `log4`
+  for `RoleGranted`, and the `var__1437 := 1` + `Leave` sequence.
+- The regenerated `Guardian_shallow.v` compiles cleanly under
+  `coqc 8.20.1` (no R035-style `M.monadic`-vs-`Shallow.let_state`
+  nesting issue surfaces — the nested `let_state~ 'tt :=` produced
+  for the `log4` block stays well-formed).
+- `proofs/equivalence/Guardian.v::run_grantRole_1468_observed_behavior`
+  fails to compile against the new shallow form (it asserted the
+  function returns 0 with state unchanged, which is no longer true).
+  The break is the success criterion.
+
+Follow-on tasks left after the upstream landing:
+  - Regenerate Guardian/RewardTokenRegistry/VersionRegistry shallow
+    forms via `bash formal-verification/scripts/shallow-embed-sweep`
+    (Guardian regenerated and validated locally as part of this
+    landing; others as needed).
+  - Retire or restate
+    `proofs/equivalence/Guardian.v::run_grantRole_1468_observed_behavior`
+    — left as-is per the upstream-fix instructions, so it currently
+    breaks the build by design.
+  - Close `run_grantRole_1359_equivalent` (currently `Admitted`) using
+    the projection-against-`AccessControl.grantRole` shape sketched in
+    its docstring — now possible with the sstore in place.
 
 Diagnosed 2026-05-30 while staging task #234 Phase 1 (Guardian
 grantRole equivalence). The bug: `shallow_embed.py` drops the
