@@ -3471,6 +3471,276 @@ Module GuardianEquivalence.
     all: try apply RunO.Pure.
   Qed.
 
+  (** ===== R053 Phase 3 — [fun__grantRole_704] case-split walker =====
+
+      [fun__grantRole_704(role, account)] is OZ's internal
+      [_grantRole]: it calls [_grantRole_1468] and on a successful
+      grant (account previously not a member) additionally calls
+      [fun_add_2085] to insert into the EnumerableSet at slot 1.
+
+      Shallow body (Guardian_shallow.v::fun__grantRole_704):
+
+          var__681 := 0
+          var__681 := zero_value_for_split_t_bool       (* = 0 *)
+          var_granted_684 := fun__grantRole_1468 (role, account)
+          let_state~ 'tt := Shallow.if_ (var_granted_684,
+              (* THEN branch (granted = 1, new member): *)
+              let _116 := mapping_index_access (1, role)  (* = kec(role,1) *)
+              let _ := convert_struct_AddressSet_to_ptr (_116)
+              let _ := fun_add_2085 (set_slot=kec(role,1), account)
+              M.pure (BlockUnit.Tt, tt),
+              (* FAIL branch (already member, no-op): tt *)
+              tt)
+            default~ var__681
+          var__681 := var_granted_684
+          M.pure (BlockUnit.Leave, var__681)
+          M.pure var__681
+
+      So the function's value is exactly the value returned by
+      [_grantRole_1468] (= 1 if newly granted, 0 if already a member),
+      and the [fun_add_2085] side-effect fires iff newly granted.
+
+      ===== Composable shape — single lemma with branch disjunction =====
+
+      Two natural sub-shapes (member / not-member) collapsed into one
+      lemma via a disjunction on the hasRole-pre-state. Phase 5
+      callers branch on the disjunct that matches their concrete
+      [was_member] reading and dispatch.
+
+      Post-state and [granted] both existential — Phase 5 supplies its
+      own [proj_sim_add_admin_not_in]-bridged equality if it needs a
+      pinned-shape post-state. The walker only exposes the operational
+      composition; the structural projection equality is deferred to
+      Phase 5 + the bridge lemma. *)
+
+  (** ----- Helper: AddressSet mapping_index_access (bytes32 → AddressSet) =====
+
+      Inside the THEN branch of [_grantRole_704], the slot for the
+      [_roleMembers] AddressSet is computed as
+      [mapping_index_access(_, slot=1, key=role)] which is the AddressSet
+      MIA leaf. The function body is identical to the
+      [Bytes32RoleData] / [Bytes32Uint256] MIA leaves (mstore key +
+      slot + keccak256 over a 64-byte window) and returns
+      [keccak256_tuple2 key slot]. *)
+  Module MappingIndexAccessBytes32AddressSet.
+
+    Lemma run_mapping_index_access codes env state_base
+        (slot : U256.t) (key : U256.t) (storage : SimulatedStorage.t)
+        (memory : SimulatedMemory.t)
+        (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+      let st := make_state env state_base memory storage in
+      exists w0' w1' rest',
+      {{? codes, env, Some st |
+        mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_AddressSet_ₓ2058_storage_ₓ_of_t_bytes32 slot key ⇓
+        Result.Ok (keccak256_tuple2 key slot)
+      | Some (make_state env state_base (w0' :: w1' :: rest') storage) ?}}.
+    Proof.
+      destruct H_mem as (w0 & w1 & rest & ->).
+      do 3 eexists.
+      unfold mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_AddressSet_ₓ2058_storage_ₓ_of_t_bytes32.
+      l. {
+        l. {
+          c. { apply run_convert_t_bytes32_to_t_bytes32. }
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_keccak256_tuple2. }
+          p.
+        }
+        p.
+      }
+      p.
+    Qed.
+
+  End MappingIndexAccessBytes32AddressSet.
+
+  (** ===== [fun__grantRole_1468] — already-member branch =====
+
+      Companion of [run_fun__grantRole_1468_at_proj_sim_not_member]
+      for the case where [account] is already a member of [role]. In
+      this branch:
+        1. hasRole returns 1.
+        2. iszero(1) = 0; cleanup_t_bool 0 = 0; switch δ = 0 → first
+           arm fires, which is a no-op that sets var__1437 := 0 and
+           emits [BlockUnit.Leave].
+        3. Storage and most of memory untouched; only the MIA scratch
+           cells of the hasRole pre-walk shift.
+        4. Returns [Result.Ok 0] with post-state's projection still
+           [proj_sim sim] (the function performs no sstore on this
+           branch). *)
+  Lemma run_fun__grantRole_1468_at_proj_sim_member
+      codes env state_base memory sim (role account : U256.t)
+      (H_account : 0 <= account < 2^160)
+      (H_member :
+         StorableValue.map_get_u256 (role_member_map sim) (role, account) = 1)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    exists w0' w1' rest',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__grantRole_1468 role account ⇓
+      Result.Ok 0
+    | Some (make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)) ?}}.
+  Proof.
+    (* hasRole pre-walk: in the member branch, returns 1. *)
+    pose proof (run_fun_hasRole_1292_at_proj_sim
+                  codes env state_base memory sim role account
+                  H_account H_mem) as Hhr.
+    cbv zeta in Hhr.
+    rewrite H_member in Hhr.
+    destruct Hhr as (w0_hr & w1_hr & rest_hr & Hhr).
+    exists w0_hr, w1_hr, rest_hr.
+    unfold fun__grantRole_1468.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.strong_let_, M.generic_let
+      | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.let_, M.generic_let
+      | |- {{? _, _, _ | M.do _ _ ⇓ _ | _ ?}} =>
+          unfold M.do
+      | |- {{? _, _, _ | Shallow.let_state _ _ ⇓ _ | _ ?}} =>
+          unfold Shallow.let_state
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_hasRole_1292 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hhr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.iszero, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_cleanup_t_bool_of_bool; left; reflexivity | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== [fun__grantRole_704] — R047 case-split walker (main) =====
+
+      [fun__grantRole_704] performs OZ's [_grantRole]:
+        1. Calls [fun__grantRole_1468] (the inner bool sstore + log4).
+        2. If newly granted (= 1), calls [fun_add_2085] on the slot-1
+           AddressSet to add [account] to the role's enumerable set.
+        3. Returns the boolean from [_grantRole_1468].
+
+      ===== Case-split shape =====
+
+      The lemma is structured as a disjunction on the sim's
+      [role_member_map] reading at [(role, account)] — exactly the
+      projection that [run_fun_hasRole_1292_at_proj_sim] computes.
+
+        - **Already-member branch** (member_map (role, account) = 1):
+          Fully closed internally. The walker dispatches via
+          [run_fun__grantRole_1468_at_proj_sim_member] (member-branch
+          companion to Phase 1's not-member walker), pins the
+          post-state to a concrete [make_state] shape with
+          unchanged [proj_sim sim], and walks the Shallow.if_'s
+          failure path (the THEN branch never fires because
+          var_granted_684 = 0). The function returns 0.
+
+        - **Not-a-member branch** (member_map (role, account) = 0):
+          Composable shape. The caller supplies a
+          [Hnotmem] witness — the entire function body's walk for the
+          not-member case — and Phase 3 dispatches via it.
+
+      ===== Why the not-member branch defers to the caller =====
+
+      Phase 1's [run_fun__grantRole_1468_at_proj_sim_not_member]
+      Qed's against an existential post-state (the log4 sub-block
+      leaves the final memory shape opaque to the outside). That
+      makes it impossible for this lemma to reach inside the
+      Shallow.if_ THEN branch and walk the AddressSet MIA + Phase 2
+      with concrete knowledge of the post-1468 memory — the next
+      mapping_index_access in the chain requires a 2-word-front
+      memory hypothesis, which the existential hides.
+
+      The composable resolution: Phase 5 (the outer assembly) is the
+      one with concrete state-threading control. It will either
+      strengthen Phase 1 with an explicit post-memory existential
+      witness, or re-walk Phase 1's body in-line, and assemble the
+      not-member walk that this lemma's [Hnotmem] hypothesis demands.
+
+      The already-member branch is "free" — Phase 5 only needs to
+      decide the disjunct via [hasRole], and this lemma closes the
+      member-branch composition end-to-end. *)
+  Lemma run_fun__grantRole_704_at_proj_sim
+      codes env state_base memory sim (role account : U256.t)
+      (H_account : 0 <= account < 2^160)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest)
+      (H_branch :
+         (* Already-member branch: state unchanged, returns 0. *)
+         StorableValue.map_get_u256 (role_member_map sim) (role, account) = 1
+         \/
+         (* Not-a-member branch: caller supplies the composed
+            not-member walk [Hnotmem] for the entire function body
+            (Phase 1 + AddressSet MIA + convert + Phase 2), pinning
+            the post-state to its [state_then] witness. *)
+         (StorableValue.map_get_u256 (role_member_map sim) (role, account) = 0
+          /\ exists state_full,
+              {{? codes, env,
+                  Some (make_state env state_base memory (proj_sim sim)) |
+                fun__grantRole_704 role account ⇓
+                Result.Ok 1
+              | state_full ?}})) :
+    exists state' granted,
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__grantRole_704 role account ⇓
+      Result.Ok granted
+    | state' ?}}.
+  Proof.
+    destruct H_branch as
+      [H_member | (H_not_member & state_full & Hnotmem)].
+    - (** ----- Already-member branch: walk internally ----- *)
+      (* _grantRole_1468 walker yields 0, state's proj_sim unchanged. *)
+      pose proof (run_fun__grantRole_1468_at_proj_sim_member
+                    codes env state_base memory sim role account
+                    H_account H_member H_mem) as Hgr1468.
+      destruct Hgr1468 as (w0_g & w1_g & rest_g & Hgr1468).
+      exists (Some (make_state env state_base (w0_g :: w1_g :: rest_g) (proj_sim sim))), 0.
+      unfold fun__grantRole_704.
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+             Shallow.let_state, Shallow.if_.
+      repeat (lazymatch goal with
+        | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+            unfold M.strong_let_, M.generic_let
+        | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+            unfold M.let_, M.generic_let
+        | |- {{? _, _, _ | M.do _ _ ⇓ _ | _ ?}} =>
+            unfold M.do
+        | |- {{? _, _, _ | Shallow.let_state _ _ ⇓ _ | _ ?}} =>
+            unfold Shallow.let_state
+        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+        | |- {{? _, _, _ |
+              LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+            c; [ unfold zero_value_for_split_t_bool;
+                 lu; repeat (lu || cu || p) | ]
+        | |- {{? _, _, _ |
+              LowM.Call (fun__grantRole_1468 _ _) _ ⇓ _ | _ ?}} =>
+            c; [ exact Hgr1468 | ]
+        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+            apply RunO.Pure
+        | |- _ => s
+        end).
+      all: cbn match.
+      all: try apply RunO.Pure.
+    - (** ----- Not-a-member branch: dispatch via [Hnotmem] ----- *)
+      exists state_full, 1. exact Hnotmem.
+  Qed.
+
   (** ----- Task #234, Phase 1 — OZ AccessControl mutator equivalence ----- *)
 
   (** ===== Bridging the Guardian sim to the AccessControl mock =====
