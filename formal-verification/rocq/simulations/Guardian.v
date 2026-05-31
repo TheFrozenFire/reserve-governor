@@ -185,6 +185,31 @@ Fixpoint remove_role (lst : list Address) (a : Address) : list Address :=
   | h :: t => if h =? a then remove_role t a else h :: remove_role t a
   end.
 
+(** ===== Per-role add helpers — sim-level grants =====
+
+    Each [add_X] returns a new sim with [add_role applied to the
+    appropriate role-list]. These are the projection-bridge entry
+    points used by the equivalence proof at slot 1+ (AccessControl
+    Enumerable._roleMembers). The unrolled triple-field record-update
+    shape matches the projection's per-list dispatch. *)
+Definition add_admin (s : State.t) (a : Address) : State.t := {|
+  State.admins                     := add_role s.(State.admins) a;
+  State.optimisticGuardians        := s.(State.optimisticGuardians);
+  State.optimisticGuardianManagers := s.(State.optimisticGuardianManagers);
+|}.
+
+Definition add_optimistic_guardian (s : State.t) (a : Address) : State.t := {|
+  State.admins                     := s.(State.admins);
+  State.optimisticGuardians        := add_role s.(State.optimisticGuardians) a;
+  State.optimisticGuardianManagers := s.(State.optimisticGuardianManagers);
+|}.
+
+Definition add_optimistic_guardian_manager (s : State.t) (a : Address) : State.t := {|
+  State.admins                     := s.(State.admins);
+  State.optimisticGuardians        := s.(State.optimisticGuardians);
+  State.optimisticGuardianManagers := add_role s.(State.optimisticGuardianManagers) a;
+|}.
+
 (** ===== RoleKind ===== *)
 (** OZ's role argument is an opaque bytes32 hash. The simulation
     collapses the three roles Guardian actually distinguishes into a
