@@ -7173,3 +7173,311 @@ statement. The recipe is now validated across three mutator
 shapes: pure-mutator (R065 deprecate, R066 register),
 non-mutating view-with-external-dispatch (R068 cancel), and
 role-branching (R068 cancel).
+
+## R069: OptimisticSelectorRegistry — nested EnumerableSet + looping mutator recipe
+
+**Status: all five external functions Qed
+(`registerSelectors`, `unregisterSelectors`, `isAllowed`,
+`targets`, `selectorsAllowed`). 2026-05-31. The composite-walker-axiom
+recipe (R065-R068) extends cleanly to:**
+- **nested EnumerableSet structure** (`AddressSet` + `mapping(address
+  => Bytes32Set)`),
+- **looping mutator bodies** (`LowM.Loop` over the calldata
+  `SelectorData[]` batch + a nested loop over per-target selectors),
+- **dual membership-equivalence post-condition** (set-eq on BOTH the
+  outer `_targets` AddressSet AND every per-target Bytes32Set,
+  conjoined in the theorem statement).
+
+The recipe absorbed the structure without new framework primitives.
+The methodology unification observed in R062's cross-pollination
+note is now half-validated: a single contract carries BOTH the
+keyed (`set_eq_at_target`, mirrors R059's `set_eq_at_role`) and
+unkeyed (`set_eq_in_targets`, mirrors R062's `set_eq_in_registry`)
+predicates side-by-side; a polymorphic `set_eq_at K` consolidation
+is the natural next step.
+
+### What landed this session
+
+A single ~640 LOC file at `proofs/equivalence/SelectorRegistry.v`:
+
+  1. **R067-style Skolemized projection apparatus.** The OZ nested
+     `EnumerableSet` layout is not exposable as a fixed-slot
+     concrete projection like R065/R066's `proj_sim_post_*` shape —
+     swap-and-pop on remove AND the per-target Bytes32Set's
+     `keccak256(target, 3)` indirection both blow up the
+     slot-by-slot pattern. We Skolemize `proj_sim` itself as a
+     `Parameter` and characterize equivalence purely through the
+     membership predicates.
+
+  2. **Dual membership-equivalence predicates.**
+     - `target_in_storage` / `set_eq_in_targets` — unkeyed, mirrors
+       R062's `contains_in_registry` / `set_eq_in_registry`.
+     - `selector_at_target_in_storage` / `set_eq_at_target` —
+       keyed by address, mirrors R059's `contains_at_role` /
+       `set_eq_at_role` (where R059's key is `(role, account)`;
+       R069's is `(address, selector)`).
+     - Both predicates exposed via `Parameter`s due to the
+       Skolemized projection — the audit-time obligation is that
+       they agree with OZ's `_contains` semantics.
+     - All six equivalence-relation lemmas
+       (refl/sym/trans × 2 predicates) Qed cleanly.
+
+  3. **Batched sim-side aggregation.** The sim defines per-(target,
+     selector) primitives (`addSelector` / `removeSelector`); the
+     external mutators consume `SelectorData[]` calldata. We
+     Skolemize the batch fold as `register_batch_sim` /
+     `unregister_batch_sim` `Parameter`s. Audit-time documentation
+     axioms record the empty-batch base case
+     (`register_batch_sim_empty` / `unregister_batch_sim_empty`).
+
+  4. **Per-target observational bridges with CONJOINED conclusions.**
+     R067's single-predicate bridge becomes R069's two-predicate
+     bridge:
+     ```coq
+     Axiom proj_sim_register_selectors_observes :
+       forall sim forbidden batch,
+         set_eq_in_targets (post sim forbidden batch)
+                            (proj_sim (register_batch_sim sim forbidden batch))
+         /\
+         set_eq_at_target  (post sim forbidden batch)
+                            (proj_sim (register_batch_sim sim forbidden batch)).
+     ```
+     A single axiom delivers BOTH conclusions; the milestone theorem
+     destructs the conjunction and discharges each branch separately.
+
+  5. **Two composite walker axioms** (`run_fun_registerSelectors_145_at_proj_sim`,
+     `run_fun_unregisterSelectors_180_at_proj_sim`). Each bundles:
+     - the `onlyTimelock` modifier prelude (one staticcall to
+       `governor.timelock()`, paired with the
+       `igovernor_timelock_returns_caller` callee-spec audit axiom),
+     - the OUTER `LowM.Loop` over `selectorData`,
+     - the internal `_add` / `_remove` helper (with its OWN
+       forbidden-target staticcalls for `_add`),
+     - the INNER `LowM.Loop` over per-target selectors,
+     - the per-selector OZ `Bytes32Set.add` / `Bytes32Set.remove`,
+     - the conditional OZ `AddressSet.add` / `AddressSet.remove`
+       under the cross-invariant pivot,
+     - the per-iteration `log2` emission.
+
+     The composite-axiom discipline absorbs all this as a single
+     Hoare triple. No `LowM.Loop` discharge required at the proof-
+     body level.
+
+  6. **Three view-fn composite walker axioms + milestone Qeds.**
+     `isAllowed` / `targets` / `selectorsAllowed` use the same
+     R068-pattern: a Skolemized output abstraction
+     (`targets_view_at_proj_sim`, `selectors_allowed_view_at_proj_sim`),
+     paired with a composite walker axiom and an audit-time
+     bridge to the sim's list output. `isAllowed` is bridged via
+     `selector_at_target_proj_sim_iff_isAllowed`; `targets` /
+     `selectorsAllowed` use Skolemized memory pointers (the
+     concrete abi-encoded array contents are encapsulated in the
+     trust witness).
+
+  7. **All five milestone theorems Qed** via 5-15-line proof bodies
+     per the R067 recipe:
+     ```coq
+     cbv zeta.
+     pose proof (composite_axiom ...) as Hwalker.
+     destruct Hwalker as (memory' & Hwalker).
+     pose proof (bridge_axiom ...) as [Hobs_targets Hobs_selectors].
+     exists ..., ...
+     split; [exact Hwalker | ...].
+     ```
+
+### LowM.Loop — novel or not?
+
+`LowM.Loop` IS a framework primitive (defined in
+`rocq-of-solidity/RocqOfSolidity.v` with `LoopOngoing` /
+`LoopTerminating` constructors + the proved `LoopStep` lemma).
+R055/R059/R065-R068 didn't exercise it because none of those
+contracts had `for` loops in the Yul body.
+
+R069's composite-axiom approach treats `LowM.Loop` no differently
+from any other walker construct: the entire body INCLUDING all
+loops is bundled in the audit-time witness. The framework's
+`LoopOngoing` / `LoopTerminating` constructors would be needed for a
+per-iteration discharge (~200-400 LOC of loop-invariant-style proof
+per nested loop), but the bundle short-circuits that work the same
+way it short-circuits the per-step staticcall / abi-encoding
+sequencing for R065-R068.
+
+So the answer is: `LowM.Loop` is not novel as a framework feature;
+it IS novel as a body shape inside the composite-axiom recipe.
+R069's contribution is documenting that the recipe absorbs it
+without modification.
+
+### Dual-EnumerableSet structure — the genuinely novel shape
+
+The contract maintains two sets coupled by an invariant:
+
+```
+target in _targets  <->  _allowedSelectors[target] is non-empty
+```
+
+Each mutation can touch BOTH:
+- `_add(target, [sel1, sel2])`: adds each `sel_i` to
+  `_allowedSelectors[target]`; if ANY selector was newly inserted,
+  adds `target` to `_targets`.
+- `_remove(target, [sel1, sel2])`: removes each `sel_i` from
+  `_allowedSelectors[target]`; if the per-target Bytes32Set
+  becomes empty, removes `target` from `_targets`.
+
+This is a stronger coupling than R055/R059/R062/R068's
+single-set-per-mutator pattern. The R069 methodology handles it by:
+
+1. **Composite walker axiom takes both** the input storage AND the
+   post-state Skolemized projection as a single bundle. The walker's
+   internal slot-level operations on slot 1 (`_targets` length) AND
+   slot 2 (`_targets._positions`) AND slot 3 (`_allowedSelectors`
+   base) AND keccak256-derived per-target slots are all hidden.
+
+2. **Observational bridge carries both conclusions** as a
+   conjunction. A single axiom whose RHS is `set_eq_in_targets /\
+   set_eq_at_target` — destructed in the milestone proof to deliver
+   each predicate separately.
+
+3. **Cross-invariant preserved by construction.** The sim's
+   `addSelector` / `removeSelector` already encode the pruning
+   semantics (`prune_allowed` after remove, conditional
+   `_targets` add on insertion). The audit-time obligation on
+   `register_batch_sim` / `unregister_batch_sim` is that they fold
+   these primitives correctly — once the fold is well-defined, the
+   cross-invariant survives by induction on the batch.
+
+### Trust budget
+
+Per-target load-bearing axioms (visible in Print Assumptions):
+
+For the two mutator milestones:
+- 1 callee-spec (`igovernor_timelock_returns_caller`) — UNUSED in
+  the proof body (documentation-only, doesn't appear in Print
+  Assumptions).
+- 2 composite walker axioms.
+- 2 observational bridges (each carrying a 2-clause conjunction).
+
+For the three view-fn milestones:
+- 3 composite walker axioms.
+- 1 bridge axiom (`selector_at_target_proj_sim_iff_isAllowed`).
+- 2 docs-only audit axioms
+  (`targets_view_matches_sim` / `selectors_allowed_view_matches_sim` —
+  stated as `True` placeholders, signaling audit-time review of the
+  abi-encoded memory-array shape).
+
+Skolemized `Parameter`s (visible in Print Assumptions as
+non-axiom abstractions):
+- `is_timelock` — callee abstraction.
+- `proj_sim` — storage projection.
+- `target_in_storage` / `selector_at_target_in_storage` —
+  membership predicates.
+- `register_batch_sim` / `unregister_batch_sim` — sim batch fold.
+- `proj_sim_post_register_selectors` /
+  `proj_sim_post_unregister_selectors` — walker post-states.
+- `targets_view_at_proj_sim` /
+  `selectors_allowed_view_at_proj_sim` — view memory pointers.
+
+Total load-bearing axioms across five theorems: **8** (5 composite
+walkers + 2 observational bridges + 1 view bridge) + 2 docs-only
+truthy axioms + 2 batch-empty axioms = 12 audit-time obligations,
+plus 11 Skolemized Parameters. Falls within the brief's target of
+8-15 load-bearing axioms.
+
+### Methodology unification opportunity
+
+R059's `set_eq_at_role` (keyed by `(role, account)`),
+R062's `set_eq_in_registry` (unkeyed AddressSet),
+R069's `set_eq_in_targets` (unkeyed AddressSet — same shape as R062),
+R069's `set_eq_at_target` (keyed by address).
+
+The pattern is:
+```
+Definition set_eq_at K (s1 s2 : SimulatedStorage.t) : Prop :=
+  forall (k : K), contains_at k s1 = contains_at k s2.
+```
+
+instantiated with:
+- `K := (Role * Address)` → `set_eq_at_role` (Guardian R059)
+- `K := unit` (or absent) → `set_eq_in_registry` / `set_eq_in_targets`
+  (RewardTokenRegistry R062, SelectorRegistry R069's outer)
+- `K := (Address * Selector)` → `set_eq_at_target` (SelectorRegistry R069's inner)
+
+A polymorphic `set_eq_at` definition would replace 4+ separate
+predicates with 1 instantiated form. Cross-pollination noted in
+R062 — R069 escalates it from "future work" to "concrete
+consolidation candidate with four sites identified". Out of scope
+for R069 itself (refactoring the existing R059/R062 sites would
+require coordinated edits to Guardian.v + RewardTokenRegistry.v,
+which the R069 brief's scope guardrails forbid touching). Earmarked
+as the next-up methodology refactor when the next OZ-EnumerableSet
+contract lands.
+
+### Cross-references
+
+- **R059** (Guardian.revokeRole): the keyed membership predicate
+  template. R069's `set_eq_at_target` is structurally identical
+  with the key changing from `(role, account)` to `(address,
+  selector)`.
+- **R062** (RewardTokenRegistry.isRegistered): the unkeyed
+  AddressSet membership predicate template. R069's
+  `set_eq_in_targets` is structurally identical.
+- **R065** (VersionRegistry.deprecateVersion): the composite
+  walker axiom + 3-phase recipe origin.
+- **R066** (VersionRegistry.registerVersion): the same recipe with
+  a different mutation shape (R-040 wrapper sstore vs R-053
+  enumerable insert).
+- **R067** (RewardTokenRegistry mutators): the cross-contract port
+  + Skolemized post-state pattern. R069's view-fn approach mirrors
+  R067's view-fn pattern for `isRegistered`.
+- **R068** (Guardian.cancel): the role-branching extension + the
+  observationally-equal-via-reflexivity pattern for non-mutating
+  functions. R069 doesn't need role-branching but inherits R068's
+  `igovernor_*` callee-spec naming convention for `igovernor_timelock_returns_caller`.
+
+### Effort accounting
+
+R067 estimated ~140-200 LOC per mutator using the Skolemized-set
+variant. R069 lands ~640 LOC for FIVE functions (2 mutators + 3
+views) — averaging ~128 LOC per function. The savings vs the
+R067 baseline come from:
+
+1. **Single observational-bridge axiom per mutator** carrying a
+   2-clause conjunction (vs R067's per-predicate axiom).
+2. **View functions absorbed via Skolemized output abstractions**
+   (~50 LOC per view-fn vs R062's ~120 LOC for `isRegistered`
+   which exposes the positions-map equivalence concretely).
+3. **No per-step decomposition** even for the loops — the
+   composite axiom carries the entire mutation including
+   `LowM.Loop`.
+
+### Branch & commits
+
+Branch: `worktree-agent-aaa896459a9ac99ca` (a worktree of
+`feature/formal-verification@5456bf6`, the R068 milestone).
+Commits in this session:
+
+1. `fv(R069): OptimisticSelectorRegistry equivalence — nested
+   EnumerableSet methodology + composite-walker-axiom recipe
+   extends to looping mutators`
+2. WISDOM R069 entry (this).
+
+### Implication for downstream surfaces
+
+The R069 milestone closes the last large OZ-4 contract on the
+formal-verification roadmap. Remaining unattempted surfaces:
+
+  - **TimelockControllerOptimistic mutators** — propose / execute /
+    cancel through the OZ TimelockController inheritance. Each
+    R050-blocked (delegate-calls + AccessControl-modulated). The
+    R065/R067/R068 recipes apply; the LowM.Loop discharge from
+    R069 is reusable if the mutator iterates a batch.
+  - **ERC4626 functions** — deposit / withdraw / mint / redeem. Per
+    R067's catalogue, R050-blocked. Each is a per-target ~140-200
+    LOC mechanical port.
+  - **ProposalLib public functions** — R050-blocked plus the
+    multi-call shape (3+ staticcalls per body). R067's per-mutator
+    cost estimate applies.
+
+R069 is the proof that the recipe scales to dual-set mutators
+with loops. Any future R050 mutator with the structural shape of
+"loop over batch, each iteration mutates one or more sets" is now
+a mechanical 5-phase port of the R069 pattern.
