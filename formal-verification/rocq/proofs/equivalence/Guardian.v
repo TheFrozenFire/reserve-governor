@@ -730,6 +730,37 @@ Module GuardianEquivalence.
     all: apply RunO.Pure.
   Qed.
 
+  (** ===== Caller leaf: [fun__msgSender_3197] =====
+
+      The OZ [_msgSender()] hook in non-meta-tx contracts is just
+      [msg.sender], encoded in the shallow form as the [Stdlib.caller]
+      primitive. The function's prelude initializes a zero-value
+      address local and immediately overwrites it with [caller], then
+      returns. Closes by stepping the [LetUnfold] / [CallUnfold] chain
+      and discharging [Stdlib.caller] with [pr] (RunO.Primitive). *)
+  Lemma run_fun__msgSender_3197 codes env state :
+    {{? codes, env, Some state |
+      fun__msgSender_3197 ⇓ Result.Ok env.(Environment.caller)
+    | Some state ?}}.
+  Proof.
+    unfold fun__msgSender_3197.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_address _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_address;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ | LowM.Call Stdlib.caller _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.caller; pr; p | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
   (** ----- Task #234, Phase 1 — OZ AccessControl mutator equivalence ----- *)
 
   (** ===== Bridging the Guardian sim to the AccessControl mock =====
