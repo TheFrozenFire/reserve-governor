@@ -399,4 +399,190 @@ Module VersionRegistryEquivalence.
       end).
   Qed.
 
+  (** ----- Phase 3.1 (task #227) — getter_fun_deployments_36 equivalence -----
+
+      Storage layout reminder:
+
+        slot 0: mapping(bytes32 => IReserveOptimisticGovernorDeployer) deployments
+        slot 1: mapping(bytes32 => bool) isDeprecated
+        slot 2: bytes32 latestVersion
+
+      The deployments view reads slot 0, keyed by versionHash. The
+      stored value is an address (160-bit) packed into the 256-bit
+      storage word. The Yul body's [cleanup_from_storage_t_contract]
+      masks the top 96 bits via [Z.land v 0xfff..fff] (40 hex digits).
+
+      Honest equivalence: we return the masked value verbatim. Dropping
+      the mask would require a sim-level invariant that every
+      [deployer] in [history] fits in 160 bits — that's an unrelated
+      strengthening that belongs in a [Valid.address_well_formed]
+      predicate, not this proof. *)
+
+  (** ----- MappingIndexAccess port for bytes32→contract -----
+
+      Identical Yul body to the bytes32→bool case in
+      [MappingIndexAccessBytes32Bool], just a different fully-qualified
+      function name. We re-port verbatim so the walker's `eapply
+      RunO.Call; [exact Hmia | ...]` step matches the correct symbol. *)
+  Module MappingIndexAccessBytes32Contract.
+
+    Lemma run_mapping_index_access codes env state_base
+        (slot : U256.t) (key : U256.t) (storage : SimulatedStorage.t)
+        (memory : SimulatedMemory.t)
+        (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+      let st := make_state env state_base memory storage in
+      exists w0' w1' rest',
+      {{? codes, env, Some st |
+        mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387_ₓ_of_t_bytes32 slot key ⇓
+        Result.Ok (keccak256_tuple2 key slot)
+      | Some (make_state env state_base (w0' :: w1' :: rest') storage) ?}}.
+    Proof.
+      destruct H_mem as (w0 & w1 & rest & ->).
+      do 3 eexists.
+      unfold mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387_ₓ_of_t_bytes32.
+      l. {
+        l. {
+          c. { apply run_convert_t_bytes32_to_t_bytes32. }
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_keccak256_tuple2. }
+          p.
+        }
+        p.
+      }
+      p.
+    Qed.
+
+  End MappingIndexAccessBytes32Contract.
+
+  (** ----- Address-path leaves -----
+
+      The cleanup applies a 160-bit mask: [Z.land v 0xfff..fff] with 40
+      hex digits (160 bits). Unlike the bool case, we don't simplify
+      the mask away — see header comment. *)
+
+  Definition ADDRESS_MASK : Z := 0xffffffffffffffffffffffffffffffffffffffff.
+
+  Lemma run_cleanup_from_storage_t_contract codes env state v :
+    {{? codes, env, Some state |
+      cleanup_from_storage_t_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387 v ⇓
+      Result.Ok (Z.land v ADDRESS_MASK)
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_from_storage_t_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_extract_from_storage_value_dynamict_contract_offset_zero
+      codes env state v :
+    {{? codes, env, Some state |
+      extract_from_storage_value_dynamict_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387 v 0 ⇓
+      Result.Ok (Z.land v ADDRESS_MASK)
+    | Some state ?}}.
+  Proof.
+    unfold extract_from_storage_value_dynamict_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387,
+           shift_right_unsigned_dynamic,
+           cleanup_from_storage_t_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387.
+    lu. repeat (lu || cu || p). s.
+    apply RunO.PureEq; [|reflexivity].
+    unfold Pure.and, Pure.shr, Pure.mul. simpl.
+    rewrite Z.div_1_r. reflexivity.
+  Qed.
+
+  (** ----- sload + read-from-storage wrappers for deployments -----
+
+      Same structural shape as [run_sload_isDeprecated_at_proj_sim],
+      but indexed at slot 0 (deployments) instead of slot 1
+      (isDeprecated). The address mask is preserved in the expected
+      value. *)
+  Lemma run_sload_deployments_at_proj_sim
+      codes env state_base memory sim key :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      Stdlib.sload (keccak256_tuple2 key 0) ⇓
+      Result.Ok (StorableValue.map_get_u256
+                   (deployments_map sim.(VersionRegistry.State.history)) key)
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    apply (Storage.run_sload_map_u256 (proj_sim sim) 0
+             (deployments_map sim.(VersionRegistry.State.history)) key).
+    apply proj_sim_deployments.
+  Qed.
+
+  Lemma run_read_deployments_at_proj_sim
+      codes env state_base memory sim key :
+    let v := StorableValue.map_get_u256
+               (deployments_map sim.(VersionRegistry.State.history)) key in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      read_from_storage_split_dynamic_t_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387
+        (keccak256_tuple2 key 0) 0 ⇓
+      Result.Ok (Z.land v ADDRESS_MASK)
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_storage_split_dynamic_t_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387.
+    lu. l. { c. { apply run_sload_deployments_at_proj_sim. }
+             c. { apply run_extract_from_storage_value_dynamict_contract_offset_zero. }
+             apply RunO.Pure. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** ----- Main theorem: deployments view equivalence -----
+
+      Walks the body:
+        1. let slot := 0; let offset := 0.
+        2. mapping_index_access(slot=0, key) → keccak256_tuple2 key 0.
+        3. read_from_storage_split_dynamic_t_contract(slot, offset) →
+           Z.land (map_get_u256 deployments_map key) ADDRESS_MASK.
+        4. M.pure ret_address. *)
+  Theorem run_deployments_equivalent_scaffold
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : VersionRegistry.State.t) (key : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_key : U256.Valid.t key)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    let stored := StorableValue.map_get_u256
+                    (deployments_map sim.(VersionRegistry.State.history)) key in
+    let expected := Z.land stored ADDRESS_MASK in
+    exists state',
+    {{? codes, env, Some state |
+      ReserveOptimisticGovernanceVersionRegistry_271
+        .ReserveOptimisticGovernanceVersionRegistry_271_deployed
+        .getter_fun_deployments_36 key ⇓
+      Result.Ok expected
+    | Some state' ?}}.
+  Proof.
+    intros state stored expected.
+    pose proof (MappingIndexAccessBytes32Contract.run_mapping_index_access
+                  codes env state_base 0 key (proj_sim sim) memory H_mem) as Hmia.
+    destruct Hmia as (w0 & w1 & rest & Hmia).
+    eexists.
+    cbv zeta.
+    unfold getter_fun_deployments_36.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387_ₓ_of_t_bytes32 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call (read_from_storage_split_dynamic_t_contractₓ_IReserveOptimisticGovernorDeployer_ₓ387 _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ apply run_read_deployments_at_proj_sim | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
+
 End VersionRegistryEquivalence.

@@ -255,14 +255,18 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                         now fully equivalence-closed end-to-end.
                         Legacy [storage_matches_sim]-form theorem
                         retired (superseded by [make_state] form).
-      VersionRegistry   isDeprecated equivalence theorem
-                        (run_isDeprecated_equivalent_scaffold)
-                        closes with Qed. Built on a bytes32→bool
-                        mapping_index_access port + bool-path
-                        cleanup chain (cleanup_from_storage_t_bool,
-                        shift_right_unsigned_dynamic_zero, extract,
-                        sload-at-proj_sim, read-at-proj_sim). All
-                        intermediate leaves close cleanly.
+      VersionRegistry   isDeprecated AND deployments equivalence
+                        theorems both close with Qed. The deployments
+                        view ([run_deployments_equivalent_scaffold])
+                        ports the bytes32→bool MIA template to
+                        bytes32→contract; the cleanup chain returns
+                        [Z.land stored ADDRESS_MASK] (160-bit) as the
+                        canonical expected value. Latest sim-level
+                        invariant strengthening (Valid.deployer_well_
+                        formed: every deployer < 2^160) could drop
+                        the mask, but that's an unrelated address-
+                        well-formedness story rather than an
+                        equivalence story.
       Guardian          hasRole view equivalence
                         (run_hasRole_equivalent) closes with Qed.
                         Built on TWO nested mapping_index_access
