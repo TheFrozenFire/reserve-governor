@@ -2273,3 +2273,78 @@ walkers against the CPS shape from the start) if a future
 contract surfaces the error genuinely. Cross-reference with
 [[R035]] (the YulSwitch surface fix) — these are sibling
 generator-side hardenings.
+
+## R042: `M.monadic` diagnostic — the "object of type ident" trap is solved
+
+When `[[ e ]]` contains an unresolved identifier (a missing
+primitive Definition, a misspelled function name, a forward
+reference, or a missing Require Import), Coq previously surfaced
+the failure as:
+
+```
+Error: Must evaluate to a closed term
+offending expression: e
+this is an object of type ident
+```
+
+This is the diagnostic shape that misled WISDOM R041's first-pass
+diagnosis for hours.  The "ident" is M.monadic's Ltac argument
+name leaking through `exact` when [type of e] can't elaborate the
+expression.  Every kind of unresolved-identifier error produces
+this *identical* message — there's nothing distinguishing a
+missing Yul primitive from a typo from a forward reference.
+
+### Fix landed (commit 754592d34f on
+`TheFrozenFire/rocq-of-solidity:integration`)
+
+`M.monadic` is now guarded by a `tryif (type of e) then ... else
+fail 100 ...` wrapper.  On the success path: zero behaviour change.
+On the failure path: the cryptic `ident` message is replaced with
+a clear `Tactic failure` that names the two most common causes
+(missing Require Import / missing primitive Definition) and points
+at the canonical fix location.
+
+The empirical effect:
+
+```
+Before:
+  Error: Must evaluate to a closed term
+  offending expression: e
+  this is an object of type ident
+
+After:
+  Tactic failure: M.monadic: the expression inside [[ ... ]]
+  cannot be type-checked.  Most likely cause: an identifier used
+  inside the brackets has no Definition in scope.  Common cases:
+  (1) a missing Require Import for a Module that defines the
+  identifier; (2) a Yul primitive that rocq-of-solidity doesn't
+  yet model — add it next to loadimmutable / memoryguard in
+  simulations/RocqOfSolidity.v.  See WISDOM R041 for the
+  linkersymbol case study.
+```
+
+Any future R041-class bug should take seconds to diagnose instead
+of hours.  Multi-agent workflows benefit doubly: every agent that
+hits this error in the future gets pointed at the real cause
+instead of running the same bisection ladder from scratch.
+
+### Companion finding: Stdlib primitive coverage is complete
+
+A defensive sweep cross-checked every standard Yul EVM
+instruction (arithmetic, comparison, environment, block,
+storage/memory, logging, system, object-mode) against
+`simulations/RocqOfSolidity.v`'s `Stdlib` module.  Every primitive
+the generator can emit is defined, modulo the rename convention
+for Coq reserved words (`mod` → `mod_`, `return` → `return_`).
+Notably included: `loadimmutable`, `setimmutable`, `linkersymbol`
+(the R041 fix), `memoryguard`, `dataoffset`, `datasize`,
+`datacopy`.
+
+If a future contract surfaces another unbound-identifier error
+inside `[[ ]]`, the M.monadic diagnostic will catch it — but
+based on this sweep, the cause won't be another missing standard
+Yul primitive.  The cause will be either: (a) a generator
+emission for a non-standard / object-level construct
+(`verbatim_*`, inline-assembly bytes blocks), or (b) a typo in
+hand-written proof code, or (c) a missing Require Import.  The
+M.monadic error message covers all three.
