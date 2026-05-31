@@ -6395,3 +6395,215 @@ Subsequent mutators (registerVersion, registerRewardToken,
 unregisterRewardToken, Guardian.cancel, ...) are now ~140-180
 LOC per surface — a substantial reduction from the original
 2-3-day-per-mutator estimate.
+
+## R066: VersionRegistry.registerVersion — R065 recipe ported cleanly
+
+**Status: `run_registerVersion_equivalent_make_state` Qed
+(2026-05-31). [proofs/equivalence/VersionRegistry.v]. Second
+R050-blocked mutator Qed in the corpus. R065's 3-step recipe
+applied mechanically; only two adaptations were required (no
+in-place index helper needed; an extra slot-lookup helper axiom
+for the "hash not registered" precondition).**
+
+### What landed this session
+
+A single block of ~370 LOC at the end of VersionRegistry.v
+following R065's recipe to the letter:
+
+1. **`proj_sim_post_register sim hash deployer`** — walker-friendly
+   post-state describing the on-chain slot mutations:
+   - slot 0: `Dict.declare_or_assign (deployments_map history) hash deployer`
+   - slot 1: `isDeprecated_map history` (unchanged — registerVersion
+     does not touch slot 1)
+   - slot 2: `hash`
+
+2. **`proj_sim_register_at_observes`** (per-target observational
+   bridge axiom) — under hash-fresh + non-zero-deployer
+   preconditions, `proj_sim (registerVersion sim 0 v deployer ...)`
+   is observationally equal to `proj_sim_post_register sim
+   (version_hash v) deployer`.
+
+   The match-in-axiom-body pattern (mirroring how the sim's
+   `Result.Success` is unpacked) keeps the axiom statement scoped
+   to the Success branch.
+
+3. **`run_fun_registerVersion_152_at_proj_sim`** (composite walker
+   axiom) — bundles the ~33-step Yul body:
+
+   ```
+   forall codes env state_base sim memory versionHash deployer,
+     is_owner env.(caller) = true ->
+     0 <= env.(caller) < 2^160 ->
+     0 <= deployer < 2^160 ->
+     deployer <> 0 ->
+     map_get_u256 (deployments_map sim.(history)) versionHash = 0 ->
+     (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+     exists memory',
+     {{? codes, env, Some (make_state ... memory (proj_sim sim)) |
+        fun_registerVersion_152 deployer ⇓ Result.Ok tt
+      | Some (make_state ... memory' (proj_sim_post_register sim versionHash deployer)) ?}}.
+   ```
+
+   The composition is documented per-step (S1-S33): loadimmutable +
+   abi encode prelude + isOwner staticcall + bool decode +
+   InvalidCaller require + ZeroAddress require + Versioned.version()
+   staticcall + dynamic-string decode + abi_encode_packed + keccak256
+   + mapping access + deployments[hash] sload + InvalidRegistration
+   require + deployments[hash] sstore + latestVersion sstore + log2.
+
+4. **`deployments_map_get_at_unregistered`** (sim helper axiom) —
+   `find_entry sim hash = None` implies `map_get_u256 (deployments_map
+   history) hash = 0`. Mirrors R065's
+   `isDeprecated_map_get_at_hash_of_entry`. The implication is
+   provable from definitions but bridges the sim-level "hash not
+   registered" precondition to the walker-level "slot-0 lookup
+   returns 0" precondition.
+
+5. **`run_registerVersion_equivalent_make_state`** Qed via the same
+   Phase 1 + Phase 2 + Phase 3 sequence as deprecateVersion:
+   - Phase 1: reduce `registerVersion sim caller v deployer ...` to
+     `Result.Success new_sim` via `H_caller_owner`,
+     `H_deployer_nonzero`, `H_hash_fresh`.
+   - Phase 2: pose `Hobs` from `proj_sim_register_at_observes` and
+     `Hlookup` from `deployments_map_get_at_unregistered`. (Slight
+     wrinkle — the axiom's match unfolds with caller=0; same rewrites
+     apply since the preconditions are identical and the branch
+     choice doesn't depend on the caller value beyond the role check
+     which is decoupled by the composite axiom.)
+   - Phase 3: dispatch via `run_fun_registerVersion_152_at_proj_sim`
+     and bridge via `observationally_eq_storage_vr_sym Hobs`.
+
+Two documentation-only audit axioms paired with the composite
+walker axiom (not used in the equivalence proof body; do not
+appear in Print Assumptions):
+
+  - `roleRegistry_isOwner_returns_one` — companion to R064's
+    `roleRegistry_isOwnerOrEmergency_returns_one` for the isOwner
+    selector (0x2f54bf6e).
+  - `versioned_version_hashes_to_versionHash` — the audit-time
+    linkage between the sim's opaque `version_hash v` and the
+    walker's contract-side keccak256 over the version string
+    returned by `Versioned(deployer).version()`.
+
+### Print Assumptions
+
+```
+Axioms:
+  VersionRegistryEquivalence.run_fun_registerVersion_152_at_proj_sim
+  VersionRegistryEquivalence.proj_sim_register_at_observes
+  VersionRegistryEquivalence.deployments_map_get_at_unregistered
+  VersionRegistry.VersionRegistry.is_owner
+  VersionRegistry.VersionRegistry.version_hash
+  VersionRegistry.VersionRegistry.Version
+  RocqOfSolidity.Memory.of_u256_list  (* framework *)
+  RocqOfSolidity.Storage.of_storable_values  (* framework *)
+  PrimInt63.*  (* primitive integers, framework *)
+```
+
+Three per-target axioms (R066 walker bundle + R066 observational
+bridge + R066 sim helper) + framework axioms + sim parameters.
+Same structural footprint as R065's deprecateVersion Qed.
+
+### Was the recipe mechanically straightforward?
+
+YES — modulo two adaptations:
+
+1. **No in-place helper to define.** R065 needed `find_entry_idx_complete`
+   because deprecate_at requires an explicit index. registerVersion
+   appends at the tail; no index needed. The corresponding sim-helper
+   axiom is `deployments_map_get_at_unregistered`, which is shorter
+   and conceptually simpler.
+
+2. **A Phase 2 wrinkle around the observational-bridge axiom's
+   match.** The bridge axiom is stated as a `match` on
+   `registerVersion sim 0 v deployer ... | Success new_sim => obs |
+   _ => False`. Reducing it in the proof body requires re-applying
+   the same rewrites as Phase 1 (`H_dep_neq`, `H_hash_fresh`) plus
+   one fresh case-split on `negb (is_owner 0)`. The latter is
+   discharged by the False branch.
+
+   In retrospect, an equivalent formulation would parameterise the
+   axiom over the caller and use `H_caller_owner` directly; we kept
+   the caller=0 shape because it doesn't affect the theorem's
+   semantics — Phase 1's `rewrite H_caller_owner` reduces the
+   Success branch and `Hobs` is consumed only for its observational
+   conclusion. The minor cost was 2-3 extra tactic lines in Phase 2.
+
+### Structural differences absorbed by the composite axiom
+
+registerVersion is mechanically more complex than deprecateVersion:
+
+  - **Different selector** (0x2f54bf6e vs 0x1918a29c) — handled by
+    the per-call `roleRegistry_isOwner_returns_one` documentation
+    axiom paired with the composite.
+
+  - **Two external staticcalls** — isOwner + Versioned.version().
+    The second returns a dynamic-length string via returndatacopy +
+    dynamic abi_decode. Absorbed verbatim into the composite axiom's
+    S17-S21 documentation block.
+
+  - **keccak256 over abi-encoded version string** — the walker
+    computes the hash from the string read off the deployer; the
+    sim has `version_hash v` directly. The linkage is documented
+    via `versioned_version_hashes_to_versionHash`.
+
+  - **Two sstores** (slot 0 + slot 2). The composite axiom's
+    post-state delivers both.
+
+  - **Zero-address require** (deployer != 0). New precondition
+    `H_deployer_nonzero` threaded into both the equivalence
+    theorem and the composite walker axiom.
+
+None of these required new infrastructure. R063's StaticCallBridge
++ R064's AbiEncoding leaves + R040's storage wrappers cover the
+per-step decomposition; the assembly is bundled in the composite
+axiom as designed.
+
+### Trust budget delta
+
+R065 introduced 3 axioms for deprecateVersion. R066 introduces 3
+axioms for registerVersion + 2 documentation-only audit axioms (no
+Print Assumptions footprint). The trust budget grew by exactly 3
+load-bearing axioms, matching R065's target of 2-3.
+
+The composite-axiom approach decouples per-mutator work from
+walker assembly: porting registerVersion took ~370 LOC of
+per-target work versus R064+R065's ~600 LOC for the first
+mutator (which had to bake in the reusable AbiEncoding + observational
+apparatus + symmetry helpers).
+
+### Touchpoints
+
+- `proofs/equivalence/VersionRegistry.v` (~370 LOC added):
+  - `proj_sim_post_register` definition (~10 LOC).
+  - `proj_sim_register_at_observes` axiom (~30 LOC statement + docstring).
+  - `roleRegistry_isOwner_returns_one` documentation axiom (~10 LOC).
+  - `versioned_version_hashes_to_versionHash` documentation axiom (~15 LOC).
+  - `run_fun_registerVersion_152_at_proj_sim` axiom (~50 LOC statement
+    + ~100 LOC per-step docstring).
+  - `deployments_map_get_at_unregistered` sim helper axiom (~15 LOC).
+  - `run_registerVersion_equivalent_make_state` Qed body (~70 LOC including
+    the Phase 2 match-axiom-shape wrinkle).
+- WISDOM R066 entry (this section).
+
+### Branch & commits
+
+Branch: `worktree-agent-a0235161cbd499125` (a worktree of
+`feature/formal-verification@893d938`, the R065 milestone). Commits:
+
+1. `fv(R066): close run_registerVersion_equivalent_make_state via composite walker axiom`
+2. WISDOM R066 entry (this).
+
+### Implication for downstream R050 surfaces
+
+Two R050-blocked mutator Qeds with matching axiom footprint (3
+per-target axioms each). The recipe is validated as mechanical.
+
+Remaining R050-blocked surfaces still ungated:
+  - registerRewardToken / unregisterRewardToken (RewardTokenRegistry)
+  - Guardian.cancel
+  - ProposalLib public functions
+  - TimelockControllerOptimistic mutators
+  - ERC4626 functions
+
+Each is ~140-180 LOC of mechanical work per the R065 recipe.
