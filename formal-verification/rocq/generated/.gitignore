@@ -10,6 +10,11 @@
 # Generated Yul IR
 *.v
 
+# OpenZeppelin sweep outputs (--include-oz) — gitignored as a whole
+# subtree since the .v rule above already covers their files, but
+# we list it explicitly so the directory's intent is obvious.
+oz/
+
 # Compiled Coq artifacts that show up here if files are built
 *.vo
 *.vos

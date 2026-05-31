@@ -11,12 +11,25 @@
 # working tree but its .v files are gitignored — regenerate
 # locally before building any equivalence-proof tier.
 #
+# With --include-oz, also sweep the curated allowlist of OpenZeppelin
+# files the governor actually imports. OZ outputs are written to
+#
+#   formal-verification/rocq/generated/oz/<RelPath>.v
+#
+# preserving the OZ source tree's structure (so e.g.
+# `@openzeppelin/contracts/access/AccessControl.sol` becomes
+# `rocq/generated/oz/contracts/access/AccessControl.v`) and avoiding
+# name collisions with our own contracts. The OZ sweep is expected to
+# surface shallow_embed.py gaps — see
+# `formal-verification/notes/shallow_embed_oz_gaps.md`.
+#
 # Per-contract diagnostic logs and the pass/fail summary go to a
 # fresh temp dir (or $LOG_DIR if set) and are removed after the
 # summary prints unless --keep-logs is passed.
 #
 # Usage:
-#   bash formal-verification/scripts/ir-rocq-coverage [--keep-logs] [--clean]
+#   bash formal-verification/scripts/ir-rocq-coverage \
+#        [--keep-logs] [--clean] [--include-oz]
 #
 # Flags:
 #   --keep-logs   keep the per-contract .log files in $LOG_DIR
@@ -24,6 +37,11 @@
 #   --clean       remove any existing rocq/generated/*.v before
 #                 regenerating. Useful when contracts have been
 #                 renamed or removed so stale outputs don't linger.
+#                 With --include-oz, also wipes rocq/generated/oz/.
+#   --include-oz  in addition to the governor sweep, sweep the
+#                 curated OpenZeppelin allowlist (the files our
+#                 contracts directly import). Pass/fail is reported
+#                 in a separate OZ section of the summary.
 #
 # Env:
 #   GENERATED_DIR   where to write the .v outputs.
@@ -43,11 +61,13 @@ LOG_DIR="${LOG_DIR:-/tmp/ir_rocq_sweep.$$}"
 
 keep_logs=0
 clean=0
+include_oz=0
 for arg in "$@"; do
   case "$arg" in
     --keep-logs)   keep_logs=1 ;;
     --keep-output) keep_logs=1 ;;  # back-compat
     --clean)       clean=1 ;;
+    --include-oz)  include_oz=1 ;;
     *) echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
@@ -58,24 +78,29 @@ if [[ $clean -eq 1 ]]; then
   # Strip every previously-generated .v output, but preserve the
   # directory's checked-in metadata (.gitignore, README.md).
   find "$GENERATED_DIR" -maxdepth 1 -type f -name '*.v' -delete
+  # And wipe the OZ subtree if it exists — it's gitignored entirely.
+  rm -rf "$GENERATED_DIR/oz"
 fi
 
 summary="$LOG_DIR/summary.tsv"
-printf 'result\texit\tsecs\tlines\tfile\tout_path\tfirst_error\n' > "$summary"
+printf 'tier\tresult\texit\tsecs\tlines\tfile\tout_path\tfirst_error\n' > "$summary"
 
 cd "$REPO_TREE"
 
-# Candidate set: any .sol declaring a contract or library, minus pure
-# interfaces. We compile each in isolation to surface per-file issues
-# (a project-wide compile masks them).
-while IFS= read -r f; do
-  # Output file: <ContractName>.v keyed off the source's basename.
-  # Solidity convention is one contract/library per file with the
-  # filename matching the type name, so this is unambiguous.
-  src_base="$(basename "$f" .sol)"
-  out_path="$GENERATED_DIR/${src_base}.v"
-  log="$LOG_DIR/$(echo "$f" | tr '/' '_').log"
+# run_one <tier> <input.sol> <out_path>
+#
+# Compiles a single .sol through `solc-rocq --ir-rocq` and records
+# the outcome in $summary. tier is "gov" or "oz" so the summary can
+# split the two cohorts.
+run_one() {
+  local tier="$1"
+  local f="$2"
+  local out_path="$3"
+  local log
+  log="$LOG_DIR/${tier}__$(echo "$f" | tr '/' '_').log"
+  mkdir -p "$(dirname "$out_path")"
 
+  local t0 t1 dur lines rc res err
   t0=$(date +%s)
   set +e
   "$SOLC_ROCQ" --ir-rocq "$f" >"$out_path" 2>"$log"
@@ -94,16 +119,89 @@ while IFS= read -r f; do
     # leave a stale file in the generated tree.
     rm -f "$out_path"
   fi
-  printf '%s\t%d\t%d\t%s\t%s\t%s\t%s\n' "$res" "$rc" "$dur" "$lines" "$f" "$out_path" "$err" >> "$summary"
-  printf '%-4s rc=%-3d t=%-3ds lines=%-7s %s\n' "$res" "$rc" "$dur" "$lines" "$f"
+  printf '%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\n' \
+    "$tier" "$res" "$rc" "$dur" "$lines" "$f" "$out_path" "$err" >> "$summary"
+  printf '[%s] %-4s rc=%-3d t=%-3ds lines=%-7s %s\n' \
+    "$tier" "$res" "$rc" "$dur" "$lines" "$f"
+}
+
+# --- Tier 1: governor contracts ---
+#
+# Candidate set: any .sol declaring a contract or library, minus pure
+# interfaces. We compile each in isolation to surface per-file issues
+# (a project-wide compile masks them).
+while IFS= read -r f; do
+  # Output file: <ContractName>.v keyed off the source's basename.
+  # Solidity convention is one contract/library per file with the
+  # filename matching the type name, so this is unambiguous.
+  src_base="$(basename "$f" .sol)"
+  out_path="$GENERATED_DIR/${src_base}.v"
+  run_one gov "$f" "$out_path"
 done < <(grep -lE '^(contract|library)[[:space:]]+[A-Z]' contracts -r 2>/dev/null \
            | grep -v interfaces | sort)
 
-pass=$(grep -c '^PASS' "$summary" || true)
-fail=$(grep -c '^FAIL' "$summary" || true)
-tot=$(( $(wc -l < "$summary") - 1 ))
+# --- Tier 2: curated OpenZeppelin allowlist (opt-in) ---
+#
+# These are the OZ files our contracts directly import (see grep over
+# `contracts/**/*.sol` for `import ... from "@openzeppelin/..."`).
+# Pure-interface files (IERC20, IGovernor, IVotes, ...) are omitted —
+# solc emits no IR for them — leaving the concrete contracts and
+# libraries we actually pull in. Transitive deps are resolved by solc
+# at compile time and don't need to appear here.
+#
+# Versions are pinned via package.json + pnpm-lock.yaml; see
+# `formal-verification/notes/oz_version_pin.md` for the drift model.
+OZ_ALLOWLIST=(
+  # @openzeppelin/contracts (5.4.0)
+  node_modules/@openzeppelin/contracts/access/AccessControl.sol
+  node_modules/@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol
+  node_modules/@openzeppelin/contracts/proxy/Clones.sol
+  node_modules/@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol
+  node_modules/@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
+  node_modules/@openzeppelin/contracts/utils/Strings.sol
+  node_modules/@openzeppelin/contracts/utils/cryptography/ECDSA.sol
+  node_modules/@openzeppelin/contracts/utils/math/Math.sol
+  node_modules/@openzeppelin/contracts/utils/math/SafeCast.sol
+  node_modules/@openzeppelin/contracts/utils/structs/Checkpoints.sol
+  node_modules/@openzeppelin/contracts/utils/structs/EnumerableSet.sol
+  node_modules/@openzeppelin/contracts/utils/types/Time.sol
+  # @openzeppelin/contracts-upgradeable (5.4.0, patched — see patches/)
+  node_modules/@openzeppelin/contracts-upgradeable/governance/GovernorUpgradeable.sol
+  node_modules/@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol
+  node_modules/@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol
+  node_modules/@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol
+  node_modules/@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol
+  node_modules/@openzeppelin/contracts-upgradeable/utils/NoncesUpgradeable.sol
+)
+
+if [[ $include_oz -eq 1 ]]; then
+  for f in "${OZ_ALLOWLIST[@]}"; do
+    if [[ ! -f "$f" ]]; then
+      printf '[oz]  SKIP                                  %s (not found — run pnpm install?)\n' "$f"
+      continue
+    fi
+    # Output path: rocq/generated/oz/<rel-under-node_modules-@openzeppelin>.v
+    # e.g. node_modules/@openzeppelin/contracts/access/AccessControl.sol
+    #   -> rocq/generated/oz/contracts/access/AccessControl.v
+    rel="${f#node_modules/@openzeppelin/}"
+    rel="${rel%.sol}.v"
+    out_path="$GENERATED_DIR/oz/$rel"
+    run_one oz "$f" "$out_path"
+  done
+fi
+
+gov_pass=$(awk -F'\t' '$1=="gov" && $2=="PASS"' "$summary" | wc -l | tr -d ' ')
+gov_fail=$(awk -F'\t' '$1=="gov" && $2=="FAIL"' "$summary" | wc -l | tr -d ' ')
+gov_tot=$(( gov_pass + gov_fail ))
+oz_pass=$(awk -F'\t' '$1=="oz" && $2=="PASS"' "$summary" | wc -l | tr -d ' ')
+oz_fail=$(awk -F'\t' '$1=="oz" && $2=="FAIL"' "$summary" | wc -l | tr -d ' ')
+oz_tot=$(( oz_pass + oz_fail ))
+
 echo "---"
-echo "PASS: $pass / $tot ; FAIL: $fail"
+echo "GOV  PASS: $gov_pass / $gov_tot ; FAIL: $gov_fail"
+if [[ $include_oz -eq 1 ]]; then
+  echo "OZ   PASS: $oz_pass / $oz_tot ; FAIL: $oz_fail"
+fi
 echo "Generated outputs: $GENERATED_DIR"
 
 if [[ $keep_logs -eq 0 ]]; then
@@ -112,5 +210,8 @@ else
   echo "Per-contract logs kept in: $LOG_DIR"
 fi
 
-# Exit non-zero if anything failed, so this can be wired into CI.
-[[ $fail -eq 0 ]]
+# Exit non-zero if any governor file failed. OZ failures are
+# expected (surface shallow_embed.py gaps) and do not gate CI yet —
+# the OZ sweep is diagnostic until the upstream gaps catalogued in
+# `notes/shallow_embed_oz_gaps.md` are closed.
+[[ $gov_fail -eq 0 ]]

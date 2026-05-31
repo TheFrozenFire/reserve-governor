@@ -22,6 +22,14 @@ writing each output to `rocq/generated/<ContractName>.v`. It
 exits non-zero on any compilation failure, so it can be wired
 into CI as a regression check.
 
+Pass `--include-oz` to additionally sweep the curated
+OpenZeppelin allowlist (the files our contracts directly
+import). OZ outputs land under `rocq/generated/oz/<RelPath>.v`
+to avoid colliding with the governor sweep. The OZ subtree is
+fully gitignored. OZ failures are reported but do not gate
+the script's exit code; the OZ tier is diagnostic and feeds
+`notes/shallow_embed_oz_gaps.md`.
+
 See [`../../notes/ir_rocq_coverage.md`](../../notes/ir_rocq_coverage.md)
 for the current pass/fail matrix and the two prior issues
 (rocq-of-solidity `std::length_error`, Foundry remapping
