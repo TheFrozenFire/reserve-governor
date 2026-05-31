@@ -39,6 +39,7 @@ Require Import simulations.RocqOfSolidity.
 Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.simulations.Guardian.
 Require Import ReserveGovernor.generated.Guardian_shallow.
+Require Import ReserveGovernor.mocks.AccessControl.
 Require Import Coq.Lists.List.
 Require Import Lia.
 Import ListNotations.
@@ -522,4 +523,344 @@ Module GuardianEquivalence.
     all: apply RunO.Pure.
   Qed.
 
+  (** ----- Task #234, Phase 1 — OZ AccessControl mutator equivalence ----- *)
+
+  (** ===== Bridging the Guardian sim to the AccessControl mock =====
+
+      The [mocks/AccessControl.v::State] models OZ's per-role membership
+      lists with admin chain ([roles : list (Role * RoleEntry)]). The
+      Guardian sim collapses to three role-keyed lists. The bridge
+      builds the [AccessControl.State] that the Guardian sim represents,
+      using the role-bytes32 parameters as keys and assuming every role's
+      admin is [DEFAULT_ADMIN_ROLE] (matching Guardian.sol, which never
+      calls [_setRoleAdmin]).
+
+      Provided here for the equivalence statements; the proof of
+      [add_member]-preserves-equivalence is a downstream task. *)
+  Definition project_sim_to_ac (sim : State.t) : AccessControl.State :=
+    {|
+      AccessControl.roles :=
+        (DEFAULT_ADMIN_ROLE_bytes32,
+          {| AccessControl.members := sim.(State.admins);
+             AccessControl.admin   := AccessControl.DEFAULT_ADMIN_ROLE |})
+        :: (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+          {| AccessControl.members := sim.(State.optimisticGuardians);
+             AccessControl.admin   := AccessControl.DEFAULT_ADMIN_ROLE |})
+        :: (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+          {| AccessControl.members := sim.(State.optimisticGuardianManagers);
+             AccessControl.admin   := AccessControl.DEFAULT_ADMIN_ROLE |})
+        :: nil
+    |}.
+
+  (** ===== _grantRole_1468 equivalence — STATEMENT =====
+
+      Solidity source (OZ 5.4.0 AccessControl.sol, lines 181-189):
+
+          function _grantRole(bytes32 role, address account)
+              internal virtual returns (bool) {
+            if (!hasRole(role, account)) {
+              _roles[role].hasRole[account] = true;
+              emit RoleGranted(role, account, _msgSender());
+              return true;
+            } else {
+              return false;
+            }
+          }
+
+      The faithful AccessControl mock semantics for this function are
+      captured by [AccessControl.grantRole] (modulo the auth check —
+      [_grantRole] itself is unguarded; the guard lives in
+      [grantRole]/[_checkRole]). The interesting *value* contract:
+
+        - Returns true if the account was newly granted (previously
+          not a member).
+        - Returns false if the account was already a member.
+        - Storage side-effect: [_roles[role].hasRole[account] := 1]
+          when granted; idempotent otherwise.
+
+      The intended equivalence statement, which we WOULD prove if the
+      shallow form were faithful, is:
+
+          forall sim role account env state_base memory codes ...,
+            let sim_ac    := project_sim_to_ac sim in
+            let was_member := AccessControl.hasRole sim_ac role account in
+            let sim_ac'   := <AccessControl helper applying members
+                              add_member only — _grantRole is unguarded> in
+            let storage'  := project_ac_to_storage sim_ac' in
+            exists state_post,
+            {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+              fun__grantRole_1468 role account ⇓
+              Result.Ok (if was_member then 0 else 1)
+            | Some state_post ?}}
+            /\ state_post = make_state env state_base memory'_with_storage'_.
+
+      ===== Generator-bug finding =====
+
+      Inspecting [Guardian_shallow.v]'s [fun__grantRole_1468] (printed
+      via [rocq_query Print]) reveals the success branch of the inner
+      Yul switch is TRUNCATED — only the [iszero(hasRole)] gate fires,
+      and on the not-a-member path the body is the no-op
+      [pure (BlockUnit.Tt, var__1438)] with var__1438 = 0. The required
+      sstore for [_roles[role].hasRole[account] = true] and the
+      [var := 1] update never made it into the shallow embedding.
+
+      Concretely the desugared form is:
+
+          ...
+          let~ expr_1442 := fun_hasRole_1292 role account in
+          let~ expr_1443 := cleanup_t_bool (iszero expr_1442) in
+          let_state~ var__1439 :=
+            let~ δ := pure expr_1443 in
+            if δ =? 0 then    (* already a member *)
+              let~ expr_1463 := pure 0 in
+              let~ var__1439 := pure expr_1463 in
+              pure (BlockUnit.Leave, var__1439)
+            else              (* SHOULD grant, but body is a no-op *)
+              pure (BlockUnit.Tt, var__1438)
+          default~ var__1439 in
+          pure (BlockUnit.Tt, var__1439)
+
+      Result: this function ALWAYS returns 0 with state unchanged,
+      regardless of inputs. The intended bool-of-newly-granted return
+      value and the storage update are both missing from the shallow
+      form. This matches the R035 follow-on / generator-emission gap
+      catalogued in [notes/shallow_embed_oz_gaps.md] gap 2.
+
+      Two consequences:
+
+        (a) The mutator-equivalence direction CANNOT be closed against
+            the current shallow form — there is no sstore to project
+            into. Closing it requires the upstream `shallow_embed.py`
+            fix described in WISDOM R035 (option 2 in `oz_gaps.md`).
+
+        (b) What we CAN faithfully prove is what the shallow form
+            ACTUALLY does: returns 0 with state unchanged. We do this
+            below — the proof exposes the bug.
+
+      The [grantRole]-as-public-method theorem statement (using
+      [AccessControl.grantRole] from the mock) is recorded as an
+      [Admitted] target so downstream proofs can cite it. *)
+
+  (** ----- What the shallow form ACTUALLY does (proof-of-method) =====
+
+      The walker scaffold below validates that:
+        - Goal 1 (cleanup_t_bool (iszero hr_v)) closes via the existing
+          leaf pattern (cu / lu / p).
+        - The hasRole sub-call is composed via run_hasRole_equivalent.
+        - The let_state~ switch is the residual — both arms emit 0
+          on the value channel, but bridging the shared output
+          metavariable across the if-then-else needs the R033 PureEq
+          pattern (since one arm Leaves with 0 and the other Tts
+          with var__1438 which was Pure-bound to 0).
+
+      Two residual goals at end of scaffold:
+        - the case-split (iszero3 =? 0 = true|false) — both arms
+          need to evaluate to (Result.Ok 0)
+        - the final pattern unwrap goal extracting var__1437 = 0
+          from the let_state~ pair. *)
+  Theorem run_grantRole_1468_observed_behavior
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : Guardian.State.t) (role account : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_role : U256.Valid.t role)
+      (H_account : 0 <= account < 2^160)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    exists state',
+    {{? codes, env, Some state |
+      fun__grantRole_1468 role account ⇓
+      Result.Ok 0
+    | Some state' ?}}.
+  Proof.
+    intros state.
+    pose proof (run_hasRole_equivalent codes env state_base sim role account
+                  memory H_role H_account H_mem) as Hhr.
+    cbv zeta in Hhr.
+    destruct Hhr as (state_hr & Hhr).
+    set (hr_v := StorableValue.map_get_u256
+                   (role_member_map sim) (role, account)) in *.
+    eexists.
+    cbv zeta.
+    unfold fun__grantRole_1468.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _
+            ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_hasRole_1292 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hhr | apply RunO.Pure ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    (* Three goals remain after the walker:
+       Goal 1: iszero + cleanup_t_bool composition on hr_v
+       Goal 2: the let_state~ switch
+       Goal 3: the final pair unwrap *)
+    - (* Goal 1: iszero hr_v then cleanup_t_bool — at the bullet the
+         goal is [LowM.Call (iszero hr_v) (fun result => ...)] where
+         the continuation is itself a match returning a LowM.Call. *)
+      c. { unfold iszero. apply RunO.Pure. } s.
+      c. { unfold cleanup_t_bool. lu. repeat (lu || cu || p). } p.
+    - (* Goal 2: let_state~ switch on (iszero^3 hr_v) =? 0
+         Residual: needs R033-style PureEq bridge to close both arms
+         to a shared output metavariable. Both arms produce value 0,
+         but the output_inter metavar gets instantiated by Goal 3's
+         (which has the same output_inter), creating an evar-scope
+         tangle. WISDOM R044 pattern B (subst the lets) doesn't apply;
+         R036 (upfront pose) doesn't apply (no inner lemma to pose);
+         R033 (PureEq bridge) is the right tool but the goal structure
+         needs further preprocessing — left as residual. *)
+      admit.
+    - (* Goal 3: final unwrap — depends on Goal 2's output_inter
+         instantiation. Becomes [LowM.Pure (Result.Ok 0)] once the
+         switch's output is resolved to [(BlockUnit.Tt|Leave, 0)]. *)
+      admit.
+  Admitted.
+
+  (** ----- Intended mutator-equivalence statement, parked =====
+
+      This is the theorem we WOULD prove if the shallow form were
+      faithful (see generator-bug analysis above). It's recorded here
+      as [Admitted] so downstream proofs can reference it by name once
+      the upstream `shallow_embed.py` patch lands.
+
+      The shape uses [AccessControl.grantRole] from [mocks/AccessControl.v]
+      — that's the canonical Gallina semantics for OZ's _grantRole + the
+      surrounding admin gate. *)
+
+  (** Helper: under the projection, [AccessControl.hasRole] on
+      [project_sim_to_ac sim] for role-keys we model matches
+      the sim's own role-list membership predicates. Stated
+      conditionally on the bytes32 role being one of our three
+      named constants; absent that, the projection lookup falls
+      through to an empty member list. Proof omitted (mechanical). *)
+  Lemma project_sim_to_ac_hasRole_admin (sim : State.t) (a : Address) :
+    AccessControl.hasRole (project_sim_to_ac sim)
+                          DEFAULT_ADMIN_ROLE_bytes32 a
+    = has_admin sim a.
+  Proof.
+    unfold AccessControl.hasRole, AccessControl.getRoleEntry,
+           AccessControl.find_entry, project_sim_to_ac,
+           has_admin.
+    simpl. rewrite Z.eqb_refl. reflexivity.
+  Qed.
+
+  (** Theorem statement for the public [fun_grantRole_1359] equivalence.
+
+      This is the canonical "mutator equivalence" target for task #234.
+      The mutator's specification (using the [AccessControl] mock):
+
+        AccessControl.grantRole sim caller role account =
+        - revert_missing_role if !hasRole(getRoleAdmin(role), caller)
+        - else Success {| roles := set_entry roles role
+                            {| members := add_member members account;
+                               admin   := admin |} |}
+
+      In the Guardian-specific projection, only DEFAULT_ADMIN_ROLE
+      can admin every role (Guardian.sol uses default admin chain), so
+      the gate reduces to [has_admin sim env.(caller)]. The success
+      shape's [roles] then matches a sim with [account] appended to
+      whichever of [admins/optimisticGuardians/optimisticGuardianManagers]
+      corresponds to [role].
+
+      ===== Status =====
+
+      [Admitted.] — the shallow form's [fun__grantRole_1468] does not
+      perform the necessary sstore (see analysis above). The theorem
+      is recorded as the target statement; closure requires either
+      the upstream `shallow_embed.py` fix, OR a manual patch to the
+      generated [Guardian_shallow.v]'s _grantRole arm. We do not
+      land the manual patch — the generator drift would re-introduce
+      it on the next sweep; the right fix is upstream. *)
+  Theorem run_grantRole_1359_equivalent
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : Guardian.State.t) (role account : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_role : U256.Valid.t role)
+      (H_account : 0 <= account < 2^160)
+      (H_caller_admin : has_admin sim env.(Environment.caller) = true)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    (* AccessControl.grantRole on the projected sim. The caller-admin
+       gate is checked against [getRoleAdmin role] which, under our
+       Guardian model where every role's admin is DEFAULT_ADMIN_ROLE,
+       reduces to [hasRole DEFAULT_ADMIN_ROLE caller]. *)
+    let sim_ac  := project_sim_to_ac sim in
+    let caller  := env.(Environment.caller) in
+    let result  := AccessControl.grantRole sim_ac caller role account in
+    match result with
+    | AccessControl.Result.Success sim_ac' =>
+        exists (sim' : Guardian.State.t) (state' : option RocqOfSolidity.State.t),
+          project_sim_to_ac sim' = sim_ac' /\
+          {{? codes, env, Some state |
+            fun_grantRole_1359 role account ⇓
+            Result.Ok tt
+          | state' ?}} /\
+          (* Storage equivalence: post-state's role-member map
+             reflects the AccessControl mutation. *)
+          (exists memory',
+            state' = Some (make_state env state_base memory' (proj_sim sim')))
+    | AccessControl.Result.Revert _ _ =>
+        (* Auth check failed: the contract reverts too. We don't
+           pin the specific revert payload here because the shallow
+           form's revert byte encoding is OZ-specific. *)
+        True
+    end.
+  Proof.
+    (* See doc comment above: the shallow form's fun__grantRole_1468
+       drops the sstore on the success path, making this theorem
+       unprovable against the current generated code. *)
+  Admitted.
+
 End GuardianEquivalence.
+
+(** ===== WISDOM R045 footnote — generator drops sstore in _grantRole =====
+
+    Documented in this file (see [run_grantRole_1359_equivalent]'s
+    docstring above) and in [notes/shallow_embed_oz_gaps.md] gap 2.
+    Summary for cross-reference:
+
+    `shallow_embed.py` emits `Shallow.let_state ~ ... := [[
+    Shallow.if_(| cond, succ, _ |) ]] default~ ...` for Yul switches
+    where the inner success branch ([cond != 0]) contains state-update
+    statements (`sstore` in particular). The current emission strips
+    the body in the let_state's body lambda — visible in the desugared
+    form as `else pure (BlockUnit.Tt, var__1438)` with no surrounding
+    sstore.
+
+    The bug is the same one R035 calls out: M.monadic can't descend
+    into Shallow.let_state inside [[ ]] brackets. The shallow_embed
+    workaround for YulIf (R035 partial fix) pre-binds the condition,
+    but when the YulIf body itself rebinds the same variable AND
+    contains an sstore, the body gets dropped on the way through.
+
+    Reproduce: `rocq_query Print
+    Guardian_325.Guardian_325_deployed.fun__grantRole_1468.` against
+    the current shallow form — the switch's `else` arm body is the
+    bare `pure (BlockUnit.Tt, var__1438)` no-op, with no sstore visible.
+
+    Fix path: upstream `shallow_embed.py` — option 1 from
+    `notes/shallow_embed_oz_gaps.md` (extend M.monadic to traverse
+    `Shallow.let_state`). Until then, every OZ AccessControl mutator
+    equivalence statement is [Admitted].
+
+    Affected proof targets:
+      - Guardian.grantOptimisticGuardian (delegates to _grantRole_704
+        which delegates to _grantRole_1468)
+      - VersionRegistry / RewardTokenRegistry role mutators (same
+        OZ inheritance chain).
+      - Any TimelockController role mutation.
+
+    What still works pre-fix:
+      - View-only equivalence (hasRole, getRoleAdmin, isRegistered,
+        deployments) — already landed across Guardian / VersionRegistry
+        / RewardTokenRegistry.
+      - Mock-level proofs against [mocks/AccessControl.v] — the mock
+        is sound; the gap is only in the shallow form. *)
