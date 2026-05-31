@@ -4001,3 +4001,164 @@ are the bulk.
   `thefrozenfire/agent-a551-fv-phase2-general`).
 - Commit: `fv(R054): generalize Phase 2 sstore axioms over arbitrary
   pre-state maps` — single commit, 378 insertions / 297 deletions.
+
+## R055: grantRole milestone — DEFAULT/already-member branch CLOSED; not-member branch open
+
+**Status: ALREADY-MEMBER branch fully Qed; NOT-MEMBER branch needs
+~100 lines of Phase 1+2 walker composition + observational discharge.
+The theorem still ends `Admitted` due to the not-member case's two
+remaining `admit` targets.**
+
+### What landed this session
+
+The R054-2026-05-31 follow-up's operational-assembly proof is partial.
+
+**Theorem precondition restriction**: added
+`H_role_default : role = DEFAULT_ADMIN_ROLE_bytes32` and
+`H_caller_bound`, `H_admins_bound` preconditions. This scopes the
+milestone to the DEFAULT role only (OG/OGM extensions need analog
+bridge lemmas, structurally harder because OG/OGM blocks aren't
+cons-prefixed — they sit in the middle of `role_member_map`).
+
+**Wrapper strengthening (~50 lines)**: 
+- `run_fun__add_1614_at_proj_sim_not_in` and
+  `run_fun_add_2085_at_proj_sim` post-state generalizations expose
+  the concrete 4-slot `proj_post` shape (slot 0 = member_map_in,
+  slot 1 = `declare_or_assign positions_map_in (role, value) (oldLen+1)`,
+  slot 2 = `declare_or_assign length_map_in role (oldLen+1)`,
+  slot 3 = `declare_or_assign body_map_in (role, oldLen) value`).
+  Memory `memory'` remains existential.
+- `run_modifier_onlyRole_1351_admin_passes_exists`: new variant of
+  the modifier wrapper that takes the inner-body walker with
+  storage-pinned post-state and existential memory. Crucial for the
+  milestone proof because the inner walker's memory post-state
+  depends on the modifier's chosen scratch memory.
+
+**Already-member branch Qed**: the `addr_in admins account = true`
+case closes cleanly:
+- `H_member` follows from dict-walk over `members_for_role`.
+- `H_ac_in` / `Hidem` follow from `AccessControl.add_member_idempotent`.
+- `project_sim_to_ac` equality discharged by `transitivity` to an
+  explicit AC.State form + reduce-and-rewrite (careful staging:
+  `unfold project_sim_to_ac; change ...(roles) with l; unfold
+  getRoleEntry; simpl find_entry; rewrite Z.eqb_refl; cbv match;
+  simpl set_entry; rewrite Z.eqb_refl; cbv match; simpl members;
+  rewrite Hidem`). `Hidem` rewrite is the critical step — must
+  preserve `AccessControl.add_member`'s syntactic form, not let
+  `cbn`/`simpl` inline it to the conditional.
+- Walker composition via Phase 1 (`run_fun__grantRole_1468_at_proj_sim_member`)
+  → inline Phase 3 already-member arm (concrete state pinned to
+  `(w0_g :: w1_g :: rest_g) (proj_sim sim)`) → Phase 4
+  (`run_fun_grantRole_1359_inner_at_proj_sim`) → new modifier wrapper
+  → outer (`run_fun_grantRole_1359_at_proj_sim`). Total ~50 lines.
+- Observational equality is reflexive — slot lookups on the same
+  `proj_sim sim` agree at every key.
+
+### What remains — not-member branch (2 admits)
+
+```coq
+- (** ===== Not-member branch ===== *)
+  apply (proj1 (addr_in_false_iff_not_In _ _)) in H_addr_in.
+  assert (H_not_member : ... map_get_u256 ... = 0).
+  { unfold role_member_map. rewrite map_get_app_split. ...
+    admit. (* TODO: OG/OGM block absence via key distinctness *)
+  }
+  admit. (* TODO: Phase 1+2 walker + observational discharge *)
+```
+
+The two `admit`s require:
+
+1. **`(DEFAULT, account)` absence from OG/OGM blocks** (~10 lines).
+   This needs the role-bytes32 distinctness: `DEFAULT_ADMIN_ROLE_bytes32 ≠ OPTIMISTIC_GUARDIAN_ROLE_bytes32` etc. These are `Parameter`s without explicit distinctness axioms in scope. Path forward: either add an `Axiom roles_distinct` covering the three pairwise inequalities, or refactor `role_member_map` to enforce the absence by structure.
+
+2. **Not-member walker composition** (~100 lines). The flow:
+   - Pose `run_fun__grantRole_1468_at_proj_sim_not_member` against `sim`,
+     role = DEFAULT_ADMIN_ROLE_bytes32, account. Produces post-state
+     with slot 0 = `declare_or_assign (role_member_map sim) (DEFAULT, account) 1`,
+     other slots unchanged. Memory has 3-cell front exposed.
+   - Walk the AddressSet MIA (`MappingIndexAccessBytes32AddressSet.run_mapping_index_access`)
+     + convert chain between Phase 1's exit and Phase 2's entry. The
+     MIA consumes 2 scratch cells.
+   - Pose `run_fun_add_2085_at_proj_sim` against the post-Phase-1
+     storage shape (slot 0 = declare_or_assign-mutated member map).
+     Produces 4-slot mutation:
+     ```
+     slot 0: declare_or_assign (role_member_map sim) (DEFAULT, account) 1
+     slot 1: declare_or_assign (role_positions_map sim) (DEFAULT, account) (length+1)
+     slot 2: declare_or_assign (role_values_length_map sim) DEFAULT (length+1)
+     slot 3: declare_or_assign (role_values_body_map sim) (DEFAULT, length) account
+     ```
+   - Compose into `_grantRole_704` not-member walker (manually inline
+     the Shallow.if_ THEN branch + Phase 2 dispatch). Phase 4 wrapper.
+     Modifier wrapper (using the existential variant — works because
+     `proj_sim sim` differs from the final storage; we need a 4-slot
+     storage param instead). NOTE: the new modifier wrapper's
+     `storage_post` parameter would be set to the concrete 4-slot
+     post-state.
+   - Witness `sim' = add_admin sim account`.
+   - Discharge `project_sim_to_ac (add_admin sim account) = sim_ac'`.
+     `add_member admins account = account :: admins` for not-member
+     (via `add_member`'s definition with `addr_in adm acc = false`).
+     Then `set_entry` at DEFAULT_BR yields a cons-prefix list matching
+     `project_sim_to_ac (add_admin sim account)`'s structure (since
+     `add_admin`'s admins field is `account :: admins`).
+   - Discharge observational equality via the four landed bridges:
+     `role_member_map_sstore_observes_add_admin_not_in`,
+     `role_positions_map_sstore_observes_add_admin_not_in`,
+     `role_values_length_map_sstore_eq_add_admin_not_in`,
+     `role_values_body_map_sstore_observes_add_admin_not_in`.
+     Each bridge connects the Phase-2 declare_or_assign post-state to
+     the cons-prefixed `proj_sim sim'` form, point-wise.
+
+### Why partial (this session)
+
+The already-member branch took longer than expected due to the
+`project_sim_to_ac` equality dance — `AccessControl.add_member` keeps
+getting inlined by `cbn`/`simpl` despite explicit `-[...]` blocking,
+because record-projection `simpl AccessControl.members` walks into
+the operand. Resolution: rewrite `Hidem` BEFORE the simpl-on-members,
+threading the idempotent equality through carefully-staged unfolds.
+Documented in the inline comment.
+
+The not-member branch's walker would follow the same pattern as the
+already-member branch's inline `_grantRole_704` walker, but with the
+THEN branch (Shallow.if_ guard = 1). The walker shape is mechanical
+once the witness pieces (Phase 1 not-member, AddressSet MIA, Phase 2)
+are composed; the observational discharge follows from the four
+landed bridges with no new axioms.
+
+### Build status
+
+`bash formal-verification/scripts/rocq-build proofs/equivalence/Guardian.v`
+green. `Admitted` count: still 2 (run_grantRole_1468_observed_behavior
+unchanged; run_grantRole_1359_equivalent has 2 `admit`s inside its
+not-member branch — but the proof still compiles as the outer
+`Admitted` closes them).
+
+### Branch & commits (this session)
+
+Branch: `worktree-agent-a2a91ddc530e3d0e2` (reset to
+`feature/formal-verification` at `7fa433d` at start). Worktree:
+`.claude/worktrees/agent-a2a91ddc530e3d0e2/`. Single commit to be
+created with the changes above.
+
+### Files touched
+
+- `formal-verification/rocq/proofs/equivalence/Guardian.v`:
+  - Strengthened `run_fun__add_1614_at_proj_sim_not_in` post-state
+    (lines ~3636-3660 area).
+  - Strengthened `run_fun_add_2085_at_proj_sim` post-state
+    (lines ~3905-3930 area).
+  - Added `run_modifier_onlyRole_1351_admin_passes_exists`
+    (lines ~3080 area — new lemma after existing modifier wrapper).
+  - Milestone theorem: added `H_role_default`, `H_caller_bound`,
+    `H_admins_bound` preconditions; replaced `Admitted` body with
+    structured already-member Qed + not-member 2-admit proof
+    (lines ~4790-5210 area).
+- `formal-verification/rocq/WISDOM.md`: this R055 section.
+
+### Estimated effort to close not-member branch
+
+~100-150 lines, ~2-4 hours of focused work. The infrastructure is
+fully landed; what remains is the walker composition (mechanical)
+plus the observational discharge (4 bridge applications).
