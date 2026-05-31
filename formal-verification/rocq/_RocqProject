@@ -55,6 +55,7 @@ mocks/AccessControl.v
 mocks/ECDSA.v
 mocks/Nonces.v
 mocks/ReentrancyGuard.v
+mocks/EnumerableSet.v
 
 # --- ProposerThrottle ---
 simulations/ProposerThrottle.v
