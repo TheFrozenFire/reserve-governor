@@ -1360,4 +1360,214 @@ Module RewardTokenRegistryEquivalence.
       end).
   Qed.
 
+  (** ====================================================================
+      Sim-level postcondition utilities for top-level theorem statements
+      ==================================================================== *)
+
+  (** Mapping from sim post-state to the post-storage's
+      [set_eq_in_registry] reference.  Used by the top-level theorem
+      statements below to relate the contract-side post-storage to
+      the sim-side state transition. *)
+  Definition sim_post_register (sim : State.t) (token : Address) : State.t :=
+    register_token_sim sim token.
+
+  Definition sim_post_unregister (sim : State.t) (token : Address) : State.t :=
+    unregister_token_sim sim token.
+
+  (** ====================================================================
+      R062: outer-mutator equivalence — R050-blocked
+      ====================================================================
+
+      The contract's external functions
+      [registerRewardToken] / [unregisterRewardToken] gate the
+      mutator on an external [staticcall] to a separate
+      [roleRegistry] contract:
+
+        require(roleRegistry.isOwner(msg.sender), ...);
+
+      or
+
+        require(roleRegistry.isOwnerOrEmergencyCouncil(msg.sender), ...);
+
+      This is the SAME R050 blocker that prevents
+      [VersionRegistry.deprecateVersion] /
+      [VersionRegistry.registerVersion] from being Qed.  The R050
+      catalogue of leaves needed (transcribed from
+      VersionRegistry.v's scaffold):
+
+      1. **R-statcall** — choose [call_result = 1] via
+         [RunO.CallContract], tied to a callee-spec axiom that says
+         [is_owner env.caller = true ⇒ roleRegistry.isOwner(caller)
+         returns 1].
+
+      2. **R-memprelude** — six new memory leaves:
+         [run_allocate_unbounded], [run_finalize_allocation],
+         [run_mstore_with_shift_left_224],
+         [run_abi_encode_tuple_t_address__to_t_address__fromStack],
+         [run_abi_decode_tuple_t_bool_fromMemory],
+         [run_returndatasize_after_callcontract].
+
+      3. **R-immutable** —
+         [run_loadimmutable_returns_role_registry]: models
+         [Primitive.LoadImmutable] against a hypothesis
+         [env.(immutables) ! "roleRegistry" = Some addr].
+
+      4. **R-require** —
+         [run_require_helper_t_error_16_RewardTokenRegistry__InvalidCaller_succeeds]
+         and the ZeroAddress / RewardAlreadyRegistered /
+         RewardNotRegistered counterparts.
+
+      5. **R-postbridge** — the membership predicate is established
+         via the R059-shape axioms above; what remains for the outer
+         walker is dispatching the [require_helper] / log2 chain
+         and threading the inner-walker witness through the
+         [eexists] frame.
+
+      ALL of (1)-(3) are missing from the corpus today.  Closing
+      this requires the same R050 infrastructure investment as
+      [deprecateVersion] / [registerVersion] in VersionRegistry —
+      see R058 for the detailed cost estimate
+      (~800-1200 LOC of new leaves + 1 callee-spec trust axiom +
+      ~300 LOC of outer walker).
+
+      The theorem statements below pin the contract our future R050
+      push has to satisfy.  Their post-storage condition uses
+      [set_eq_in_registry] (the R062 predicate) — establishing the
+      right level of abstraction for the membership-equivalence
+      methodology to compose. *)
+
+  Theorem run_registerRewardToken_equivalent
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : State.t) (token : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_token : 0 <= token < 2^160)
+      (H_token_nz : token <> 0)
+      (H_caller_owner :
+         (* Modeled as a Prop placeholder for the future
+            R-statcall callee-spec axiom.  Concretely:
+            [exists addr, roleRegistry_address env = Some addr /\
+                          isOwner addr env.(Environment.caller) = true]. *)
+         True)
+      (H_not_in :
+         StorableValue.map_get_u256 (positions_map sim) token = 0)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    let new_sim := sim_post_register sim token in
+    exists state' storage_post,
+      {{? codes, env, Some state |
+        fun_registerRewardToken_101 token ⇓
+        Result.Ok tt
+      | state' ?}} /\
+      (exists memory',
+        state' = Some (make_state env state_base memory' storage_post) /\
+        set_eq_in_registry storage_post (proj_sim new_sim)).
+  Proof.
+    (** R050-blocked: closing this requires R-statcall + R-memprelude
+        + R-immutable + R-require infrastructure (none of which exist
+        in the corpus today — see VersionRegistry.v's
+        [run_deprecateVersion_equivalent_make_state] scaffold for the
+        full residual catalogue).
+
+        With those leaves in place, the proof composes:
+        1. Pose [run_fun_add_711_at_proj_sim_not_in] upfront for the
+           inner walker witness.
+        2. Dispatch the staticcall + memory prelude via R050 leaves.
+        3. Dispatch [require_helper_t_error_16_RewardTokenRegistry__InvalidCaller_succeeds]
+           on the staticcall's bool result.
+        4. Dispatch [require_helper_t_error_18_RewardTokenRegistry__ZeroAddress_succeeds]
+           on the [iszero(eq(cleanup_t_address token, 0))] check
+           (uses [H_token_nz]).
+        5. Dispatch the inner [fun_add_711] call via the R062 wrapper
+           Qed [run_fun_add_711_at_proj_sim_not_in].
+        6. Dispatch [require_helper_t_error_20_RewardTokenRegistry__RewardAlreadyRegistered_succeeds]
+           on the inner call's return (1 under H_not_in).
+        7. Dispatch the [log2] event emit.
+        8. Witness the post-storage and discharge [set_eq_in_registry]
+           via the inner axiom's post-condition. *)
+  Admitted.
+
+  Theorem run_unregisterRewardToken_equivalent
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : State.t) (token : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_token : 0 <= token < 2^160)
+      (H_caller_owner_or_council :
+         (* Modeled as a Prop placeholder for the future
+            R-statcall callee-spec axiom.  Concretely:
+            [exists addr, roleRegistry_address env = Some addr /\
+                          isOwnerOrEmergencyCouncil addr
+                            env.(Environment.caller) = true]. *)
+         True)
+      (H_in :
+         StorableValue.map_get_u256 (positions_map sim) token <> 0)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    let new_sim := sim_post_unregister sim token in
+    exists state' storage_post,
+      {{? codes, env, Some state |
+        fun_unregisterRewardToken_131 token ⇓
+        Result.Ok tt
+      | state' ?}} /\
+      (exists memory',
+        state' = Some (make_state env state_base memory' storage_post) /\
+        set_eq_in_registry storage_post (proj_sim new_sim)).
+  Proof.
+    (** R050-blocked: same residuals as
+        [run_registerRewardToken_equivalent].  With R050 infrastructure
+        in place, dispatches via:
+          - The R050 leaves for staticcall + memory prelude + immutable
+            roleRegistry load.
+          - [require_helper_t_error_16_RewardTokenRegistry__InvalidCaller_succeeds].
+          - [run_fun_remove_738_at_proj_sim_in] (the R062 wrapper Qed).
+          - [require_helper_t_error_22_RewardTokenRegistry__RewardNotRegistered_succeeds].
+          - The [log2] event emit. *)
+  Admitted.
+
+  (** ====================================================================
+      Cross-pollination note (WISDOM R062 candidate)
+      ====================================================================
+
+      The RewardTokenRegistry mutator chain is STRUCTURALLY identical
+      to Guardian's [grantRole] / [revokeRole], modulo the key shape:
+
+        | Aspect                  | Guardian            | RewardTokenRegistry |
+        |-------------------------|---------------------|---------------------|
+        | Set type                | Bytes32Set (role)   | AddressSet (token)  |
+        | Add op (sim-side)       | add_role            | register_token_sim  |
+        | Remove op (sim-side)    | remove_role         | unregister_token_sim |
+        | EnumerableSet inner     | fun__add_1614 /     | fun__add_240 /      |
+        |                         | fun__remove_1698    | fun__remove_324     |
+        | OZ outer wrapper        | fun_add_2085 /      | fun_add_711 /       |
+        |                         | fun_remove_2112     | fun_remove_738      |
+        | Auth gate               | onlyRole modifier   | external staticcall |
+        |                         | (R055/R059 closed)  | (R050-blocked)      |
+        | Membership predicate    | set_eq_at_role      | set_eq_in_registry  |
+        |                         | (role, account)     | (token)             |
+        | Slot-1 positions key    | (role, addr)        | (token)             |
+        | Slot-3 body key         | (role, idx)         | (idx)               |
+
+      The methodology shape (R059-style parametric-trust axiom on
+      [_add] / [_remove] post-storage in membership-equivalence form
+      + outer wrapper composition + auth-gate dispatch via the
+      modifier or staticcall infrastructure) is the SAME.  A future
+      cleanup could:
+
+      1. Extract [set_eq_at_role] / [set_eq_in_registry] into a
+         polymorphic [set_eq_at K] predicate parameterized over the
+         key type and slot index, with the projection bridges
+         instantiated per consumer.
+      2. State the R059-shape axiom polymorphically over the
+         positions-map key shape.
+      3. Move the EnumerableSet inner walker mechanization
+         (R051.c-class trust axioms or their eventual Qeds) into a
+         dedicated [proofs/equivalence/EnumerableSet.v] file usable
+         across both Guardian and RewardTokenRegistry.
+
+      That refactor is out of scope for this commit — the immediate
+      win is having the methodology piece in place for both
+      contracts, so future agents can mirror the closure pattern
+      without re-deriving the predicate. *)
+
 End RewardTokenRegistryEquivalence.
