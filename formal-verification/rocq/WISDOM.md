@@ -4583,3 +4583,265 @@ Total LOC added: ~1170 lines.
 - R047: case-split-before-eexists for if-then-else with diverging
   BlockUnit modes — applies to the swap-and-pop walker's
   inner `valueIndex != lastIndex` switch.
+
+## R058: VersionRegistry mutator equivalence — partial infrastructure landed; staticcall block stands
+
+**Status: PARTIAL (2026-05-31). Foundational leaves landed for both
+`fun_deprecateVersion_187` and `fun_registerVersion_152`. The full
+milestone Qeds remain blocked behind the R050 external-staticcall
+infrastructure.** The task brief claimed VersionRegistry mutators were
+the "cleanest unblocked OZ-4 target" because they avoid OZ
+EnumerableSet — that premise was correct about EnumerableSet but
+missed the actual blocker, which is the EXTERNAL staticcall to a
+separate `roleRegistry` contract (documented in R050).
+
+### Why not "the cleanest target"
+
+`VersionRegistry.deprecateVersion` and `registerVersion` both gate
+on `roleRegistry.isOwner(msg.sender)` / `isOwnerOrEmergencyCouncil`
+— **external** calls to a separate contract via Yul `staticcall`.
+This is a fundamentally different shape from Guardian's OZ
+`AccessControl.hasRole` (which is an INTERNAL sload-style check on
+the same contract's storage). Closing either mutator requires the
+full R050 infrastructure chain:
+
+```
+loadimmutable(roleRegistry)
+  → allocate_unbounded + mstore selector + abi_encode_tuple_t_address
+  → staticcall(gas, roleRegistry, ...)
+  → iszero(call_result) → revert_forward_1 branch
+  → returndatasize(),
+    finalize_allocation(_22, _25),
+    abi_decode_tuple_t_bool_fromMemory(_22, _22+_25)
+  → require_helper_t_error_10_VersionRegistry__InvalidCaller
+```
+
+NONE of these leaves exist in the corpus today.
+`registerVersion` is strictly harder: it makes a SECOND
+staticcall to `Versioned(deployer).version()` returning a **dynamic
+string**, then computes `keccak256(packed string bytes)` over a
+dynamic memory buffer — neither the dynamic-string decode nor the
+memory-keccak chain exist in the corpus, and a new sim-side trust
+axiom would be required to equate Yul's memory-keccak to the
+abstract `version_hash : Version -> U256.t`.
+
+### What landed this session (4 commits, ~553 LOC)
+
+All Qed, no new trust axioms. Build green via
+`OPAM_SWITCH=rocq820 bash formal-verification/scripts/rocq-build
+proofs/equivalence/VersionRegistry.v` at every commit.
+
+1. **Four `require_helper_succeeds` leaves** (~91 lines)
+   — for VersionRegistry's custom errors 10/12/14/16. Each
+   mirrors `ThrottleLib_Leaves.run_require_helper_succeeds`: the
+   helper reverts when `iszero(condition)`, so the proof discharges
+   the `condition <> 0` precondition and closes in three
+   `lu/cu/p` lines.
+
+2. **Three offset-0 bool storage leaves** (~68 lines)
+   — `run_shift_right_0_unsigned`,
+   `run_extract_from_storage_value_offset_0_t_bool`, and
+   `run_read_isDeprecated_offset_0_at_proj_sim`. The mutator body
+   uses the offset-0 variant (`read_from_storage_split_offset_0_t_bool`),
+   distinct from the dynamic-offset variant used by the existing
+   view-side proof. Discharges the `land 0xff` mask via the
+   existing `isDeprecated_map_values_bool` domain lemma.
+
+3. **Bool sstore wrapper at slot 1** (~195 lines)
+   — R040 pattern, flat-Map flavor (not Map2). Five sub-leaves
+   (`cleanup_t_bool_of_1`, `convert_t_bool_to_t_bool_of_1`,
+   `prepare_store_t_bool`, `shift_left_0`,
+   `update_byte_slice_1_shift_0_bool_1`) plus two composite
+   wrappers (`run_sstore_isDeprecated_at_proj_sim`,
+   `run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim`).
+   The composite walks the full
+   `convert/sload/prepare/update_byte_slice/sstore` chain into a
+   single Hoare triple with post-state pinned to the
+   `Dict.declare_or_assign`-mutated form.
+
+4. **`deprecate_at` post-state preservation lemmas** (~199 lines)
+   — pure-Gallina helpers establishing that `deprecate_at sim i`
+   preserves the registry's load-bearing structure outside the
+   target slot:
+   - `find_entry_idx_in_bounds`: index-correctness for entry lookup.
+   - `deployments_map_deprecate_at`: deployer map is unchanged.
+   - `latest_index_deprecate_at`: latest_index preserved verbatim.
+   - `versionHash_at_set_nth_preserved`: any entry's versionHash is
+     preserved when `set_nth` inserts a same-hash entry.
+   - `versionHash_at_deprecate_at`: corollary for deprecate_at.
+   - `set_nth_length`: list length preserved (used for the
+     out-of-bounds discharge).
+   - `latestVersion_value_deprecate_at`: composes the above —
+     `latestVersion_value (deprecate_at sim i) = latestVersion_value sim`.
+
+### Residual chain (what's STILL blocking the milestone Qed)
+
+For `deprecateVersion` (the simpler target):
+
+a. **`loadimmutable` leaf** — model the `Primitive.LoadImmutable`
+   read for the `roleRegistry` address. Either via a hypothesis
+   `env.(accounts) ! self_address ! immutables ! roleRegistry_name
+   = Some addr`, or via a packaged trust axiom that bundles the
+   precondition. ~30-40 lines. Strict prerequisite for the outer
+   walker.
+
+b. **Memory prelude leaves** — `run_allocate_unbounded`,
+   `run_finalize_allocation`, `run_mstore_with_shift_left_224`,
+   `run_abi_encode_tuple_t_address__to_t_address__fromStack`,
+   `run_abi_decode_tuple_t_bool_fromMemory`. Each is a focused
+   ~30-100 line leaf. The slt-check inside
+   `abi_decode_tuple_t_bool_fromMemory` is the trickiest — needs
+   a memory-content hypothesis to discharge the
+   `dataEnd - headStart >= 32` check.
+
+c. **`returndatasize` arm** — the trust-based `cc` rule does NOT
+   canonicalize the `Primitive.RLoad` state set by
+   `LowM.CallContract`. The proof author has to assert (or prove)
+   that the post-staticcall return-data length is 32 bytes, either
+   as a hypothesis or as a separate axiom on the chosen
+   `state_inter`. This is by far the most subtle of the R050
+   residuals — `cc` lets us choose `state_inter` freely, but ANY
+   downstream `returndatasize` call inside that chosen state must
+   evaluate to a known value. ~80 lines once attempted.
+
+d. **`staticcall` via `cc`** — choose `call_result = 1`, tied to a
+   callee-spec axiom: `is_owner_or_emergency env.caller = true ⇒
+   roleRegistry.isOwnerOrEmergencyCouncil(caller) returns 1`. This
+   axiom is analogous in trust shape to `version_hash_injective`
+   in the sim; lives alongside it. ~20 lines of axiom + ~50 lines
+   of walker integration. Note: the `cc` tactic itself works (see
+   `Sandbox.v::R021VerificationCheck`); what's missing is the
+   callee-spec axiom AND the surrounding memory-prelude leaves
+   that flank the call.
+
+e. **`revert_forward_1` branch closure** — the Yul body has a
+   `Shallow.if_ (iszero call_result) revert_forward_1 tt` AFTER
+   the staticcall. The R047 case-split-before-eexists pattern
+   discharges this: choose `call_result = 1`, so `iszero` is 0,
+   the if-condition is false, the default branch runs.
+
+f. **Observational post-state bridge for `deprecate_at`** —
+   `proj_sim_deprecate_at_observes`: connects the Yul-level
+   `Dict.declare_or_assign (isDeprecated_map history) hash 1`
+   form to the sim-side `isDeprecated_map (deprecate_at sim i)`
+   pointwise. Structurally the two differ (in-place flip vs
+   append-at-end), but observationally `map_get_u256 ... key`
+   agrees for all `key`:
+   - For `key = hash`: both yield 1.
+   - For `key ≠ hash`: both yield `isDeprecated_map history key`
+     (the in-place form has the slot at position i unchanged
+     since `key ≠ hash`; the append form's tail entry doesn't
+     match).
+   The proof needs a `Z`-keyed variant of R054's
+   `map_get_cons_eq_app_singleton_when_absent_ZZ` adapted to flat
+   maps with single Z keys (the `isDeprecated_map` is
+   `Dict.t U256.t U256.t`, not `Dict.t (Z*Z) U256.t`).
+   Plus an in-place-flip equivalence for the specific case where
+   the original entry is at index `i` with `deprecated = false`
+   in the sim, and the flip preserves all other slots. ~80-120
+   lines once attempted.
+
+g. **Outer walker** — composes the above into the full
+   `fun_deprecateVersion_187` body. ~150-300 lines once all
+   the leaves exist.
+
+For `registerVersion`, ADDITIONALLY:
+
+h. **Dynamic-string return-data decode** — the second staticcall
+   to `Versioned(deployer).version()` returns a dynamic string,
+   which goes through `returndatacopy` then
+   `abi_decode_tuple_t_string_memory_ptr_fromMemory`. This
+   requires modeling memory contents at byte granularity, NOT just
+   opaque cell counts. Approximate cost: 200-300 lines of new
+   leaves on top of (b)-(c).
+
+i. **`keccak256` over dynamic memory buffer** — Yul computes
+   `keccak256(array_dataslot ptr, array_length ptr)` over the
+   memory buffer constructed by `abi_encode_tuple_packed_t_string_memory_ptr__to_t_string_memory_ptr__nonPadded_inplace_fromStack`.
+   The existing `keccak256_tuple2` axiom models only fixed-shape
+   2-word inputs; a new trust axiom is needed for variable-length
+   memory keccak, equating it to `version_hash : Version -> U256.t`
+   under the assumption that the memory buffer encodes a known
+   version string. This is a NEW trust axiom of substantial
+   subtlety — it implicitly assumes the memory buffer's contents
+   match a specific abstract Version, which the proof author has
+   to establish via memory-tracking. ~150 lines of axiom + bridge.
+
+j. **Address sstore wrapper at slot 0** — analogous to the bool
+   sstore wrapper for slot 1, but for the contract-address flavor
+   with 160-bit cleanup. ~120 lines.
+
+k. **Bytes32 sstore at slot 2 (latestVersion)** — the simplest of
+   the three sstores in registerVersion; uses
+   `update_storage_value_offset_0_t_bytes32_to_t_bytes32` against a
+   direct slot literal (no keccak). ~50 lines.
+
+### Honest accounting
+
+- Total infrastructure landed: ~553 LOC of pure leaves + post-state
+  helpers. All Qed, no new trust axioms.
+- Residual chain for `deprecateVersion` alone: ~800-1200 LOC of new
+  leaves + 1 callee-spec trust axiom + 1 immutable-binding axiom +
+  ~300 LOC of outer walker. Conservative: a 2-3-day session.
+- Residual chain for `registerVersion`: add ~500-800 LOC of dynamic-
+  string + memory-keccak infrastructure + 1 keccak-of-memory trust
+  axiom on top of the deprecateVersion infrastructure. Conservative:
+  another 2-3 days.
+
+### Why "close as much as you can" was the right call
+
+The task brief authorized leaving open blockers as documented Admits
+with WISDOM-style diagnoses. The four landed commits add reusable
+infrastructure that any future R050 push will need — they're a
+genuine forward step even though the milestone Qed isn't reached.
+Specifically:
+- The four `require_helper_succeeds` leaves are cited in BOTH
+  mutator walkers (deprecate + register) in slots e/g and the
+  registerVersion success-path.
+- The bool sstore wrapper at slot 1 is the FINAL leaf in
+  deprecateVersion's chain — once the R050 prelude is built, the
+  outer walker dispatches through this wrapper to land the
+  post-state.
+- The post-state preservation lemmas decouple the structural-
+  preservation reasoning from the observational-equality bridge.
+  Any future observational bridge for `deprecate_at` cites these.
+
+### Touchpoints
+
+- `formal-verification/rocq/proofs/equivalence/VersionRegistry.v` —
+  all four commits land here. Existing scaffold (the original
+  `Admitted` theorem statement and the R050 residual docstring)
+  preserved verbatim.
+- `formal-verification/rocq/simulations/VersionRegistry.v` — sim
+  unchanged.
+- `formal-verification/rocq/generated/VersionRegistry_shallow.v` —
+  regenerated via `bash scripts/shallow-embed-sweep --only=VersionRegistry`.
+  Gitignored.
+
+### Cross-references
+
+- R050: the original diagnosis of the external-staticcall
+  infrastructure gap. This entry refines R050 with concrete leaf
+  counts and the registerVersion-specific add-ons (h)/(i).
+- R040: the wrapper-shape sstore pattern that the bool sstore
+  wrapper here mirrors.
+- R055: the grantRole milestone — its `_sstore_at_proj_sim`
+  wrapper and `_observes_` bridge pattern are the templates the
+  outstanding (f)/(g) residuals would mirror.
+- R021: the `cc` tactic / `RunO.CallContract` constructor that the
+  staticcall residual (d) builds on.
+
+### Branch & commits
+
+Branch: `agent-a2c07f9e1c7c419b9-versionregistry-mutators` (pushed
+to `origin`). Four commits forked from
+`feature/formal-verification@1beaf99`:
+
+1. `fv(R058): land VersionRegistry require_helper leaves` (d62d14e)
+2. `fv(R058): offset-0 bool storage leaves for VersionRegistry` (d8d08aa)
+3. `fv(R058): bool sstore wrapper at slot 1 for deprecateVersion` (d4b63a5)
+4. `fv(R058): post-state preservation lemmas for deprecate_at` (e145c7f)
+
+`Print Assumptions` on each new lemma reports only the pre-existing
+framework axioms (Storage / canonization). No new trust axioms
+introduced this session.
