@@ -112,25 +112,232 @@ Module GuardianEquivalence.
     members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
                      s.(State.optimisticGuardianManagers).
 
-  (** ----- Full projection -----
+  (** ----- Slot 1: AccessControlEnumerable._roleMembers positions =====
 
-      Single slot at index 0: the Map2-shaped role-member mapping.
-      Slot 1+ would hold AccessControlEnumerable's [_roleMembers], the
-      EnumerableSet machinery. For the view-only equivalence we don't
-      need to populate it; the unconstrained tail covers it. *)
+      Solidity layout (OZ AccessControlEnumerable 5.x):
+        mapping(bytes32 => EnumerableSet.AddressSet) private _roleMembers;
+      lives at storage slot 1 of the inheritance chain. The
+      [AddressSet] struct is itself an [EnumerableSet.Set]:
+        struct Set {
+          bytes32[] _values;                         // offset 0
+          mapping(bytes32 => uint256) _positions;    // offset 1; 1-indexed
+        }
+
+      Per-role storage anchor: [keccak256(role, 1)]. Within that set:
+        - the [_values] length sits at [keccak256(role, 1) + 0]
+        - the [_positions] mapping sits at [keccak256(role, 1) + 1]
+          (so a lookup of [position[v]] resolves to
+           [keccak256(v, keccak256(role, 1) + 1)])
+
+      For the projection-side bridge lemma — which equates the
+      sim's [add_admin]-style update to a structured update on the
+      projection — we model the positions submapping as a single
+      Map2-shaped dict keyed by [(role, value)]. The encoded value
+      is the 1-indexed position [Z.of_nat (List.length rest) + 1]
+      where [rest] is the tail of the role's address list AT the
+      moment [value] was prepended (sim convention: [add_role lst a
+      = a :: lst], so position-1 = the head). The downstream walker
+      proof for [fun_add_2085] (residual C in the task plan) will
+      bridge this Map2 shape to the Yul-level nested-keccak shape
+      via a custom sload lemma; same pattern as the slot-0
+      [run_sload_role_member_at_proj_sim] composition. *)
+  Fixpoint positions_for_role
+      (role : U256.t) (addrs : list Address) :
+      Dict.t (U256.t * U256.t) U256.t :=
+    match addrs with
+    | []         => []
+    | a :: rest  => ((role, a), Z.of_nat (List.length rest) + 1)
+                    :: positions_for_role role rest
+    end.
+
+  (** Concatenation across the three named roles, mirroring
+      [role_member_map]'s structure. *)
+  Definition role_positions_map (s : State.t) :
+      Dict.t (U256.t * U256.t) U256.t :=
+    positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                       s.(State.admins) ++
+    positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                       s.(State.optimisticGuardians) ++
+    positions_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                       s.(State.optimisticGuardianManagers).
+
+  (** ----- Full projection — TWO slots =====
+
+      Slot 0: the [_roles] mapping's nested [members] sub-field
+              (Map2 of (role, account) -> 0/1).
+      Slot 1: the [_roleMembers] positions sub-mapping under
+              AccessControlEnumerable. The [_values] length cell
+              and the [_values[i]] array slots are NOT modelled
+              here — they're either reconstructable from the
+              positions map plus list length (for the length cell)
+              or unobserved by the view-and-grant equivalence path
+              (the array body is touched only by [getRoleMember],
+              which Guardian.sol does not call). If a future
+              equivalence does need them, this projection extends
+              naturally to add a third slot. *)
   Definition proj_sim (s : State.t) : SimulatedStorage.t := [
-    StorableValue.Map2 (role_member_map s)
+    StorableValue.Map2 (role_member_map s);
+    StorableValue.Map2 (role_positions_map s)
   ].
 
   (** ----- Well-formedness ----- *)
   Lemma proj_sim_length (s : State.t) :
-    List.length (proj_sim s) = 1%nat.
+    List.length (proj_sim s) = 2%nat.
   Proof. reflexivity. Qed.
 
   Lemma proj_sim_roles (s : State.t) :
     List.nth_error (proj_sim s) 0
     = Some (StorableValue.Map2 (role_member_map s)).
   Proof. reflexivity. Qed.
+
+  Lemma proj_sim_positions (s : State.t) :
+    List.nth_error (proj_sim s) 1
+    = Some (StorableValue.Map2 (role_positions_map s)).
+  Proof. reflexivity. Qed.
+
+  (** ===== Bridge: [addr_in] ↔ [In] ===== *)
+
+  (** [addr_in] is the Boolean address-membership helper from the
+      sim; pairing it with [In] (the Coq Prop) lets the bridge
+      lemmas below state hypotheses in either flavor as needed. *)
+  Lemma addr_in_false_iff_not_In :
+    forall (lst : list Address) (a : Address),
+      Guardian.addr_in lst a = false <-> ~ In a lst.
+  Proof.
+    induction lst as [|h t IH]; intro a; simpl.
+    - split.
+      + intros _ [].
+      + reflexivity.
+    - destruct (h =? a) eqn:Hha.
+      + apply Z.eqb_eq in Hha. subst h. split.
+        * discriminate.
+        * intro Hn. exfalso. apply Hn. left. reflexivity.
+      + apply Z.eqb_neq in Hha. rewrite IH. split.
+        * intros Hni [Heq|Hin]; [congruence|contradiction].
+        * intros Hni Hin. apply Hni. right. exact Hin.
+  Qed.
+
+  Lemma addr_in_true_iff_In :
+    forall (lst : list Address) (a : Address),
+      Guardian.addr_in lst a = true <-> In a lst.
+  Proof.
+    induction lst as [|h t IH]; intro a; simpl.
+    - split.
+      + discriminate.
+      + intros [].
+    - destruct (h =? a) eqn:Hha.
+      + apply Z.eqb_eq in Hha. subst h. split.
+        * intros _. left. reflexivity.
+        * reflexivity.
+      + apply Z.eqb_neq in Hha. rewrite IH. split.
+        * intro Hin. right. exact Hin.
+        * intros [Heq|Hin]; [congruence|exact Hin].
+  Qed.
+
+  (** ===== Bridge: [members_for_role] is invariant under unrelated-role
+      list mutations ===== *)
+
+  (** Helper: prepending an entry under role [r1] to the dict has no
+      bearing on lookups under a different role [r2]. Used in the
+      bridge lemmas to reason about [add_admin] which only mutates the
+      [admins] sub-list (the [DEFAULT_ADMIN_ROLE] block). *)
+  Lemma members_for_role_cons :
+    forall (role : U256.t) (a : Address) (rest : list Address),
+      members_for_role role (a :: rest) =
+      ((role, a), 1) :: members_for_role role rest.
+  Proof. reflexivity. Qed.
+
+  Lemma positions_for_role_cons :
+    forall (role : U256.t) (a : Address) (rest : list Address),
+      positions_for_role role (a :: rest) =
+      ((role, a), Z.of_nat (List.length rest) + 1)
+      :: positions_for_role role rest.
+  Proof. reflexivity. Qed.
+
+  (** ===== Bridge: [role_member_map] after [add_admin] =====
+
+      Closed by [unfold; rewrite addr_in_false_iff_not_In]. The
+      cons-to-front form on the right matches [Guardian.add_role]'s
+      [a :: lst] convention; the [Dict.declare_or_assign] form
+      produced by [run_sstore_map2_u256] in the eventual residual-C
+      walker proof is provably equal to this via a separate
+      conversion lemma. *)
+  Lemma role_member_map_add_admin_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.admins) ->
+      role_member_map (Guardian.add_admin s addr) =
+      ((DEFAULT_ADMIN_ROLE_bytes32, addr), 1) :: role_member_map s.
+  Proof.
+    intros s addr Hni.
+    unfold role_member_map, Guardian.add_admin, Guardian.add_role.
+    simpl. rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    simpl. reflexivity.
+  Qed.
+
+  (** [role_positions_map] companion. The new position is
+      [Z.of_nat (length admins) + 1] — OZ's 1-indexed position
+      = previous length + 1. *)
+  Lemma role_positions_map_add_admin_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.admins) ->
+      role_positions_map (Guardian.add_admin s addr) =
+      ((DEFAULT_ADMIN_ROLE_bytes32, addr),
+        Z.of_nat (List.length s.(State.admins)) + 1)
+      :: role_positions_map s.
+  Proof.
+    intros s addr Hni.
+    unfold role_positions_map, Guardian.add_admin, Guardian.add_role.
+    simpl. rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    simpl. reflexivity.
+  Qed.
+
+  (** ===== Bridge: [proj_sim] after [add_admin] — the headline (B) =====
+
+      Equates the projection of the post-[add_admin] sim to a
+      cons-prefixed projection of the pre-[add_admin] sim, in both
+      slots simultaneously. Used by the residual-C walker proof
+      (see [run_grantRole_1359_equivalent]'s docstring) to close the
+      post-sstore state equality after the inner [_grantRole_1468]
+      sstore (slot 0, the bool members map) and the
+      [fun_add_2085]/[fun__add_1614] sstores at slot 1 (the
+      positions map). *)
+  Theorem proj_sim_add_admin_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.admins) ->
+      proj_sim (Guardian.add_admin s addr) =
+      [ StorableValue.Map2
+          (((DEFAULT_ADMIN_ROLE_bytes32, addr), 1)
+           :: role_member_map s);
+        StorableValue.Map2
+          (((DEFAULT_ADMIN_ROLE_bytes32, addr),
+            Z.of_nat (List.length s.(State.admins)) + 1)
+           :: role_positions_map s) ].
+  Proof.
+    intros s addr Hni.
+    unfold proj_sim.
+    rewrite (role_member_map_add_admin_not_in s addr Hni).
+    rewrite (role_positions_map_add_admin_not_in s addr Hni).
+    reflexivity.
+  Qed.
+
+  (** ===== Idempotency companion =====
+
+      When [addr] is already an admin, [add_admin] is a no-op on the
+      sim ([add_role] is idempotent on existing members), so the
+      projection is unchanged. The other half of the bridge contract
+      — the [hasRole] path inside [_grantRole_1468] gates against the
+      sstore, so the walker proof's already-member branch closes via
+      this lemma. *)
+  Theorem proj_sim_add_admin_in :
+    forall (s : State.t) (addr : Address),
+      In addr s.(State.admins) ->
+      proj_sim (Guardian.add_admin s addr) = proj_sim s.
+  Proof.
+    intros s addr Hin.
+    unfold proj_sim, Guardian.add_admin, Guardian.add_role.
+    rewrite (proj2 (addr_in_true_iff_In _ _) Hin).
+    destruct s as [admins g m]; reflexivity.
+  Qed.
 
   Import Guardian_325.Guardian_325_deployed.
 
