@@ -2269,11 +2269,11 @@ Module GuardianEquivalence.
         StorableValue.Map2 (role_positions_map sim);
         StorableValue.Map (role_values_length_map sim);
         StorableValue.Map2 (role_values_body_map sim) ] in
-    exists state',
+    exists w0' w1' rest',
     {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
       fun__grantRole_1468 role account ⇓
       Result.Ok 1
-    | Some state' ?}}.
+    | Some (make_state env state_base (w0' :: w1' :: rest') proj_sim') ?}}.
   Proof.
     (** Walker proof. The post-state existential lets us leave the final
         memory/state shape abstract — only the storage-update logic
@@ -2340,11 +2340,12 @@ Module GuardianEquivalence.
     (* msgSender: state-preserving leaf. *)
     pose proof (run_fun__msgSender_3197 codes env state_after_sstore)
       as Hms.
-    (* Post-state existential: the final state after the log4 sub-block
-       is observationally [state_after_sstore]. The walker discharges
-       any remaining mload/log4 primitives below, leaving the post-state
-       as an evar that closes when the final [RunO.Pure] fires. *)
-    eexists.
+    (* Post-state: pin to the post-sstore state. log4/MLoad are
+       state-preserving in our sim model. *)
+    exists w0_b, w1_b, rest_b.
+    fold proj_sim_post.
+    change (make_state env state_base (w0_b :: w1_b :: rest_b) proj_sim_post)
+      with state_after_sstore.
     unfold fun__grantRole_1468.
     unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
            Shallow.let_state, Shallow.if_.
