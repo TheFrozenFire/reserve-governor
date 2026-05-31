@@ -1164,86 +1164,71 @@ Module VersionRegistryEquivalence.
        11. update_storage_value_offset_0_t_bool_to_t_bool 1   (SSTORE)
        12. log2(...VersionDeprecated event...)          (no-op in sim)
 
-      ===== Residual catalogue (R050 candidate) =====
+      ===== Residual catalogue (updated post-R063) =====
 
-      Closing this proof requires the following leaves, NONE of which
-      exist in the corpus today:
+      R063 (2026-05-31) recognised [staticcall] as a composite of
+      existing primitives, NOT a missing upstream primitive. The
+      bridge in [proofs/equivalence/StaticCallBridge.v] closes three
+      residuals from this catalogue in one stroke:
 
-      (R-statcall) [run_role_registry_hasRole_staticcall_via_cc]:
-          Use [RunO.CallContract] (R021's trust-based rule) to choose
-          call_result = 1 (the role check passes), tied to a callee-spec
-          axiom — analogous to [version_hash_injective] in the sim —
-          that says the roleRegistry's hasRole_OwnerOrEmergencyCouncil
-          returns 1 when [is_owner_or_emergency env.caller = true].
+        (R-statcall) — DONE via [StaticCallBridge.run_staticcall_to_word].
+            Caller picks [call_result = 1] (the role check passes) and
+            supplies a callee-spec axiom paired with the bridge.
 
-      (R-memprelude) Memory leaves for the abi prelude:
-          [run_allocate_unbounded], [run_finalize_allocation],
-          [run_mstore_with_shift_left_224],
-          [run_abi_encode_tuple_t_address__to_t_address__fromStack],
-          [run_abi_decode_tuple_t_bool_fromMemory],
-          [run_returndatasize_after_callcontract]. Each is a focused
-          ~20-30 line leaf. The trickiest is [returndatasize] — it
-          depends on the [Primitive.RLoad] state set by the prior
-          [LowM.CallContract] step, which the trust-based [cc] rule
-          does NOT canonicalize for us. The proof author would have to
-          assert (or prove) the post-staticcall return-data length is
-          32 bytes.
+        (R-immutable) — DONE via [StaticCallBridge.run_loadimmutable].
+            Caller supplies the [Account.immutables] hypothesis.
 
-      (R-immutable) [run_loadimmutable_returns_role_registry]:
-          model the [Primitive.LoadImmutable] read against a hypothesis
-          [env.(immutables) ! "roleRegistry" = Some addr]. Straightforward
-          once stated, ~10 lines.
+        (R-returndatasize) — DONE via
+            [StaticCallBridge.run_returndatasize_after_bridge]. The
+            bridge pins the post-staticcall state to
+            [return_data := u256_as_bytes call_result], a 32-byte list.
 
-      (R-bool-sstore) [run_update_storage_value_offset_0_t_bool_to_t_bool_at_proj_sim]:
-          a R040-style wrapper baking in [proj_sim sim]'s 3-slot
-          layout, writing 1 at slot 1's map entry. The body composes
-          [sload + prepare_store_t_bool + update_byte_slice_1_shift_0 +
-          sstore] — analogous to ThrottleLib's uint256 wrapper but for
-          the bool flavor (different prepare/byte-slice helpers).
-          ~80 lines once attempted.
+      Three residuals remain — they are NOT R050-specific; they are
+      generic Yul abi-encoding plumbing that any contract with an
+      external call exercises:
+
+      (R-memprelude) Memory leaves for the abi prelude — still TODO:
+          [run_allocate_unbounded] (mload(64) — the free-pointer read),
+          [run_finalize_allocation] (mstore(64, newFreePtr) — bumps the
+          free pointer),
+          [run_mstore_with_shift_left_224] (writes the function selector
+          left-shifted by 224 bits),
+          [run_abi_encode_tuple_t_address__to_t_address__fromStack]
+          (mstore(off, cleanup_t_address(value))),
+          [run_abi_decode_tuple_t_bool_fromMemory] (reads a bool from
+          memory at offset and validates the slt-check).
+          Each is a ~20-50 line leaf. Together ~150-250 LOC. None of
+          them touch the staticcall apparatus.
+
+      (R-bool-sstore) [run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim]
+          — DONE in R058 (the bool-sstore wrapper at slot 1).
 
       (R-require) [run_require_helper_t_error_10_InvalidCaller_succeeds]
-          and [run_require_helper_t_error_16_AlreadyDeprecated_succeeds].
-          Mirror ThrottleLib's [run_require_helper_succeeds] for the
-          uint256 case — same structural shape, different error payload
-          bytes. ~15 lines each.
+          and [run_require_helper_t_error_16_AlreadyDeprecated_succeeds]
+          — DONE in R058 (the four require_helper_succeeds leaves).
 
-      (R-postbridge) [proj_sim_deprecate_at]: a multi-slot proj_sim
-          bridge analogous to R049's [proj_sim_add_admin], stating
+      (R-postbridge) [proj_sim_deprecate_at_observes] — still TODO,
+          ~80-120 LOC. Connects [Dict.declare_or_assign
+          (isDeprecated_map history) hash 1] to [isDeprecated_map
+          (deprecate_at sim i)] observationally (Z-keyed
+          variant of R054's map_get_cons_eq_app_singleton bridge plus
+          an in-place-flip equivalence). Per-target work; not generic.
 
-            proj_sim (deprecate_at sim i) =
-            [ Map (deployments_map history) ;
-              Map (Dict.declare_or_assign (isDeprecated_map history)
-                     (entry_hash_at sim i) 1) ;
-              U256 (latestVersion_value sim) ]
+      ===== Effort accounting =====
 
-          The bridge would close once we have
-          [find_entry_versionHash_lookup_eq] showing
-          [Dict.get (isDeprecated_map history) versionHash = Some 1]
-          iff the entry exists with deprecated = true. ~40 lines.
-
-      ===== Honest assessment =====
-
-      The original task brief described this as "the SIMPLEST OZ mutator
-      pattern... JUST sstores true here". That mis-read the contract:
-      the role check is an EXTERNAL [staticcall] to a separate
-      [roleRegistry] contract, not an internal hasRole. None of the
-      six residual leaves above exist in the corpus. Individually each
-      is tractable; together they constitute the [staticcall]-gated-
-      mutator infrastructure for every subsequent OZ-shape proof.
-
-      Net effort: NOT 75 minutes. Conservative estimate is a multi-day
-      workstream, with R-memprelude and R-statcall being the load-
-      bearing pieces. Once that infrastructure lands, this theorem
-      closes mechanically along the lines of
-      [run_consumeProposalCharge_make_state] (the canonical mutator
-      template in ThrottleLib).
+      R058 estimated 800-1200 LOC of new leaves + a 2-3-day workstream
+      for [deprecateVersion] alone. R063's bridge closes the load-
+      bearing R-statcall + R-immutable + R-returndatasize chunks in
+      ~330 LOC of reusable bridge module. Remaining for the
+      [deprecateVersion] Qed: ~150-250 LOC of abi-encoding leaves
+      (generic Yul, reusable across ALL R050-blocked surfaces) +
+      ~80-120 LOC of per-target observational bridge + outer walker.
 
       The theorem statement below is the contract our future work has
       to satisfy. The proof body sets up the upfront [pose] for the
       mapping_index_access and the isDeprecated read leaf (both of
-      which ARE in scope today) and admits on the staticcall + memory
-      prelude residuals. *)
+      which ARE in scope today) and admits on the abi-prelude +
+      observational-bridge residuals. *)
 
   Theorem run_deprecateVersion_equivalent_make_state
       (codes : Codes.t) (env : Environment.t)

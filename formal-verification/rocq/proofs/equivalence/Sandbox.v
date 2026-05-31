@@ -212,4 +212,57 @@ Module R050VerificationCheck.
     - reflexivity.
   Qed.
 
+  (** Loadimmutable composes against an [Account.immutables] hypothesis.
+      This is the trivial dispatch for R-immutable from R058's
+      catalogue, packaged so downstream walkers can [apply] it. *)
+  Lemma loadimmutable_composes_with_hyp
+      codes env state
+      (immutable_name addr : U256.t)
+      (account : Account.t)
+      (H_account : Dict.get state.(State.accounts)
+                     env.(Environment.address) = Some account)
+      (H_immutable : Dict.get account.(Account.immutables) immutable_name
+                       = Some addr) :
+    {{? codes, env, Some state |
+      Stdlib.loadimmutable immutable_name ⇓ Result.Ok addr
+    | Some state ?}}.
+  Proof.
+    apply (StaticCallBridge.run_loadimmutable codes env state
+             immutable_name addr account H_account H_immutable).
+  Qed.
+
+  (** ----- Walker-shaped composition demo -----
+
+      Demonstrates the bridge composes through the [LowM.Let (LowM.Call
+      (Stdlib.staticcall ...) LowM.Pure) (fun _24 => k)] shape — the
+      exact structure that [let~ _24 := [[ staticcall ~(| ... |) ]] in
+      k] desugars to. This is the walker-arm shape every R050-blocked
+      surface (#247, #248, #249, #253, #245 outer mutators) will hit.
+
+      Closing this validates that the bridge + the [c]/[l] tactic
+      vocabulary discharges the staticcall+continuation idiom
+      mechanically, with no further plumbing. *)
+  Lemma bridge_composes_in_walker_shape
+      codes env state
+      (g addr in_ insize out : U256.t)
+      (call_result : U256.t)
+      (H_not_precompile : Stdlib.precompile_output addr [] = None) :
+    exists state',
+    {{? codes, env, Some state |
+      LowM.Let
+        (LowM.Call (Stdlib.staticcall g addr in_ insize out 32) LowM.Pure)
+        (fun result =>
+           (* The continuation just returns the call result — simulates
+              the [_24 := staticcall ...; M.pure _24] tail. *)
+           LowM.Pure result)
+      ⇓ Result.Ok call_result
+    | state' ?}}.
+  Proof.
+    eexists.
+    eapply RunO.Let.
+    - StaticCallBridge.sc_word call_result H_not_precompile.
+      apply RunO.Pure.
+    - apply RunO.Pure.
+  Qed.
+
 End R050VerificationCheck.

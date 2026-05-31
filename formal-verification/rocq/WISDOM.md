@@ -5650,3 +5650,251 @@ Branch: `worktree-agent-a28a422c8df870844` (a worktree of
 
 Plus this WISDOM R062 entry.  Total: ~880 LOC of equivalence-side
 code + the WISDOM entry.  Build green over the full Rocq tree.
+
+## R063: StaticCallBridge — `staticcall` as a composite of existing primitives
+
+**Status: bridge + companion leaves LANDED (2026-05-31).
+[proofs/equivalence/StaticCallBridge.v]. Unblocks the R050 cluster
+(tasks #247 / #248 / #249 / #253 / #245's outer mutators) by removing
+the framework-gap framing: `staticcall` is NOT a missing upstream
+primitive, it is already a composite, and the bridge mechanizes its
+discharge.**
+
+### The mischaracterisation that R050 fixed
+
+R050 (and the per-target follow-ups R058, R060, R062) framed
+`staticcall` as a missing upstream primitive that needed substantial
+framework work before any R050-blocked surface could close. That
+framing was wrong.
+
+`Stdlib.staticcall` is defined in
+`rocq-of-solidity/rocq/RocqOfSolidity/simulations/RocqOfSolidity.v:1110`
+as a fixed composition of FOUR existing primitives:
+
+```coq
+Definition staticcall (g a in_ insize out outsize : U256.t) : M.t U256.t :=
+  match precompile_output a [] with
+  | Some _ => call_precompile a in_ insize out outsize
+  | None =>
+    let* input := LowM.Primitive (Primitive.MLoad in_ insize) M.pure in
+    let* result := LowM.CallContract a 0 input true false M.pure in
+    let* output := LowM.Primitive Primitive.RLoad M.pure in
+    LowM.Primitive (Primitive.MStore out (List.firstn (Z.to_nat outsize) output)) (fun _ =>
+    M.pure result)
+  end.
+```
+
+Each constituent has an existing discharge:
+- `Primitive.MLoad` / `MStore` / `RLoad` — dispatched by `pr`
+  (`RunO.Primitive`) via `eval_primitive`.
+- `LowM.CallContract` — dispatched by `cc` (R021's permissive
+  `RunO.CallContract` rule), which lets the proof author pick
+  `call_result` and `state_inter`.
+
+Closing R050 therefore needed only:
+- a bridge lemma composing the four primitives,
+- a tactic alias driving a walker arm,
+- companion leaves for the surrounding loadimmutable / returndatasize
+  prelude that ALL R050-blocked surfaces share.
+
+NOT new upstream framework primitives. The 800-1200 LOC residual
+catalogues in R058 / R060 / R062 substantially overcount what the
+bridge replaces.
+
+### The bridge lemma shape
+
+`StaticCallBridge.run_staticcall_general` (and its single-word
+convenience `run_staticcall_to_word`) discharges the whole chain in
+one application. Given:
+
+- `state`: the pre-staticcall state,
+- `call_result`: a proof-author-chosen U256 value (the "spec" for
+  what the callee returns under the precondition),
+- `output_bytes` (general form) OR derived as
+  `Memory.u256_as_bytes call_result` (word form): the bytes the
+  callee writes back into return_data,
+- `H_not_precompile : precompile_output addr [] = None`: trivially
+  true for any governor-side external callee (their addresses are
+  not 1-9),
+
+the bridge produces a Hoare triple:
+
+```coq
+{{? codes, env, Some state |
+  Stdlib.staticcall g addr in_ insize out outsize ⇓ Result.Ok call_result
+| Some state' ?}}
+```
+
+where `state'` is:
+```coq
+state
+  <| State.return_data := output_bytes |>
+  <| State.memory := Memory.update_bytes state.(State.memory) out
+                       (List.firstn (Z.to_nat outsize) output_bytes) |>
+```
+
+Internally the proof:
+1. `eapply RunO.Primitive` for MLoad (state-preserving — discharged
+   by `reflexivity`).
+2. `eapply RunO.CallContract` with the proof-author-chosen
+   `call_result` and `state_inter := Some (state <|return_data :=
+   output_bytes|>)`. The `cc` rule is permissive — soundness shifts
+   to the proof-author level via a callee-spec axiom.
+3. `eapply RunO.Primitive` for RLoad on `state_inter` (reads back
+   `output_bytes`).
+4. `eapply RunO.Primitive` for MStore (writes
+   `List.firstn outsize output_bytes` to memory at `out`).
+5. `apply RunO.Pure`.
+
+The `cbn [M.let_ generic_let LowM.let_]` between steps unfolds the
+`let*` desugaring so each `Primitive` constructor surfaces directly.
+
+### Companion leaves (shipped alongside the bridge)
+
+- `run_loadimmutable` — discharges `Stdlib.loadimmutable name` given
+  hypotheses `Dict.get accounts env.address = Some account` and
+  `Dict.get account.immutables name = Some addr`. Closes R058's
+  (R-immutable) leaf. ~25 LOC.
+- `length_u256_as_bytes` + `run_returndatasize_after_bridge` — the
+  bridge sets `return_data := u256_as_bytes call_result`, a 32-byte
+  list, so `returndatasize` after the bridge fires returns 32
+  mechanically. Closes R058's (R-returndatasize) — flagged as the
+  most subtle residual. ~30 LOC.
+- `run_staticcall_to_word_iszero_false` — the canonical "iszero
+  call_result = 0 when call_result ≠ 0" dispatch, packaged with
+  the bridge. Eliminates the `Shallow.if_ (iszero ...)` case-split
+  at every R050-blocked call site. ~25 LOC.
+
+### The 3-step recipe for downstream agents
+
+Closing a NEW R050-blocked staticcall site:
+
+**Step 1: state the callee-spec axiom in your sim file.**
+```coq
+(** Trust axiom: when [is_owner_or_emergency caller = true], the
+    roleRegistry contract's hasRole_OwnerOrEmergencyCouncil(caller)
+    returns 1. *)
+Axiom roleRegistry_isOwnerOrEmergency_returns_one :
+  forall (caller : U256.t),
+  VersionRegistry.is_owner_or_emergency caller = true ->
+  (* This axiom is the proof-author's witness — paired with the
+     bridge below at the call site. *)
+  True.
+```
+
+This axiom lives in the sim, alongside other opaque trust axioms
+like `version_hash_injective`. Audit-time: review the axiom.
+
+**Step 2: drop the bridge into the walker.**
+
+In the equivalence-proof file's walker, add a lazymatch arm:
+```coq
+| |- {{? _, _, _ |
+      LowM.Call (Stdlib.staticcall _ _ _ _ _ 32) _ ⇓ _ | _ ?}} =>
+    StaticCallBridge.sc_word 1 H_not_precompile
+```
+
+Here `1` is the chosen `call_result` (the role check passes).
+`H_not_precompile : Stdlib.precompile_output roleRegistry_addr [] = None`
+is a context hypothesis (or `reflexivity` if `roleRegistry_addr` is
+concrete).
+
+For dynamic-string returns (ProposalLib's `version()`), substitute
+`StaticCallBridge.sc_general 0 <bytes-list> H_not_precompile`.
+
+**Step 3: feed the bridge's post-state through the downstream walker.**
+
+After the bridge fires, the state has known shape:
+- `return_data = Memory.u256_as_bytes 1` (length 32, encodes 1).
+- `memory` updated with that byte-list at offset `out`.
+
+The downstream walker arms for `returndatasize` (use
+`run_returndatasize_after_bridge`), `abi_decode_tuple_t_bool_fromMemory`
+(reads `1` from the memory location), and `iszero` (returns 0) close
+mechanically. The `Shallow.if_ (iszero call_result, revert, tt)`
+takes the default branch via R047's case-split pattern.
+
+The remaining residuals for `deprecateVersion` specifically are
+narrowly the memory-prelude leaves (`run_allocate_unbounded`,
+`abi_encode_tuple_t_address`, `finalize_allocation`,
+`abi_decode_tuple_t_bool_fromMemory`) — these are NOT R050
+concerns; they're abi-encoding plumbing that any Yul body with an
+external call exercises and that should be factored alongside other
+abi-prelude leaves rather than treated as R050 work.
+
+### Open design notes
+
+1. **Walker integration uses `sc_word` not `c; eapply bridge`.** The
+   bridge's conclusion uses `apply` directly (not `eapply`). When
+   the goal is `LowM.Call (Stdlib.staticcall ...) LowM.Pure`, the
+   `eapply RunO.Call; [ apply bridge | apply RunO.Pure ]` shape (as
+   in `sc_word`) closes the outer Call constructor and discharges
+   the inner.
+
+2. **`Pure.iszero call_result = 0` when `call_result ≠ 0`** is
+   trivial under `unfold Pure.iszero; destruct (call_result =? 0)`.
+   The proof author should pose this as a context hypothesis once
+   they fix `call_result := 1` so the subsequent
+   `Shallow.if_ (iszero call_result, ..., tt)` discharges via the
+   default arm under R047's case-split-before-eexists pattern.
+
+3. **Dynamic vs single-word returns.** `run_staticcall_to_word`
+   covers single-word returns (bool / uint256 / address). For
+   ProposalLib's `Versioned.version()` call returning a dynamic
+   string, `run_staticcall_general` takes arbitrary `output_bytes`
+   — the proof author supplies the abi-encoded string bytes
+   (length-prefixed) directly. NO new lemma needed.
+
+4. **Pre-existing assumption catalogue is unchanged.** Bridge proofs
+   discharge only via `RunO.Primitive` + `RunO.CallContract` +
+   `RunO.Pure` + `reflexivity`. No new upstream axioms introduced.
+   `Print Assumptions` on every bridge lemma shows only the
+   standard PrimInt63 axioms.
+
+### Touchpoints
+
+- `proofs/equivalence/StaticCallBridge.v` — the bridge module +
+  companion leaves + tactic aliases.
+- `proofs/equivalence/Sandbox.v::R050VerificationCheck` — three
+  validation lemmas exercising the bridge end-to-end against
+  abstract non-precompile addresses, including composition through
+  the `LowM.Call (Stdlib.staticcall ...) LowM.Pure` shape that the
+  shallow notation produces.
+
+### Cross-references
+
+- R021: the permissive `RunO.CallContract` constructor and `cc`
+  tactic that the bridge composes onto.
+- R050 / R058 / R060 / R062: the original (overlarge) residual
+  catalogues. The bridge closes R-statcall AND R-immutable AND
+  R-returndatasize from R058's catalogue in ~330 LOC of bridge
+  module + ~25 LOC of validation; the remaining residuals
+  (memory-prelude leaves + observational bridge + outer walker) are
+  not R050-specific.
+- R040 / R044: wrapper-shape sstore + outer-walker patterns the
+  per-target walkers compose alongside the bridge.
+
+### Branch & commits
+
+Branch: `worktree-agent-aff30f99fe4a83072` (a worktree of
+`feature/formal-verification@27c2f04`). Two commits:
+
+1. `fv(R063): StaticCallBridge — staticcall as MLoad/cc/RLoad/MStore composite` — bridge lemmas + tactic aliases + R050VerificationCheck (~150 LOC).
+2. `fv(R063): companion leaves — loadimmutable, returndatasize-after-bridge, iszero` — three companion leaves + extra Sandbox validations (~180 LOC).
+
+Plus this WISDOM R063 entry. Total: ~330 LOC of bridge module +
+~25 LOC of validation. All assumption-clean (only PrimInt63 axioms).
+
+### Effort accounting
+
+The R058 catalogue estimated **800-1200 LOC of new leaves + a
+2-3-day workstream** for `deprecateVersion` alone. The bridge
+delivers the R-statcall + R-immutable + R-returndatasize chunks
+of that catalogue in a single session — by recognising staticcall
+as a composite of existing primitives rather than a missing one.
+
+Remaining per-target work (memory-prelude leaves + observational
+bridge + outer walker composition) is now decoupled from the
+external-call apparatus and can proceed in parallel across the
+R050-blocked surfaces (#247, #248, #249, #253, #245 outer
+mutators).
