@@ -3921,3 +3921,83 @@ green. `Admitted` count unchanged (still 2 — the milestone remains
 open pending one of the three resolution paths). `Print Assumptions`
 on the new lemmas reports only the existing role-bytes32 Parameters
 — no new trust axioms.
+
+### 2026-05-31 follow-up #2: Phase 2 axiom + wrapper generalization
+
+The structural prerequisite for Phase 5 closure landed in
+`agent-a551-fv-phase2-general` (worktree
+`.claude/worktrees/agent-a551b96422cc73838`, forked from
+`feature/formal-verification@9ae40c3`).
+
+**What changed.** Seven sstore/sload axioms and six wrapper lemmas
+were generalized to accept arbitrary 4-slot projection variants:
+
+- `run_sload_role_values_length_at_proj_sim` (slot 2 read)
+- `run_sstore_role_values_length_at_proj_sim` (slot 2 write)
+- `run_sstore_role_values_body_at_proj_sim` (slot 3 write)
+- `run_sload_role_values_length_at_proj_sim_post` (slot 2 re-read)
+- `run_sload_role_values_body_at_proj_sim` (slot 3 read)
+- `run_sload_role_positions_at_proj_sim` (slot 1 read)
+- `run_sstore_role_positions_at_proj_sim` (slot 1 write)
+
+Each now binds explicit `member_map_in`, `positions_map_in`,
+`length_map_in`, `body_map_in` parameters instead of computing them
+from a `sim : State.t`.
+
+Wrappers updated to thread the four maps through:
+`run_update_storage_value_t_bytes32_at_proj_sim`,
+`run_update_storage_value_t_uint256_at_positions_proj_sim`,
+`run_fun__contains_1760_at_proj_sim_not_in`,
+`run_array_push_at_proj_sim`,
+`run_fun__add_1614_at_proj_sim_not_in`,
+`run_fun_add_2085_at_proj_sim`.
+
+Two ancillary additions:
+- `run_array_push_at_proj_sim` and `run_fun__add_1614_at_proj_sim_not_in`
+  now take an `H_len_nn` precondition (the caller proves
+  `0 <= map_get_u256 length_map_in role`). Previously this came for
+  free from the `role_values_length_map`'s `Z.of_nat _` structure;
+  the generic form needs it from the caller.
+- A local helper `H_dict_declare_role_eq` shows
+  `map_get_u256 (declare_or_assign d k v) k = v` for any dict —
+  used in place of the previous induction over the
+  `role_values_length_map`'s closed structure.
+
+**Build status.** Green. `Admitted` count still 2 — the milestone
+remains open. No new axioms; the seven existing axioms were
+re-binders only (their semantic content is unchanged, just generalized
+in the slot-0/1/2/3 dimensions that were previously hardcoded).
+
+**What this unblocks.** Phase 1's post-state (slot 0 mutated by
+`Dict.declare_or_assign`) can now feed directly into Phase 2's
+walker — the previously-blocking syntactic mismatch is gone. The
+remaining work for milestone Qed is purely OPERATIONAL:
+
+  1. Case-split the milestone on `role`: known (DEFAULT / OPT_G /
+     OPT_GM) vs unknown. For unknown roles, the
+     `run_sload_role_admin_at_proj_sim` parametric axiom doesn't
+     apply, so either case-split unknown out, or add `H_role_known`
+     to the theorem's preconditions (the latter aligns with the
+     modifier wrapper which already requires it).
+  2. Case-split on whether `account` is already a member of the
+     role's list. Already-member: state unchanged, observational
+     clause discharges reflexively. Not-member: compose Phase 1 +
+     generalized Phase 2 into an `Hnotmem` witness, feed Phase 3,
+     thread through Phase 4 + modifier + outer wrapper, discharge
+     observational clause via the four `_sstore_observes_…` bridges.
+  3. Repeat (2) for OPT_G and OPT_GM. These need
+     `add_optimistic_guardian{_manager}` analogs of the four
+     observational bridges, plus the corresponding `has_admin` /
+     `addr_in optimisticGuardians*` reasoning.
+
+Estimated effort to close all three role branches: ~150-250 lines.
+The DEFAULT role's already-member branch is the cheapest (state
+unchanged, no Phase 1+2 composition); the three not-member branches
+are the bulk.
+
+### Branch & commits
+
+- Branch: `agent-a551-fv-phase2-general` (pushed to
+  `thefrozenfire/agent-a551-fv-phase2-general`).
+- Commit: `fv(R054): generalize Phase 2 sstore axioms over arbitrary
+  pre-state maps` — single commit, 378 insertions / 297 deletions.
