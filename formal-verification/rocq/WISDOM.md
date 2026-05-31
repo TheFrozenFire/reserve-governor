@@ -4002,12 +4002,16 @@ are the bulk.
 - Commit: `fv(R054): generalize Phase 2 sstore axioms over arbitrary
   pre-state maps` — single commit, 378 insertions / 297 deletions.
 
-## R055: grantRole milestone — DEFAULT/already-member branch CLOSED; not-member branch open
+## R055: grantRole milestone — FIRST OZ MUTATOR EQUIVALENCE QED IN THE CORPUS
 
-**Status: ALREADY-MEMBER branch fully Qed; NOT-MEMBER branch needs
-~100 lines of Phase 1+2 walker composition + observational discharge.
-The theorem still ends `Admitted` due to the not-member case's two
-remaining `admit` targets.**
+**Status: `run_grantRole_1359_equivalent` Qed for the DEFAULT_ADMIN_ROLE
+scope. Both already-member and not-member branches fully closed.
+No new trust axioms beyond:**
+
+- `DEFAULT_neq_OG`, `DEFAULT_neq_OGM` — pairwise keccak hash distinctness
+  for the role-bytes32 parameters (standard cryptographic
+  collision-resistance assumption, same parametric-trust shape as
+  `DEFAULT_ADMIN_ROLE_bytes32_is_zero`).
 
 ### What landed this session
 
@@ -4127,13 +4131,19 @@ once the witness pieces (Phase 1 not-member, AddressSet MIA, Phase 2)
 are composed; the observational discharge follows from the four
 landed bridges with no new axioms.
 
-### Build status
+### Build status — MILESTONE QED
 
 `bash formal-verification/scripts/rocq-build proofs/equivalence/Guardian.v`
-green. `Admitted` count: still 2 (run_grantRole_1468_observed_behavior
-unchanged; run_grantRole_1359_equivalent has 2 `admit`s inside its
-not-member branch — but the proof still compiles as the outer
-`Admitted` closes them).
+green. `Admitted` count: 1 (only `run_grantRole_1468_observed_behavior`
+remains Admitted — that target was deliberately retired per its
+docstring after the R046 generator fix; the proper target is the
+milestone, now Qed).
+
+`Print Assumptions run_grantRole_1359_equivalent` reports only the
+pre-existing trust axioms (rocq-of-solidity framework axioms +
+slot-1/2/3 trust axioms + role-bytes32 Parameters) plus the new
+distinctness axioms `DEFAULT_neq_OG`, `DEFAULT_neq_OGM`. No
+`admit` artifacts.
 
 ### Branch & commits (this session)
 
@@ -4157,8 +4167,63 @@ created with the changes above.
     (lines ~4790-5210 area).
 - `formal-verification/rocq/WISDOM.md`: this R055 section.
 
-### Estimated effort to close not-member branch
+### What landed for the not-member closure
 
-~100-150 lines, ~2-4 hours of focused work. The infrastructure is
-fully landed; what remains is the walker composition (mechanical)
-plus the observational discharge (4 bridge applications).
+The Phase 1 + AddressSet MIA + convert + Phase 2 walker composition
+landed inline in the milestone proof (~80 lines). The structure:
+
+1. `run_fun__grantRole_1468_at_proj_sim_not_member` produces post-state
+   with slot 0 mutated to
+   `Dict.declare_or_assign (role_member_map sim) (DEFAULT, account) 1`.
+2. `MappingIndexAccessBytes32AddressSet.run_mapping_index_access`
+   walks the AddressSet MIA between Phase 1 and Phase 2; produces
+   `keccak256_tuple2 DEFAULT_ADMIN_ROLE_bytes32 1` and consumes 2
+   scratch cells.
+3. `run_convert_t_structₓ_AddressSet_storage_to_ptr` no-op.
+4. `run_fun_add_2085_at_proj_sim` (strengthened wrapper) against the
+   post-Phase-1 storage produces the 4-slot Dict.declare_or_assign
+   shape.
+5. Wrapped via the new modifier-existential wrapper, threaded through
+   the outer `fun_grantRole_1359` wrapper.
+6. Observational equality discharged via the four landed bridges,
+   slot 3's `Dict.get (role_values_body_map sim) (DEFAULT, length) = None`
+   side condition proven via `values_for_role`'s index bound
+   (every assigned index < length).
+
+### Key takeaways for future similar mutator proofs
+
+1. **Pre-compute the four absent-key facts on storage slots before the
+   walker**: H_not_member, H_not_in_pos, H_len_bound_admins,
+   H_len_nn_admins, H_get_length. These feed Phase 2's preconditions
+   and the observational bridges.
+2. **Use the role-distinctness axioms aggressively**: `DEFAULT_neq_OG`
+   and `DEFAULT_neq_OGM` block lookups across role-block boundaries
+   in the 3-block `role_member_map` / `role_positions_map` /
+   `role_values_body_map` structures.
+3. **The `_exists`-variant modifier wrapper**: any mutator-equivalence
+   proof where the inner walk has memory-dependent post-state needs
+   the existential modifier wrapper, not the strict
+   `state'' = state'` form.
+4. **Compose Phase 1 + Phase 2 inline**: the case-split Phase 3 lemma
+   case is too coarse for the not-member case because its Hnotmem
+   parameter requires the entire walk; the cleanest path is to write
+   the not-member walker inline in the milestone proof, using the
+   strengthened Phase 2 wrapper that exposes the concrete post-state.
+
+### OG/OGM extensions
+
+Not yet covered. The DEFAULT-role bridges' cons-prefix structure
+matches the `role_member_map`'s DEFAULT block (which is at the head).
+For OG/OGM:
+- The bridges `role_X_map_sstore_observes_add_optimistic_guardian_not_in`
+  would need to handle mid-list insertion (block lands AFTER the
+  DEFAULT block in `role_member_map`).
+- Either: prove a more general `map_get_insert_anywhere_eq_append_when_absent`
+  observational equivalence (a structural extension of the existing
+  `map_get_cons_eq_app_singleton_when_absent_ZZ`), or
+- Re-encode `role_member_map` to put the active-role's block at the
+  head (but this breaks the current 3-role parametric encoding).
+
+The same applies for `revokeRole` (already-Admitted via R051.a) and
+`grantOptimisticGuardian` / `revokeOptimisticProposer` — all share
+the cons-prefix-vs-mid-list issue for non-DEFAULT roles.

@@ -5398,12 +5398,135 @@ Module GuardianEquivalence.
                     Result.Ok tt
                   | Some (make_state env state_base memory'' storage_post) ?}}).
       { intros memory' H_mem'.
-        (* The walker assembly: Phase 1 not-member + MIA + convert +
-           Phase 2 fun_add_2085. This is mechanical but ~80-100 lines;
-           deferred to a future session. The composition would feed
-           Phase 1's post-state slot-0-mutated projection into Phase 2,
-           producing the 4-slot mutated storage_post. *)
-        admit. }
+        (* Phase 1 not-member walker produces post-state with slot 0
+           mutated. *)
+        assert (H_caller_u256 : 0 <= env.(Environment.caller) < 2^256).
+        { destruct H_caller_bound. split; [lia|].
+          change (2^160) with 1461501637330902918203684832716283019655932542976 in *.
+          change (2^256) with 115792089237316195423570985008687907853269984665640564039457584007913129639936.
+          lia. }
+        assert (H_role_u256 : 0 <= DEFAULT_ADMIN_ROLE_bytes32 < 2^256).
+        { rewrite DEFAULT_ADMIN_ROLE_bytes32_is_zero. lia. }
+        pose proof (run_fun__grantRole_1468_at_proj_sim_not_member
+                      codes env state_base memory' sim
+                      DEFAULT_ADMIN_ROLE_bytes32 account
+                      H_role_u256 H_account H_caller_bound
+                      H_not_member H_mem') as Hgr1468.
+        cbv zeta in Hgr1468.
+        destruct Hgr1468 as (w0_p1 & w1_p1 & rest_p1 & Hgr1468).
+        set (mem_after_p1 := w0_p1 :: w1_p1 :: rest_p1).
+        set (proj_after_p1 :=
+               [ StorableValue.Map2 member_map_post;
+                 StorableValue.Map2 (role_positions_map sim);
+                 StorableValue.Map (role_values_length_map sim);
+                 StorableValue.Map2 (role_values_body_map sim) ]).
+        fold proj_after_p1 in Hgr1468.
+        (* AddressSet MIA: produces keccak256_tuple2 role 1; consumes
+           2 scratch cells. *)
+        assert (H_mem_after_p1 :
+                  exists w0 w1 rest, mem_after_p1 = w0 :: w1 :: rest).
+        { exists w0_p1, w1_p1, rest_p1. reflexivity. }
+        pose proof (MappingIndexAccessBytes32AddressSet.run_mapping_index_access
+                      codes env state_base 1 DEFAULT_ADMIN_ROLE_bytes32
+                      proj_after_p1 mem_after_p1 H_mem_after_p1) as Hmia.
+        cbv zeta in Hmia.
+        destruct Hmia as (w0_m & w1_m & rest_m & Hmia).
+        set (mem_after_mia := w0_m :: w1_m :: rest_m).
+        (* Phase 2: fun_add_2085 against the post-Phase-1 projection
+           with member_map_in := member_map_post, others := unchanged. *)
+        assert (H_mem_after_mia :
+                  exists w0 w1 rest, mem_after_mia = w0 :: w1 :: rest).
+        { exists w0_m, w1_m, rest_m. reflexivity. }
+        pose proof (run_fun_add_2085_at_proj_sim
+                      codes env state_base mem_after_mia
+                      DEFAULT_ADMIN_ROLE_bytes32 account
+                      member_map_post
+                      (role_positions_map sim)
+                      (role_values_length_map sim)
+                      (role_values_body_map sim)
+                      H_account H_not_in_pos
+                      H_len_bound_admins H_len_nn_admins
+                      H_mem_after_mia) as Hadd.
+        cbv zeta in Hadd.
+        destruct Hadd as (mem_after_add & Hadd).
+        (* The Phase 2 post-state computes the 4-slot mutation. Show
+           it equals storage_post. *)
+        assert (Hsto :
+                  [ StorableValue.Map2 member_map_post;
+                    StorableValue.Map2
+                      (Dict.declare_or_assign (role_positions_map sim)
+                         (DEFAULT_ADMIN_ROLE_bytes32, account)
+                         (StorableValue.map_get_u256
+                            (role_values_length_map sim)
+                            DEFAULT_ADMIN_ROLE_bytes32 + 1));
+                    StorableValue.Map
+                      (Dict.declare_or_assign (role_values_length_map sim)
+                         DEFAULT_ADMIN_ROLE_bytes32
+                         (StorableValue.map_get_u256
+                            (role_values_length_map sim)
+                            DEFAULT_ADMIN_ROLE_bytes32 + 1));
+                    StorableValue.Map2
+                      (Dict.declare_or_assign (role_values_body_map sim)
+                         (DEFAULT_ADMIN_ROLE_bytes32,
+                           StorableValue.map_get_u256
+                             (role_values_length_map sim)
+                             DEFAULT_ADMIN_ROLE_bytes32)
+                         account) ]
+                = storage_post).
+        { unfold storage_post, positions_map_post, length_map_post,
+                 body_map_post. rewrite H_get_length. reflexivity. }
+        rewrite Hsto in Hadd.
+        (* Build _grantRole_704 walker inline. *)
+        assert (H704 : {{? codes, env,
+            Some (make_state env state_base memory' (proj_sim sim))
+          | fun__grantRole_704 DEFAULT_ADMIN_ROLE_bytes32 account ⇓
+            Result.Ok 1
+          | Some (make_state env state_base mem_after_add storage_post) ?}}).
+        { unfold fun__grantRole_704.
+          unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+                 Shallow.let_state, Shallow.if_.
+          repeat (lazymatch goal with
+            | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+                unfold M.strong_let_, M.generic_let
+            | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+                unfold M.let_, M.generic_let
+            | |- {{? _, _, _ | M.do _ _ ⇓ _ | _ ?}} =>
+                unfold M.do
+            | |- {{? _, _, _ | Shallow.let_state _ _ ⇓ _ | _ ?}} =>
+                unfold Shallow.let_state
+            | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+            | |- {{? _, _, _ |
+                  LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+                c; [ unfold zero_value_for_split_t_bool;
+                     lu; repeat (lu || cu || p) | ]
+            | |- {{? _, _, _ |
+                  LowM.Call (fun__grantRole_1468 _ _) _ ⇓ _ | _ ?}} =>
+                c; [ exact Hgr1468 | ]
+            | |- {{? _, _, _ |
+                  LowM.Call
+                    (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_AddressSet_ₓ2058_storage_ₓ_of_t_bytes32 _ _) _
+                  ⇓ _ | _ ?}} =>
+                eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
+            | |- {{? _, _, _ |
+                  LowM.Call
+                    (convert_t_structₓ_AddressSet_ₓ2058_storage_to_t_structₓ_AddressSet_ₓ2058_storage_ptr _) _
+                  ⇓ _ | _ ?}} =>
+                c; [ apply run_convert_t_structₓ_AddressSet_storage_to_ptr | ]
+            | |- {{? _, _, _ |
+                  LowM.Call (fun_add_2085 _ _) _ ⇓ _ | _ ?}} =>
+                c; [ exact Hadd | ]
+            | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+                apply RunO.Pure
+            | |- _ => s
+            end).
+          all: cbn match.
+          all: try apply RunO.Pure. }
+        (* Wrap via Phase 4 inner wrapper. *)
+        pose proof (run_fun_grantRole_1359_inner_at_proj_sim
+                      codes env state_base memory' sim
+                      DEFAULT_ADMIN_ROLE_bytes32 account
+                      _ _ H704) as Hinner.
+        exists mem_after_add. exact Hinner. }
       (* Modifier wrapper. *)
       pose proof (run_modifier_onlyRole_1351_admin_passes_exists
                     codes env state_base memory sim
@@ -5551,7 +5674,7 @@ Module GuardianEquivalence.
              unfold values_for_role at 1.
              apply Hd_ogm.
           -- exact H_addr_in.
-  Admitted.
+  Qed.
 
 End GuardianEquivalence.
 
