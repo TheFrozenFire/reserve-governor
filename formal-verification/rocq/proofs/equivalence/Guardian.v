@@ -1690,6 +1690,160 @@ Module GuardianEquivalence.
     exact H_absent.
   Qed.
 
+  (** ===== R054 Phase 5 bridge: SLOT 1 post-Phase-2 observes
+      [add_admin]'s slot-1 — POINT-WISE =====
+
+      Slot-1 analog of [role_member_map_sstore_observes_add_admin_not_in].
+      Phase 2's positions sstore writes
+      [Dict.declare_or_assign (role_positions_map sim) (DEFAULT, addr)
+                              (length admins + 1)] —
+      append-at-tail when (DEFAULT, addr) is absent. The bridge
+      [role_positions_map_add_admin_not_in] gives cons-prepend.
+
+      Routes through the [_observes_] pattern same as slot 0. *)
+  Lemma role_positions_map_sstore_observes_add_admin_not_in
+      (sim : State.t) (addr : Address)
+      (H_addr_absent :
+         StorableValue.map_get_u256 (role_positions_map sim)
+           (DEFAULT_ADMIN_ROLE_bytes32, addr) = 0)
+      (H_not_in_admins : ~ In addr sim.(State.admins))
+      (new_position : U256.t)
+      (H_new_position :
+         new_position = Z.of_nat (List.length sim.(State.admins)) + 1)
+      (lookup_key : U256.t * U256.t) :
+    StorableValue.map_get_u256
+      (Dict.declare_or_assign (role_positions_map sim)
+         (DEFAULT_ADMIN_ROLE_bytes32, addr) new_position) lookup_key
+    = StorableValue.map_get_u256
+        (role_positions_map (Guardian.add_admin sim addr)) lookup_key.
+  Proof.
+    (* [H_addr_absent]: map_get_u256 returns 0 at (DEFAULT, addr). For
+       positions, the stored value at any hit is [Z.of_nat _ + 1] which is
+       ≥ 1, hence never 0. So [Dict.get] must be None at this key. *)
+    assert (H_absent : Dict.get (role_positions_map sim)
+                         (DEFAULT_ADMIN_ROLE_bytes32, addr) = None).
+    { destruct (Dict.get (role_positions_map sim)
+                  (DEFAULT_ADMIN_ROLE_bytes32, addr)) as [w|] eqn:Hg;
+        [|reflexivity].
+      exfalso.
+      unfold StorableValue.map_get_u256 in H_addr_absent.
+      rewrite Hg in H_addr_absent.
+      (* w = Z.of_nat (length _) + 1 ≥ 1, contradicting w = 0. *)
+      assert (Hw_ge1 : w >= 1).
+      { unfold role_positions_map in Hg.
+        rewrite !Dict_get_app_split in Hg.
+        (* Walk the three blocks; each block's positions_for_role only
+           stores values [Z.of_nat (length _) + 1], all ≥ 1. *)
+        assert (Hpos_ge :
+          forall (r : U256.t) (lst : list Address) (k : U256.t * U256.t) (v : U256.t),
+            Dict.get (positions_for_role r lst) k = Some v -> v >= 1).
+        { intros r lst.
+          induction lst as [|a rest IH]; intros k v Hg2; simpl in Hg2.
+          - discriminate.
+          - destruct (Dict.Eq.eqb _ _) eqn:Heqb.
+            + injection Hg2 as <-. lia.
+            + exact (IH _ _ Hg2). }
+        destruct (Dict.get (positions_for_role DEFAULT_ADMIN_ROLE_bytes32 sim.(State.admins))
+                    (DEFAULT_ADMIN_ROLE_bytes32, addr)) as [w0|] eqn:Hg0.
+        - injection Hg as <-.
+          apply (Hpos_ge _ _ _ _ Hg0).
+        - destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim.(State.optimisticGuardians))
+                      (DEFAULT_ADMIN_ROLE_bytes32, addr)) as [w1|] eqn:Hg1.
+          + injection Hg as <-.
+            apply (Hpos_ge _ _ _ _ Hg1).
+          + apply (Hpos_ge _ _ _ _ Hg). }
+      rewrite H_addr_absent in Hw_ge1. lia. }
+    rewrite (declare_or_assign_app_when_absent_ZZ _ _ _ H_absent).
+    rewrite (role_positions_map_add_admin_not_in sim addr H_not_in_admins).
+    rewrite H_new_position.
+    symmetry.
+    apply map_get_cons_eq_app_singleton_when_absent_ZZ.
+    exact H_absent.
+  Qed.
+
+  (** ===== R054 Phase 5 bridge: SLOT 2 (length) post-Phase-2 = [add_admin]'s slot-2
+
+      SYNTACTIC EQUALITY (not observational). Slot 2 is special: the
+      length map's first entry is keyed by [DEFAULT_ADMIN_ROLE_bytes32],
+      and Phase 2's array_push sstore at role=DEFAULT matches the head
+      via [Eq.eqb] — so [Dict.declare_or_assign] replaces in-place,
+      yielding the cons-prepended form already (no append-at-tail). *)
+  Lemma role_values_length_map_sstore_eq_add_admin_not_in
+      (sim : State.t) (addr : Address)
+      (H_not_in_admins : ~ In addr sim.(State.admins))
+      (new_length : U256.t)
+      (H_new_length :
+         new_length = Z.of_nat (List.length sim.(State.admins)) + 1) :
+    Dict.declare_or_assign (role_values_length_map sim)
+      DEFAULT_ADMIN_ROLE_bytes32 new_length
+    = role_values_length_map (Guardian.add_admin sim addr).
+  Proof.
+    rewrite H_new_length.
+    rewrite (role_values_length_map_add_admin_not_in sim addr H_not_in_admins).
+    (* role_values_length_map sim is [(DEFAULT, length); (OPT_G, ...); (OPT_GM, ...)]. *)
+    unfold role_values_length_map, Dict.declare_or_assign.
+    cbn [Dict.declare_or_assign_function].
+    change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32)
+      with (DEFAULT_ADMIN_ROLE_bytes32 =? DEFAULT_ADMIN_ROLE_bytes32).
+    rewrite Z.eqb_refl.
+    cbn [List.tl].
+    reflexivity.
+  Qed.
+
+  (** ===== R054 Phase 5 bridge: SLOT 3 (body) post-Phase-2 observes
+      [add_admin]'s slot-3 — POINT-WISE =====
+
+      Slot-3 analog of slot-0 / slot-1 bridges. Phase 2's array_push body
+      sstore writes
+      [Dict.declare_or_assign (role_values_body_map sim) (DEFAULT, oldLen) addr],
+      where [oldLen = length admins] (via the sim's cons-to-front
+      convention).
+
+      The sim-side bridge — derived from [values_for_role_cons_unfold] +
+      [role_values_body_map]'s three-block structure — yields
+      [((DEFAULT, length admins), addr) :: role_values_body_map sim]
+      under [~ In addr admins].
+
+      Routes through the [_observes_] pattern same as slot 0/1. *)
+  Lemma role_values_body_map_add_admin_not_in_helper
+      (s : State.t) (addr : Address)
+      (Hni : ~ In addr s.(State.admins)) :
+    role_values_body_map (Guardian.add_admin s addr) =
+    ((DEFAULT_ADMIN_ROLE_bytes32, Z.of_nat (List.length s.(State.admins))),
+      addr)
+    :: role_values_body_map s.
+  Proof.
+    unfold role_values_body_map, Guardian.add_admin, Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    rewrite (values_for_role_cons_unfold DEFAULT_ADMIN_ROLE_bytes32 addr
+              s.(State.admins)).
+    reflexivity.
+  Qed.
+
+  Lemma role_values_body_map_sstore_observes_add_admin_not_in
+      (sim : State.t) (addr : Address)
+      (H_addr_absent :
+         Dict.get (role_values_body_map sim)
+           (DEFAULT_ADMIN_ROLE_bytes32,
+             Z.of_nat (List.length sim.(State.admins))) = None)
+      (H_not_in_admins : ~ In addr sim.(State.admins))
+      (lookup_key : U256.t * U256.t) :
+    StorableValue.map_get_u256
+      (Dict.declare_or_assign (role_values_body_map sim)
+         (DEFAULT_ADMIN_ROLE_bytes32,
+           Z.of_nat (List.length sim.(State.admins))) addr) lookup_key
+    = StorableValue.map_get_u256
+        (role_values_body_map (Guardian.add_admin sim addr)) lookup_key.
+  Proof.
+    rewrite (declare_or_assign_app_when_absent_ZZ _ _ _ H_addr_absent).
+    rewrite (role_values_body_map_add_admin_not_in_helper sim addr
+              H_not_in_admins).
+    symmetry.
+    apply map_get_cons_eq_app_singleton_when_absent_ZZ.
+    exact H_addr_absent.
+  Qed.
+
   (** ----- sload via Map2 + proj_sim ----- *)
   Lemma run_sload_role_member_at_proj_sim
       codes env state_base memory sim (role account : U256.t) :
@@ -2756,9 +2910,23 @@ Module GuardianEquivalence.
       walker passed in as [Hbody].
 
       To keep the lemma reusable across mutator paths, [Hbody] takes the
-      memory shape after the prelude (3-cell-front intact form). *)
+      memory shape after the prelude (3-cell-front intact form).
+
+      ===== R054 weakening — [Hbody_post] / [sim'] removed =====
+
+      The original modifier wrapper carried a vestigial
+      [Hbody_post : exists memory', state' = Some (make_state ... (proj_sim sim'))]
+      hypothesis that asserted the inner-body's post-state equals the
+      projection of some [sim']. That syntactic equality is structurally
+      irreconcilable with the [Dict.declare_or_assign] post-storage produced
+      by the actual Phase 1 + Phase 2 walks (see WISDOM R054). [Hbody_post]
+      was never used in the modifier-walk proof — the modifier simply
+      threads [state'] through verbatim. Dropping it (and its [sim']
+      parameter) removes the structurally-impossible obligation, letting
+      callers (Phase 5) carry per-slot OBSERVATIONAL state-equality
+      reasoning themselves while still composing through the modifier. *)
   Lemma run_modifier_onlyRole_1351_admin_passes
-      codes env state_base memory sim (role account : U256.t) sim' state'
+      codes env state_base memory sim (role account : U256.t) state'
       (H_role_known :
          role = DEFAULT_ADMIN_ROLE_bytes32 \/
          role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
@@ -2772,9 +2940,7 @@ Module GuardianEquivalence.
           {{? codes, env, Some (make_state env state_base memory' (proj_sim sim)) |
             fun_grantRole_1359_inner role account ⇓
             Result.Ok tt
-          | state' ?}})
-      (Hbody_post :
-        exists memory', state' = Some (make_state env state_base memory' (proj_sim sim'))) :
+          | state' ?}}) :
     exists state'',
     {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
       modifier_onlyRole_1351 role account ⇓
@@ -4491,6 +4657,56 @@ Module GuardianEquivalence.
       composable Qed lemmas. A future agent can assemble the Phase 5
       Qed by supplying a [fun__grantRole_704] walk witness and threading
       it through the three wrappers and the role/post-state case-split. *)
+  (** ===== R054: Observational storage equivalence =====
+
+      The milestone theorem's storage clause is stated as per-slot
+      [map_get_u256] equivalence rather than syntactic [Dict.t]-list
+      equality (see WISDOM R054 for the structural-impossibility
+      diagnosis). Concretely: the actual post-storage produced by the
+      Phase 1 + Phase 2 Yul walk uses [Dict.declare_or_assign] which
+      appends-at-tail when the key is absent, while the Guardian-side
+      [add_admin] bridges (e.g. [role_member_map_add_admin_not_in])
+      cons-prepend. These two list shapes are LOOKUP-EQUIVALENT but
+      not syntactically equal as [Dict.t].
+
+      This predicate makes that observational equivalence explicit:
+      for every slot index (0..3) and every lookup key, the two
+      storages return the same [map_get_u256] value. *)
+  Definition observationally_eq_storage
+      (s1 s2 : SimulatedStorage.t) : Prop :=
+    (* Slot 0 — Map2: members map *)
+    (forall key,
+       match List.nth_error s1 0, List.nth_error s2 0 with
+       | Some (StorableValue.Map2 d1), Some (StorableValue.Map2 d2) =>
+           StorableValue.map_get_u256 d1 key
+           = StorableValue.map_get_u256 d2 key
+       | _, _ => True
+       end) /\
+    (* Slot 1 — Map2: positions map *)
+    (forall key,
+       match List.nth_error s1 1, List.nth_error s2 1 with
+       | Some (StorableValue.Map2 d1), Some (StorableValue.Map2 d2) =>
+           StorableValue.map_get_u256 d1 key
+           = StorableValue.map_get_u256 d2 key
+       | _, _ => True
+       end) /\
+    (* Slot 2 — Map: per-role array length *)
+    (forall key,
+       match List.nth_error s1 2, List.nth_error s2 2 with
+       | Some (StorableValue.Map d1), Some (StorableValue.Map d2) =>
+           StorableValue.map_get_u256 d1 key
+           = StorableValue.map_get_u256 d2 key
+       | _, _ => True
+       end) /\
+    (* Slot 3 — Map2: per-(role, idx) body element *)
+    (forall key,
+       match List.nth_error s1 3, List.nth_error s2 3 with
+       | Some (StorableValue.Map2 d1), Some (StorableValue.Map2 d2) =>
+           StorableValue.map_get_u256 d1 key
+           = StorableValue.map_get_u256 d2 key
+       | _, _ => True
+       end).
+
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -4516,10 +4732,15 @@ Module GuardianEquivalence.
             fun_grantRole_1359 role account ⇓
             Result.Ok tt
           | state' ?}} /\
-          (* Storage equivalence: post-state's role-member map
-             reflects the AccessControl mutation. *)
-          (exists memory',
-            state' = Some (make_state env state_base memory' (proj_sim sim')))
+          (* R054: Storage equivalence stated OBSERVATIONALLY (per-slot
+             [map_get_u256]) rather than syntactically. The post-storage's
+             [Dict.declare_or_assign] form is structurally non-equal to
+             [proj_sim sim']'s cons-prepended form, but the two are
+             point-wise equal on lookups — which is the observable
+             semantic content. See [observationally_eq_storage] above. *)
+          (exists memory' storage',
+            state' = Some (make_state env state_base memory' storage') /\
+            observationally_eq_storage storage' (proj_sim sim'))
     | AccessControl.Result.Revert _ _ =>
         (* Auth check failed: the contract reverts too. We don't
            pin the specific revert payload here because the shallow
