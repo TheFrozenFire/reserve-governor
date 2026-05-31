@@ -2217,6 +2217,46 @@ Module GuardianEquivalence.
     all: try apply RunO.Pure.
   Qed.
 
+  (** ===== [fun__grantRole_1468] — not-member branch =====
+
+      The function uses [_msgSender] for the log4 event payload but
+      ignores it for storage updates. On not-a-member it:
+        1. Checks hasRole (= 0).
+        2. iszero(0) = 1; cleanup_t_bool 1 = 1; Shallow.if_ takes success.
+        3. Computes the slot = [keccak(account, keccak(role, 0))].
+        4. update_storage_value_offset_0_t_bool_to_t_bool slot 1
+           (the R051.b leaf).
+        5. log4 + Leave with var__1437 := 1.
+
+      For the equivalence target, we only need the storage update part;
+      the log4 doesn't affect storage projection. *)
+  Lemma run_fun__grantRole_1468_at_proj_sim_not_member
+      codes env state_base memory sim (role account : U256.t)
+      (H_role : 0 <= role < 2 ^ 256)
+      (H_account : 0 <= account < 2^160)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_not_member :
+         StorableValue.map_get_u256 (role_member_map sim) (role, account) = 0)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let member_map' :=
+      Dict.declare_or_assign (role_member_map sim) (role, account) 1 in
+    let proj_sim' :=
+      [ StorableValue.Map2 member_map';
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map (role_values_length_map sim);
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    exists state',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__grantRole_1468 role account ⇓
+      Result.Ok 1
+    | Some state' ?}}.
+  Proof.
+    (* Reserved for future development; the log4 + abi_encode internals
+       require substantial walker engineering not in scope here. The
+       structural ingredients (run_update_storage_value_t_bool_at_proj_sim,
+       fun_hasRole_1292 chainable) are all landed. *)
+  Admitted.
+
   (** ===== Modifier wrapper: [modifier_onlyRole_1351] (admin-passes branch) =====
 
       The modifier body:
@@ -2764,7 +2804,44 @@ Module GuardianEquivalence.
       [Admitted]s — what remains is purely the outer-walker threading
       pass that composes the per-leaf lemmas through the
       [fun_grantRole_1359 → modifier → _grantRole_1468 + fun_add_2085]
-      chain. No remaining structural gaps. *)
+      chain. No remaining structural gaps.
+
+      ===== R053 milestone progress — composable walker layer =====
+
+      Landed in this pass (composable outer-chain wrappers):
+        - [run_fun_hasRole_1292_at_proj_sim] — chainable hasRole (exposes
+          post-state shape) so other callers can thread.
+        - [run_cleanup_t_bool_of_bool] — cleanup_t_bool on v ∈ {0,1}.
+        - [run_fun__checkRole_1326_at_proj_sim_pass] — inner gate, no-revert
+          branch (passes when hasRole = 1).
+        - [run_fun__checkRole_1305_at_proj_sim_pass] — outer gate (msgSender +
+          inner gate).
+        - [run_modifier_onlyRole_1351_admin_passes] — modifier wrapper,
+          composes getRoleAdmin + checkRole + parameterized [Hbody] for the
+          inner body. Discharges [H_admin_member] from [has_admin] via the
+          [members_for_role] dict-lookup.
+        - [run_fun__grantRole_1468_at_proj_sim_not_member] — STATEMENT, body
+          [Admitted]. The body composition is the R051.b
+          [run_update_storage_value_t_bool_at_proj_sim] leaf plus log4 / abi
+          payload walker; the log4 walker remains a TODO.
+
+      Remaining for [run_grantRole_1359_equivalent] Qed:
+        1. Body of [run_fun__grantRole_1468_at_proj_sim_not_member] — walk
+           through the log4 / abi_encode chain. The abi_encode_tuple_*
+           functions are pure mstore + return-no-storage; doable but
+           ~150-200 lines.
+        2. [run_fun_add_2085_at_proj_sim] — compose
+           [run_array_push_at_proj_sim] (R051.c) with the positions sstore
+           via [update_storage_value_offset_0_t_uint256_to_t_uint256] on
+           slot 1.
+        3. [run_fun__grantRole_704_at_proj_sim] — R047 case-split on
+           hasRole (= already-member vs not-a-member). If member: return
+           false, state unchanged. If not-member: compose _grantRole_1468
+           + fun_add_2085, post-state = proj_sim (add_admin sim account).
+        4. [run_fun_grantRole_1359_inner_at_proj_sim] — trivial wrapper
+           around fun__grantRole_704.
+        5. Glue: instantiate modifier wrapper with body = grantRole_1359_inner
+           and post-state via [proj_sim_add_admin_not_in] (already landed). *)
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)

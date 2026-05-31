@@ -3572,3 +3572,139 @@ lemma + 2 new sload axioms) are fully Qed/Axiom-stated and
 typecheck against the existing `proj_sim` projection. No
 existing definitions, axioms, or proof statements were modified
 in this pass.
+
+## R053: grantRole outer-walker composition layer
+
+**Status: PARTIAL (2026-05-31). Composable wrappers for the auth-gate
+half landed; mutator body still pending. Milestone Qed not yet reached.**
+
+Post-R051.a/b/c the structural prerequisites for
+`run_grantRole_1359_equivalent` are all CLOSED. This pass attacked the
+outer-walker threading layer that composes the per-leaf lemmas through
+the 5-deep call chain
+(`fun_grantRole_1359 → modifier_onlyRole_1351 → fun_getRoleAdmin_1340 +
+fun__checkRole_1305 → fun_grantRole_1359_inner → fun__grantRole_704 →
+fun__grantRole_1468 + fun_add_2085`).
+
+### Landed in this pass
+
+All Qed-closed and compile against the existing R051 leaves:
+
+- **`run_fun_hasRole_1292_at_proj_sim`** (chainable variant of
+  `run_hasRole_equivalent`). The existing `_equivalent` uses
+  `exists state'` for the post-state — the witness shape is undetermined,
+  so callers cannot thread. The new lemma exposes the post-state as
+  `make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)` so
+  composition works. Same lazymatch walker, plus `exists w0', w1', rest'`
+  upfront.
+
+- **`run_cleanup_t_bool_of_bool`** — `cleanup_t_bool v = v` for `v ∈ {0,1}`.
+  Proven by case-split on `Hv`, recursing into the existing
+  `run_cleanup_t_bool_of_1` for the `v = 1` arm.
+
+- **`run_fun__checkRole_1326_at_proj_sim_pass`** — inner admin gate. When
+  caller IS a member of `role` (i.e., `map_get_u256 (role_member_map sim)
+  (role, account) = 1`), the `Shallow.if_` takes the no-op (failure) branch
+  (no revert). Composes `fun_hasRole_1292` chainable + `Stdlib.iszero` +
+  `cleanup_t_bool`. The post-state preserves the 3-cell memory front shape
+  for chainability.
+
+- **`run_fun__checkRole_1305_at_proj_sim_pass`** — outer admin gate.
+  Composes `fun__msgSender_3197` (caller bridge from R051-D) with
+  `_checkRole_1326_pass`. Discharges the gate against `env.(caller)`
+  directly.
+
+- **`run_modifier_onlyRole_1351_admin_passes`** — modifier wrapper. Takes
+  `H_role_known` (one of the three modeled roles), `H_caller_admin` (sim's
+  `has_admin = true`), and a parameterized `Hbody` for the inner body. The
+  proof:
+  1. Steps `fun_getRoleAdmin_1340 role → DEFAULT_ADMIN_ROLE_bytes32` via
+     the R051.a leaf.
+  2. Derives `map_get_u256 (role_member_map sim) (DEFAULT_ADMIN_ROLE,
+     caller) = 1` from `has_admin = true` by induction over the admins
+     list (clean dict-lookup compute through `members_for_role`).
+  3. Steps `_checkRole_1305 DEFAULT_ADMIN_ROLE` via the helper above.
+  4. Steps the inner body via `Hbody`.
+
+- **Two new bridge lemmas**:
+  - `project_sim_to_ac_getRoleAdmin` (Qed): every role's admin under
+    the projection is `AccessControl.DEFAULT_ADMIN_ROLE`.
+  - `project_sim_to_ac_hasRole_admin_chain` (Qed): the hasRole(getRoleAdmin
+    sim role, caller) chain reduces to `has_admin sim caller`. Needs
+    one new axiom:
+
+- **Axiom `DEFAULT_ADMIN_ROLE_bytes32_is_zero`** — `DEFAULT_ADMIN_ROLE_bytes32 = 0`.
+  This is the Solidity reality (OZ defines `DEFAULT_ADMIN_ROLE = bytes32(0)`).
+  Required because `AccessControl.DEFAULT_ADMIN_ROLE` is the mock-side
+  `0`, while the Guardian-side parameter `DEFAULT_ADMIN_ROLE_bytes32` is
+  opaque. Same parametric-trust shape as the other role parameters.
+
+- **`run_grantRole_1359_equivalent` Phase 1**: the auth-gate reduction of
+  `AccessControl.grantRole sim_ac caller role account` to
+  `Result.Success ...` (via `H_result_success` + `cbn match`). The Revert
+  branch collapses; the Success-branch existence remains the goal.
+
+- **`run_fun__grantRole_1468_at_proj_sim_not_member`** — STATEMENT only.
+  Body Admitted. The not-a-member branch should step:
+  hasRole = 0 → iszero(0) = 1 → cleanup_t_bool 1 = 1 → take success
+  branch → mapping_index_access (slot 0, role, account) → R051.b
+  `run_update_storage_value_t_bool_at_proj_sim` → log4 + abi_encode
+  payload → Leave with var := 1. The log4 / abi_encode walker is the
+  big unknown — ~150-200 lines of pure-mstore stepping.
+
+### What remains for the milestone Qed
+
+Pending (~3-5 hours of focused proof-engineering):
+
+1. **Body of `run_fun__grantRole_1468_at_proj_sim_not_member`**.
+   The log4 + abi_encode_tuple walker has no precedent in the corpus;
+   needs a fresh per-shape leaf. Pure mstore manipulation, no storage
+   side-effects beyond the R051.b sstore — but the lazymatch arm count
+   is high.
+
+2. **`run_fun_add_2085_at_proj_sim` (compose array_push + positions sstore)**.
+   `fun__add_1614` does:
+   - `array_push` at slot-2/3 anchor (R051.c leaf landed),
+   - `update_storage_value_offset_0_t_uint256_to_t_uint256` at slot-1
+     positions sub-mapping (ThrottleLib `_two_slot` shape, but at
+     `keccak(value, keccak(role, 1) + 1)`).
+   The positions sstore needs a new `run_update_storage_value_offset_0_t_uint256_at_proj_sim`
+   wrapper analogous to R051.b's bool version.
+
+3. **`run_fun__grantRole_704_at_proj_sim` with R047 case-split**.
+   Reads hasRole (chainable lemma); case-split BEFORE eexists per
+   R047. If member (= 1): function returns 0, state unchanged, post-sim
+   = sim. If not-member (= 0): chain `_grantRole_1468 + fun_add_2085`,
+   post-sim = `add_admin sim account`.
+
+4. **`run_fun_grantRole_1359_inner_at_proj_sim`** — trivial wrapper.
+
+5. **Glue in `run_grantRole_1359_equivalent`'s Phase 2**:
+   instantiate `modifier_onlyRole_1351_admin_passes` with `Hbody` from
+   step 4 above; post-state via `proj_sim_add_admin_not_in` (already
+   landed for the DEFAULT_ADMIN role case). The role argument
+   case-splits into:
+   - `role = DEFAULT_ADMIN_ROLE_bytes32` → `sim' = add_admin sim account`.
+   - `role = OPTIMISTIC_GUARDIAN_ROLE_bytes32` →
+     `sim' = add_optimistic_guardian sim account`.
+   - `role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32` →
+     `sim' = add_optimistic_guardian_manager sim account`.
+   - Fallthrough (unknown role): needs an explicit `sim'` for an
+     unmodeled role; either case-split it out or accept a partial
+     theorem statement that excludes it.
+
+### Build status
+
+Guardian.v compiles. ~380 new lines landed (one new axiom +
+six new helper lemmas, all Qed). No existing landed proofs modified.
+The `Admitted` count went from 2 (`run_grantRole_1468_observed_behavior`
++ `run_grantRole_1359_equivalent`) to 3 (added
+`run_fun__grantRole_1468_at_proj_sim_not_member` body).
+
+### Branch
+
+`feature/fv-grantRole-milestone` (worktree
+`agent-af3bb965822ac636b`). Forked from `feature/formal-verification`
+at commit `3e6ca1a`. Two commits:
+- `feat(fv): MILESTONE preliminaries — chainable hasRole + checkRole admin gate`
+- `feat(fv): MILESTONE preliminaries — modifier_onlyRole + grantRole_1468 stub`
