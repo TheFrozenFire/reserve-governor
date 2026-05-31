@@ -280,17 +280,23 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                         4 parked (require OZ AccessControlEnumerable
                         mechanization).
       RewardTokenRegistry
-                        Substrate substantially expanded: 9
-                        conversion leaves (address → bytes32 chain
-                        via uint160/uint256), bytes32→uint256
-                        mapping_index_access (Qed-closed), sload-
-                        at-proj_sim, offset-bound axiom. Main view
-                        theorem [run_fun__contains_386_at_proj_sim_scaffold]
-                        stated with proper signature, body Admitted
-                        pending the next session's walker
-                        composition (~80-120 lines of mechanical
-                        work). Full-mutator equivalence remains
-                        Phase 4 parked (OZ EnumerableSet).
+                        Both view-function equivalence theorems now
+                        close with Qed:
+                        - [run_fun__contains_386_at_proj_sim_scaffold]:
+                          inner contains body, returning
+                          [if positions_map_get =? 0 then 0 else 1].
+                        - [run_isRegistered_equivalent]: outer
+                          [fun_isRegistered_155] wrapper, returning
+                          [if isRegistered sim token then 1 else 0]
+                          under the [0 <= token < 2^160] precondition.
+                          Bridged via
+                          [positions_map_get_iff_isRegistered]: the
+                          sim/contract bridge proving
+                          [positions_map_get = 0 ↔ NOT list_contains].
+                        Full-mutator equivalence (registerRewardToken,
+                        deregisterRewardToken) remains Phase 4 parked
+                        (requires OZ EnumerableSet remove-from-middle
+                        mechanization).
       UnstakingManager  Shallow form compiles end-to-end with
                         upstream linkersymbol primitive landed
                         (WISDOM R041 resolved). The earlier R041
