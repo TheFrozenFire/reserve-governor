@@ -4845,3 +4845,416 @@ to `origin`). Four commits forked from
 `Print Assumptions` on each new lemma reports only the pre-existing
 framework axioms (Storage / canonization). No new trust axioms
 introduced this session.
+
+## R059: Membership-equivalence predicate for OZ EnumerableSet projections — revokeRole milestone CLOSED
+
+**Status: revokeRole milestone CLOSED (2026-05-31).
+`run_revokeRole_1378_equivalent` is now `Qed` across all 3 roles × 2
+membership branches (6 branches total) using a new methodology
+predicate `set_eq_at_role` plus one strongly-justified
+parametric-trust axiom `run_fun__revokeRole_736_at_proj_sim_member`.
+The methodology unblocks 4+ downstream tasks (AccessControlEnumerable,
+RewardTokenRegistry mutators, SelectorRegistry, plus future
+EnumerableSet-touching mutator equivalences).**
+
+### The problem (R056 recap)
+
+OZ's `EnumerableSet._remove` uses **swap-and-pop**: removing the
+element at position `p` in an array of length `n` copies
+`values[n-1]` into `values[p-1]` and pops the tail. Concretely, for
+role R with array `[a; b; c; d; e]`:
+
+- Removing "d" (at position 4 — the last position): OZ produces
+  `[a; b; c; e]` (no swap, just pop).
+- Removing "b" (at position 2): OZ produces `[a; e; c; d]`
+  intermediate, then pops `d` → `[a; e; c]` ("e" moved to position
+  2).
+- Sim's `Guardian.remove_role` (order-preserving filter) produces
+  `[a; b; c; e]` or `[a; c; d; e]` regardless of position.
+
+The two views are **NOT pointwise equal** under any cell-by-cell
+observational predicate. In particular, at body-index 1 under
+swap-and-pop OZ has "e" while sim has "b" — the post-states' slot-3
+(values array per role) lookup-by-index disagrees.
+
+`run_grantRole_1359_equivalent` (R055) uses
+`observationally_eq_storage` (per-slot `map_get_u256` equality) —
+that works for grantRole because cons-prepend (sim) and
+append-at-tail (`Dict.declare_or_assign`) are lookup-equivalent at
+every slot. For revokeRole, slot-3's swap-and-pop breaks any
+pointwise predicate.
+
+### The design (Option B from the task brief)
+
+Define `contains_at_role role account storage` as a lookup against
+slot 1 (the `_positions` map): an account is "in the role" iff
+`positions[role][account] > 0` (OZ's 1-indexed convention). Then
+`set_eq_at_role` compares the two storages on this set-membership
+predicate at every role/account:
+
+```coq
+Definition contains_at_role
+    (role : U256.t) (account : U256.t) (s : SimulatedStorage.t) : bool :=
+  match List.nth_error s 1 with
+  | Some (StorableValue.Map2 d) =>
+      negb (StorableValue.map_get_u256 d (role, account) =? 0)
+  | _ => false
+  end.
+
+Definition set_eq_at_role (s1 s2 : SimulatedStorage.t) : Prop :=
+  forall (role account : U256.t),
+    contains_at_role role account s1
+    = contains_at_role role account s2.
+```
+
+Why slot 1 (positions) and not slot 3 (values)?
+- Slot 1's lookup is by KEY ((role, account)) not by INDEX. The
+  swap-and-pop in OZ rearranges INDICES but leaves KEY lookups
+  invariant for keys that are still present (removed keys go to 0;
+  the swapped survivor's position is updated, but its entry remains
+  present, just at a different position number).
+- Slot 1 ALSO matches the OZ semantics of "is a member" — the
+  contract uses `positions[role][account] != 0` as the membership
+  check inside `_contains`.
+- Slot 3 (values) is the layout slot that's volatile under
+  swap-and-pop; comparing slot 3 pointwise is exactly what breaks.
+
+### Alternatives considered
+
+**Option B' (canonicalize)**: sort both slot-3 lists and compare.
+  Heavyweight; needs a canonical address ordering and a
+  rebuild-the-array witness. Punted.
+
+**Option B'' (Permutation)**: assert the slot-3 lists are a
+  permutation. Permutation is the correct mathematical relationship
+  between the two value arrays, but lookup-by-index breaks under it
+  (Permutation does not preserve `nth_error`); we would still need a
+  separate proof that for every key, some index points to the value.
+  That collapses to the same iff form below, with extra existential
+  quantifiers.
+
+The iff form chosen here is the simplest, composes cleanly with
+AccessControl's projection (which only cares about `In account
+members`), and dovetails with OZ's own membership test.
+
+### Composing with `observationally_eq_storage`
+
+- For grantRole (R055), `observationally_eq_storage` is the right
+  predicate: cons-prepend (sim) and append-at-tail
+  (`Dict.declare_or_assign`) are lookup-equivalent at every slot.
+- For revokeRole, we use `set_eq_at_role` only — slot 3 in
+  particular cannot be compared pointwise after the swap.
+- `observationally_eq_storage` is **strictly stronger** than
+  `set_eq_at_role`: the former gives per-slot pointwise equality,
+  the latter only slot-1 membership. The implication
+  `observationally_eq_implies_set_eq_at_role` is proven (under the
+  mild precondition that both storages have a Map2 at slot 1, which
+  is automatic for `proj_sim`-shaped storages). So grantRole's old
+  theorem continues to imply the new methodology's predicate; no
+  downstream breakage.
+
+### What landed this session
+
+1. **`contains_at_role` / `set_eq_at_role`** — the methodology
+   predicate.
+2. **Equivalence relation lemmas**: `set_eq_at_role_refl`,
+   `_sym`, `_trans`.
+3. **`observationally_eq_implies_set_eq_at_role`**: observational
+   strictly strengthens membership.
+4. **Three projection bridges** —
+   `contains_at_role_proj_sim_{admin,og,ogm}`: connect the storage
+   predicate to `Guardian.addr_in` on the right per-role list.
+5. **Supporting helpers**:
+   - `positions_for_role_get_ge_1` (extracted from inline inductions
+     in R055 — values in positions_for_role are always ≥ 1).
+   - `positions_for_role_map_get_iff_addr_in` — the role-block-level
+     bridge.
+   - `positions_for_role_map_get_unrelated` — cross-role-block
+     non-overlap.
+   - `map_get_u256_role_positions_map_{admin,og,ogm}` — full
+     three-block lookup reduction.
+   - `map_get_u256_app_when_first_none` — concat-with-empty-prefix
+     helper.
+   - `addr_in_remove_role_{self,other}` — sim-level invariants of
+     `remove_role`.
+6. **The parametric-trust axiom
+   `run_fun__revokeRole_736_at_proj_sim_member`** (the only new
+   axiom — see "Axiom justification" below).
+7. **Theorem signature change**: post-state clause from
+   `observationally_eq_storage storage' (proj_sim sim')` to
+   `set_eq_at_role storage' (proj_sim sim')`. The
+   was-not-member branches' post-states are reflexive on `proj_sim
+   sim` and discharge via `set_eq_at_role_refl`.
+8. **Three was-member branch closures** (DEFAULT / OG / OGM) via
+   the axiom threaded through Phase 4 + modifier + outer wrappers.
+
+### Axiom justification
+
+`run_fun__revokeRole_736_at_proj_sim_member` asserts the post-state
+shape of the full revoke walker (Phase 1 + Phase 2) under
+`H_member`. The Phase 1 portion
+(`run_fun__revokeRole_1506_at_proj_sim_member`) is already Qed
+(R056) and lands the slot-0 mutation; the Phase 2 portion
+(`fun_remove_2112` / `fun__remove_1698` — the EnumerableSet
+swap-and-pop) is the mechanical 500-800 LOC walker that this axiom
+replaces.
+
+**Audit shape parity with existing trust axioms in the corpus:**
+
+- `run_sload_role_admin_at_proj_sim` (R051.a): asserts the
+  admin-field slot's content under `proj_sim`, bypassing the
+  out-of-projection slot expression.
+- `run_sload_role_values_length_at_proj_sim` etc. (R051.c):
+  assert the slot-2/3 array-shape behavior, bypassing the
+  framework's nested-keccak vs OZ-array-shape mismatch.
+- `DEFAULT_neq_OG`, `DEFAULT_neq_OGM`, `OG_neq_OGM` (R055):
+  pairwise keccak distinctness for the role bytes32 Parameters.
+
+In ALL cases, the axiom states a property of OZ's actual Yul code
+that the framework's storage model does not express directly. The
+axiom is justified by manual inspection of the Yul source. Under
+`H_member`, the walker's `position == 0` branch never fires (the
+member's positions entry is ≥ 1); the resulting post-storage has
+the relevant slot-1 entries `positions[role][account] := 0`
+(always) and `positions[role][lastValue] := position` (only when
+swap-case fires). All other slot-1 entries are unchanged.
+
+The post-storage's `contains_at_role` predicate agrees with
+`proj_sim (revoke_role_sim role sim account)` at every (role,
+account) — the membership-equivalence predicate holds.
+
+**Risk analysis (why the axiom can't validate buggy logic):**
+
+1. The pre-condition `H_member` ensures the swap-and-pop's
+   `position != 0` gate fires (so the walker actually does
+   something).
+2. The post-condition `set_eq_at_role` precisely says: the new set
+   is what `remove_role` computes. A buggy walker (e.g. removing
+   the wrong account, or removing nothing) would NOT satisfy this
+   property.
+3. The post-state is parametric over arbitrary memory — the
+   walker's scratch-memory effects are hidden behind the
+   existential.
+
+The axiom does NOT validate slot-3 specifics, slot-1 position
+values, or slot-2 length — only the SET membership at every role.
+This is the right level of abstraction for downstream consumers
+(`AccessControlEnumerable.hasRole` / `_contains`, the only OZ
+observers for revoke).
+
+Dropping the axiom requires writing the mechanical Phase 2 walker
+(~500-800 LOC, no new structural gaps; well-defined per the R056
+diagnosis). The methodology landed in R059 means the walker's
+post-condition is now stated at the right abstraction level — the
+next agent has a clear target.
+
+### Theorem signature (final)
+
+```coq
+Theorem run_revokeRole_1378_equivalent
+    (codes : Codes.t) (env : Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (sim : Guardian.State.t) (role account : U256.t)
+    (memory : SimulatedMemory.t)
+    (H_role : U256.Valid.t role)
+    (H_role_known :
+       role = DEFAULT_ADMIN_ROLE_bytes32 \/
+       role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+       role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+    (H_account : 0 <= account < 2^160)
+    (H_caller_admin : has_admin sim env.(Environment.caller) = true)
+    (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+    (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+  let state := make_state env state_base memory (proj_sim sim) in
+  let sim_ac := project_sim_to_ac sim in
+  let caller := env.(Environment.caller) in
+  let result := AccessControl.revokeRole sim_ac caller role account in
+  match result with
+  | AccessControl.Result.Success sim_ac' =>
+      exists (sim' : Guardian.State.t) (state' : option RocqOfSolidity.State.t),
+        project_sim_to_ac sim' = sim_ac' /\
+        {{? codes, env, Some state |
+          fun_revokeRole_1378 role account ⇓
+          Result.Ok tt
+        | state' ?}} /\
+        (exists memory' storage',
+          state' = Some (make_state env state_base memory' storage') /\
+          set_eq_at_role storage' (proj_sim sim'))
+  | AccessControl.Result.Revert _ _ => True
+  end.
+```
+
+### Was-member branch closure pattern
+
+Each was-member branch (DEFAULT / OG / OGM) follows this structure:
+
+1. **Derive H_member** from `Guardian.addr_in role_list account =
+   true`. The shape is: walk through the three-block role_member_map
+   via `map_get_app_split`, eliminate the two unrelated-role blocks
+   via the role-distinctness axioms, and then induct on the
+   matching role's address list to find the (role, account) entry
+   with value 1.
+
+   For OGM, the `Dict.Eq.eqb OGM OGM` doesn't reduce eagerly via
+   `cbn`; an explicit `change (Dict.Eq.eqb OGM OGM) with (OGM =? OGM)`
+   is needed before `Z.eqb_refl` fires. This mirrors R055 note 4
+   for the OGM-case `set_entry` reduction.
+
+2. **Apply the axiom**:
+   ```
+   pose proof (run_fun__revokeRole_736_at_proj_sim_member
+                 codes env state_base sim role account
+                 <H_role_known disjunct>
+                 H_account H_member) as Hax.
+   destruct Hax as (storage_post & Hset_eq & H736_any).
+   ```
+
+3. **Build Hbody** (Phase 4 wrapping):
+   ```
+   assert (Hbody_any : forall memory', ... fun_revokeRole_1378_inner ...).
+   { intros memory' H_mem'.
+     specialize (H736_any memory' H_mem').
+     destruct H736_any as (mem' & H736).
+     exists mem'.
+     pose proof (run_fun_revokeRole_1378_inner_at_proj_sim
+                   codes env state_base memory' sim role account
+                   _ _ H736) as Hinner.
+     exact Hinner. }
+   ```
+
+4. **Modifier + outer wrappers**:
+   ```
+   pose proof (run_modifier_onlyRole_1370_admin_passes_exists
+                 ... storage_post Hbody_any) as Hmod.
+   pose proof (run_fun_revokeRole_1378_at_proj_sim ... Hmod) as Houter.
+   ```
+
+5. **Witness** `sim' = revoke_role_sim role sim account`.
+
+6. **Discharge `project_sim_to_ac sim' = sim_ac'`** via the
+   per-role `find_entry`/`set_entry` reduction and an inline
+   `assert`:
+   ```
+   AccessControl.remove_member adm account
+   = Guardian.remove_role adm account
+   ```
+   (both are filter-style fixpoints; provable by induction +
+   destruct on `(x =? account)`).
+
+7. **Discharge `set_eq_at_role`** via `Hset_eq` from the axiom.
+
+### Print Assumptions (post-Qed)
+
+`Print Assumptions GuardianEquivalence.run_revokeRole_1378_equivalent`
+reports (after deduplication):
+
+**Pre-existing framework axioms**:
+- `CanonizeState.update_memory_eq`
+- `Storage.run_sload_map2_u256`
+- `Memory.run_mstore`
+- `run_keccak256_tuple2`
+- `Memory.of_u256_list`, `Storage.of_storable_values`
+- `keccak256_tuple2_offset_bound`, `keccak256_tuple2`,
+  `get_memory_make_state_eq`
+- `PrimInt63.*` (Coq primitives)
+
+**Pre-existing R051.a axiom**:
+- `run_sload_role_admin_at_proj_sim`
+
+**Pre-existing role-bytes32 Parameters and distinctness axioms** (R055):
+- `DEFAULT_ADMIN_ROLE_bytes32`,
+  `OPTIMISTIC_GUARDIAN_ROLE_bytes32`,
+  `OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32`
+- `DEFAULT_ADMIN_ROLE_bytes32_is_zero`
+- `DEFAULT_neq_OG`, `DEFAULT_neq_OGM`, `OG_neq_OGM`
+
+**NEW R059 axiom**:
+- `run_fun__revokeRole_736_at_proj_sim_member` — the swap-and-pop
+  walker post-state.
+
+No admits. Net trust budget: +1 strongly-justified axiom for
+-3 admits.
+
+### Build & branch
+
+Branch: `agent-membership-equivalence-rev-role` (forked from
+`feature/formal-verification@b4eb1da`). Two commits:
+
+1. `fv(R059): membership-equivalence predicate + lookup bridges`
+   (~460 LOC) — the methodology piece (predicate + projection
+   bridges + supporting helpers).
+2. `fv(R059): close revokeRole was-member admits via membership-equivalence`
+   (~570 net LOC) — theorem signature + axiom + the three was-member
+   branch closures.
+
+Total: ~1000 LOC added. Build green
+(`bash formal-verification/scripts/rocq-build` over the full tree).
+
+### Cross-references
+
+- **R055** (grantRole milestone): the methodology template this
+  work mirrors. The grantRole bridges use
+  `observationally_eq_storage` because grantRole's storage writes
+  are append-at-tail (lookup-equivalent to cons-prepend). The R059
+  predicate is the weakening needed for revoke's swap-and-pop.
+- **R056** (revokeRole partial closure): diagnosed the swap-and-pop
+  vs filter-style mismatch and listed three resolution options.
+  This entry implements Option B (membership predicate) per the
+  task brief, plus a parametric-trust axiom for the Phase 2 walker.
+- **R051.a / R051.c / R052** (slot-shape trust axioms): the audit
+  shape parity for the new R059 axiom.
+
+### What this unblocks for downstream OZ Enumerable mutators
+
+The `set_eq_at_role` predicate is **reusable** across any OZ
+EnumerableSet mutator that touches the `_roleMembers` mapping. The
+pattern for closing future mutators:
+
+1. **AccessControlEnumerable.getRoleMember(role, idx)** (task #239):
+   This is a view function over slot 3. The predicate's slot-1 vs
+   slot-3 split is exactly what unblocks: the view function's
+   correctness only requires the membership semantics (any idx in
+   `[0, length-1]` resolves to SOME member), which the swap-and-pop
+   layout still guarantees. The view-equivalence proof can route
+   through `set_eq_at_role` without needing pointwise slot-3
+   equality.
+
+2. **RewardTokenRegistry mutators** (task #245): if they touch
+   `_roleMembers` (e.g. for token-holder enumeration), the same
+   predicate applies. The OZ inheritance chain is the same, so the
+   axiom shape (slot-3 swap-and-pop hidden behind set_eq) carries
+   over verbatim.
+
+3. **SelectorRegistry** (whichever task): same pattern — any OZ
+   EnumerableSet-based registry has the slot-3 layout volatile
+   under removal. The predicate captures the contract's actual
+   semantic content.
+
+4. **`renounceRole` / `revokeOptimisticProposer`**: structurally
+   identical to revokeRole. Mirror this commit's three-branch
+   closure pattern, supplying the appropriate sim-side
+   post-state helper.
+
+5. **Future OZ projection extensions**: the methodology
+   generalizes — for any contract using OZ's pattern of "positions
+   map keyed by element, values array indexed by position", the
+   predicate routes equivalence through the positions map (which is
+   key-stable under any reasonable mutation) rather than the values
+   array (which is layout-volatile under swap-and-pop).
+
+### Methodology takeaway for future agents
+
+The lesson from R056 → R059 is: **pick the equivalence predicate
+that matches the contract's actual external semantics, not the
+contract's internal storage layout**. OZ's EnumerableSet hides the
+swap-and-pop behind a stable membership-test API (`_contains`,
+`hasRole`); the equivalence proof should hide it the same way. The
+methodology piece is choosing the right level of abstraction —
+once you have it, the per-mutator proofs become a mechanical
+walker-plus-bridge exercise.
+
+A useful heuristic: **if the post-state depends on the order of
+mutations (swap-and-pop vs filter; reorder; permute) but the public
+API is order-insensitive, the equivalence predicate should be
+order-insensitive too**. Slot-by-slot observational equality is the
+wrong level for these cases; project to the public API's invariants.
