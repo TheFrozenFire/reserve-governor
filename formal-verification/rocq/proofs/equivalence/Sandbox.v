@@ -144,3 +144,38 @@ Module R021VerificationCheck.
   Qed.
 
 End R021VerificationCheck.
+
+(** ----- R050 verification: [staticcall] bridge composes -----
+
+    [staticcall] is NOT a missing upstream primitive — it is already a
+    composite of MLoad + CallContract + RLoad + MStore (see
+    [simulations.RocqOfSolidity.Stdlib.staticcall]).
+    [StaticCallBridge.run_staticcall_to_word] discharges the whole
+    chain in one lemma given a precompile-disambiguation precondition
+    and a proof-author-supplied [call_result].
+
+    The check below exercises the bridge against an abstract non-
+    precompile address. If the bridge ever stops composing, this fails
+    and downstream R050-blocked proofs would too. *)
+Require Import ReserveGovernor.proofs.equivalence.StaticCallBridge.
+
+Module R050VerificationCheck.
+
+  Lemma staticcall_can_be_discharged
+      codes env state
+      (g addr in_ insize out : U256.t)
+      (call_result : U256.t)
+      (H_not_precompile : Stdlib.precompile_output addr [] = None) :
+    exists state',
+    {{? codes, env, Some state |
+      Stdlib.staticcall g addr in_ insize out 32 ⇓
+      Result.Ok call_result
+    | state' ?}}.
+  Proof.
+    eexists.
+    apply (StaticCallBridge.run_staticcall_to_word
+             codes env state g addr in_ insize out
+             call_result H_not_precompile).
+  Qed.
+
+End R050VerificationCheck.
