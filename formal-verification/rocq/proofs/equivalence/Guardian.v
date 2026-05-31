@@ -691,67 +691,20 @@ Module GuardianEquivalence.
       fun__grantRole_1468 role account ⇓
       Result.Ok 0
     | Some state' ?}}.
-  Proof.
-    intros state.
-    pose proof (run_hasRole_equivalent codes env state_base sim role account
-                  memory H_role H_account H_mem) as Hhr.
-    cbv zeta in Hhr.
-    destruct Hhr as (state_hr & Hhr).
-    set (hr_v := StorableValue.map_get_u256
-                   (role_member_map sim) (role, account)) in *.
-    set (cond := Pure.iszero (Pure.iszero (Pure.iszero hr_v))) in *.
-    (* Case-split BEFORE [eexists] so the walker's metavars are
-       scoped per-branch — bypasses the R047 if-then-else
-       metavariable trap (see WISDOM entry below). *)
-    destruct (cond =? 0) eqn:Hd.
-    - exists state_hr.
-      cbv zeta. unfold fun__grantRole_1468.
-      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
-      repeat (lazymatch goal with
-        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
-        | |- {{? _, _, _ |
-              LowM.Call zero_value_for_split_t_bool _
-              ⇓ _ | _ ?}} =>
-            c; [ unfold zero_value_for_split_t_bool;
-                 lu; repeat (lu || cu || p) | ]
-        | |- {{? _, _, _ |
-              LowM.Call (fun_hasRole_1292 _ _) _
-              ⇓ _ | _ ?}} =>
-            eapply RunO.Call; [ exact Hhr | apply RunO.Pure ]
-        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
-        | |- _ => s
-        end).
-      + c. { unfold iszero. apply RunO.Pure. } s.
-        c. { unfold cleanup_t_bool. lu. repeat (lu || cu || p). } p.
-      + cbn match.
-        unfold Shallow.let_state, M.strong_let_, M.let_, M.generic_let, M.pure.
-        l. { l. { p. } cbn match. fold cond. rewrite Hd.
-             l. { p. } l. { p. } p. } cbn match. p.
-      + cbn match. apply RunO.Pure.
-    - exists state_hr.
-      cbv zeta. unfold fun__grantRole_1468.
-      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
-      repeat (lazymatch goal with
-        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
-        | |- {{? _, _, _ |
-              LowM.Call zero_value_for_split_t_bool _
-              ⇓ _ | _ ?}} =>
-            c; [ unfold zero_value_for_split_t_bool;
-                 lu; repeat (lu || cu || p) | ]
-        | |- {{? _, _, _ |
-              LowM.Call (fun_hasRole_1292 _ _) _
-              ⇓ _ | _ ?}} =>
-            eapply RunO.Call; [ exact Hhr | apply RunO.Pure ]
-        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
-        | |- _ => s
-        end).
-      + c. { unfold iszero. apply RunO.Pure. } s.
-        c. { unfold cleanup_t_bool. lu. repeat (lu || cu || p). } p.
-      + cbn match.
-        unfold Shallow.let_state, M.strong_let_, M.let_, M.generic_let, M.pure.
-        l. { l. { p. } cbn match. fold cond. rewrite Hd. p. } cbn match. p.
-      + cbn match. apply RunO.Pure.
-  Qed.
+  (** RETIRED post-R046 fix. Pre-fix this Qed'd against a no-op shallow form
+      (the generator dropped the sstore on the success branch). With the
+      shallow_embed.py default-case fix landed at
+      TheFrozenFire/rocq-of-solidity@696f60f, [fun__grantRole_1468] now
+      correctly returns 1 with state mutated on the not-a-member branch —
+      so this theorem's [Result.Ok 0] claim is stale on that branch. The
+      proper target is [run_grantRole_1359_equivalent] (the intended
+      mutator equivalence below) which is still Admitted pending the
+      proof-walker pass.
+
+      Old tactic walker (referenced via git history if needed):
+      pose Hhr; destruct; case-split before eexists; walker arms for
+      [zero_value_for_split_t_bool], [fun_hasRole_1292], etc. *)
+  Proof. Admitted.
 
   (** ----- Intended mutator-equivalence statement, parked =====
 
