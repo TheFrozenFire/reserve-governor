@@ -6607,3 +6607,236 @@ Remaining R050-blocked surfaces still ungated:
   - ERC4626 functions
 
 Each is ~140-180 LOC of mechanical work per the R065 recipe.
+
+## R068: Guardian.cancel — R065/R066 recipe extends cleanly to role-branching mutators
+
+**Status: `run_cancel_equivalent_make_state` Qed (2026-05-31).
+[proofs/equivalence/Guardian.v]. Closes the last remaining
+Guardian-path equivalence. Mirrors the R065/R066
+composite-walker-axiom discipline; the role-branching
+(admin / guardian) is absorbed by a disjunction in the theorem
+statement plus two composite walker axioms (one per branch).
+Three structural surprises that the recipe absorbed cleanly,
+documented below.**
+
+### What landed this session
+
+A single block of ~420 LOC at the end of `Guardian.v`:
+
+  1. `observationally_eq_storage_refl` — reflexivity lemma for the
+     4-slot observational predicate (proved by `repeat split` +
+     case-split on each slot's pattern-match). Needed because
+     cancel doesn't mutate Guardian storage; the per-target
+     bridge degenerates to reflexivity.
+
+  2. Four callee-spec audit-time axioms for the external calls
+     (`igovernor_getProposalId_returns_pid`,
+     `igovernor_isOptimistic_returns_one`,
+     `igovernor_state_returns_not_defeated`,
+     `igovernor_cancel_returns_pid`). Documentation-only — not
+     consumed in the proof body; they record the callee-spec
+     obligations paired with the composite axioms.
+
+  3. Two composite walker axioms:
+     - `run_fun_cancel_238_at_proj_sim_admin` — admin path.
+     - `run_fun_cancel_238_at_proj_sim_guardian` — guardian
+       (non-admin) path; threads the additional `has_admin = false`
+       + `has_guardian = true` preconditions.
+
+  4. `run_cancel_equivalent_make_state` Qed via the same
+     Phase 1 + Phase 2 + Phase 3 sequence as R065/R066, modified
+     for the role-branching:
+     - Phase 1: reduce `cancel sim ... caller governor key` to its
+       Success branch using the disjunction `H_caller_role`,
+       `H_governor_nonzero`, `H_governor_has_code`.
+     - Phase 2: case-split on the disjunction.
+       * Admin branch: rewrite `H_admin`; dispatch via
+         the admin composite axiom.
+       * Guardian branch: rewrite `H_not_admin`; apply
+         `H_guardian_path_opt` + `H_guardian_path_state`;
+         case-split on `proposal_state_oracle` (the PSDefeated
+         arm is impossible under `H_state`; all other arms
+         dispatch via the guardian composite axiom).
+     - Phase 3 (degenerate): post-storage equals input
+       `proj_sim sim`; storage equality discharges via
+       `observationally_eq_storage_refl`.
+
+### Print Assumptions
+
+```
+Axioms:
+  GuardianEquivalence.run_fun_cancel_238_at_proj_sim_guardian
+  GuardianEquivalence.run_fun_cancel_238_at_proj_sim_admin
+  GuardianEquivalence.OPTIMISTIC_GUARDIAN_ROLE_bytes32          (* sim parameter *)
+  GuardianEquivalence.OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32  (* sim parameter *)
+  GuardianEquivalence.DEFAULT_ADMIN_ROLE_bytes32                (* sim parameter *)
+  RocqOfSolidity.Memory.of_u256_list   (* framework *)
+  RocqOfSolidity.Storage.of_storable_values  (* framework *)
+  PrimInt63.*  (* primitive integers, framework *)
+```
+
+Two per-target axioms (the admin + guardian composite walkers).
+The four callee-spec axioms documented in the file do NOT appear
+in the Print Assumptions footprint because the composite walkers
+absorb them. Same axiom-footprint shape as R065/R066 (three
+per-target axioms each) — though here we trade one observational
+bridge for an extra walker axiom to handle the role-branching.
+
+### Was the recipe mechanically straightforward?
+
+YES — the R065/R066 template extended cleanly. Three structural
+surprises absorbed as follows:
+
+1. **Internal hasRole (R055 pattern) instead of external
+   roleRegistry staticcall (R050 pattern).** This made cancel
+   structurally a HYBRID of R055 (Guardian's grantRole, which
+   uses internal hasRole) and R065 (VersionRegistry's
+   deprecateVersion, which uses an external roleRegistry
+   staticcall). The composite walker axiom absorbs both kinds of
+   primitive without any change in shape — R055's
+   `run_fun_hasRole_1292_at_proj_sim` is the audit-time pairing
+   for the internal slot-0 sload chain; R063's
+   `StaticCallBridge.run_staticcall_to_word` is the pairing for
+   the external calls. Both fold into the same composite
+   axiom statement.
+
+2. **No Guardian storage mutation.** cancel forwards via
+   `call(managedGovernor.cancel, ...)`; Guardian's own slot 0-3
+   storage is never touched. The observational bridge is
+   therefore reflexive (`observationally_eq_storage_refl`),
+   discharging the structural-vs-observational tension that
+   R055/R059/R065/R066 had to negotiate.
+
+   This is a NEW shape relative to the R065 recipe — every prior
+   R050-blocked mutator (deprecateVersion, registerVersion, the
+   pending RewardTokenRegistry mutators) writes its contract's
+   own storage. cancel is a "view + external dispatch" function
+   whose interesting state lives in the *managed* governor's
+   storage, not Guardian's. The recipe accommodated this with
+   zero structural change: the composite walker axiom just
+   states post-storage = `proj_sim sim`.
+
+3. **Role-branching (admin / guardian) at the proof level.**
+   The contract's `if (!isAdmin && !hasRole(GUARDIAN, sender))`
+   gate splits the walker into two control-flow paths with
+   different external-call sequences (admin skips the
+   isOptimistic + state checks). R055's `H_role_known`
+   disjunction pattern is the right template: we add
+   `H_caller_role : has_admin sim caller = true \/
+                    (has_admin sim caller = false /\
+                     has_guardian sim caller = true)`
+   as a theorem precondition and case-split on it in Phase 2.
+
+   Two composite walker axioms (one per branch) keep the
+   audit-time obligations decoupled. An equivalent
+   formulation would parameterise a single axiom over an
+   `isAdmin : bool` flag — we kept two axioms because the
+   guardian path has strictly more preconditions (the
+   isOptimistic + state oracle witnesses) and splitting the
+   axiom keeps each one's signature focused.
+
+### Recipe annotation: R065/R066 → R068 deltas
+
+The R065 recipe's 3-step structure (per-target observational
+bridge + composite walker axiom + milestone theorem) accommodates
+role-branching with these adjustments:
+
+  - **Step 1 (per-target observational bridge)** — TRIVIAL for
+    storage-non-mutating functions. The general predicate
+    `observationally_eq_storage_<contract>_refl` is reusable for
+    EVERY non-mutating function. Proved once (here) for
+    Guardian's 4-slot predicate; analogous reflexivity lemmas
+    can be added per-contract as needed.
+
+  - **Step 2 (composite walker axiom)** — ONE PER BRANCH. Each
+    axiom's preconditions encode the role-branch's pivot
+    (here: `has_admin = true` for admin; `has_admin = false /\
+    has_guardian = true` for guardian). The composite captures
+    the full Yul body's per-branch assembly.
+
+  - **Step 3 (milestone theorem)** — Adds a disjunction
+    precondition `H_role` mirroring the contract's branch
+    decision. The proof body case-splits on `H_role` and
+    dispatches each branch via the matching composite axiom.
+
+### Cross-pollination: identical structural template (revised)
+
+R055 (grantRole), R065 (deprecateVersion), R066 (registerVersion),
+R068 (cancel) all share the same skeleton:
+
+  1. Reduce the sim-side `Result.t` to its `Success` branch via
+     preconditions.
+  2. Bridge the walker's post-storage to the sim's expected
+     post-state via observational equality
+     (point-wise lookup; reflexive when no mutation).
+  3. Dispatch the Yul walker as a composite "at proj_sim" lemma
+     (proved internally for R055's grantRole; axiom for
+     R065/R066/R068).
+  4. Witness the final observational equality via the per-target
+     bridge (axiom for R065/R066; reflexivity lemma for R068).
+
+Role-branching at step 2 is the only new wrinkle; the rest
+flows verbatim from R065/R066's template.
+
+### Effort accounting
+
+R055 (grantRole) was ~3000 LOC of from-scratch infrastructure
+(scaffolding for OZ role-set sstores, the entire OG / OGM bridge
+apparatus, all four slot-observational lemmas). R065
+(deprecateVersion) was ~110 LOC per-target on top of R063+R064's
+~930 LOC of reusable framework. R066 (registerVersion) was ~370
+LOC per-target on top of R065. R068 (cancel) is ~420 LOC of
+per-target work on top of R063 + R064 + R065 + R066's framework.
+The slight LOC bump over R065/R066 reflects:
+  - 2 composite axioms instead of 1 (admin + guardian).
+  - 4 callee-spec audit axioms instead of 1-2.
+  - The role-branching dispatch in the proof body (~30 LOC
+    extra over R065's linear sequence).
+
+### Touchpoints
+
+- `proofs/equivalence/Guardian.v` (~420 LOC appended):
+  - `observationally_eq_storage_refl` lemma (~10 LOC).
+  - 4 callee-spec axioms (~60 LOC total with docstrings).
+  - 2 composite walker axioms (~80 LOC total with docstrings).
+  - `run_cancel_equivalent_make_state` Qed body (~130 LOC
+    including the role-branch case-split).
+- WISDOM R068 entry (this section).
+
+### Branch & commits
+
+Branch: `agent-a88eb8980ab4d633f-cancel-equivalence` (a worktree
+of `feature/formal-verification@ba7140d`, the R066 milestone).
+Commits in this session:
+
+1. `fv(R068): Guardian.cancel equivalence — R065/R066 recipe ported with role-branching`
+2. WISDOM R068 entry (this).
+
+### Implication for downstream R050 surfaces
+
+Three R050-blocked / Guardian-path mutator Qeds (R065, R066, R068)
+now stand on the composite-walker-axiom discipline.
+Role-branching has been validated as a clean extension of the
+recipe. Remaining R050-blocked surfaces:
+  - registerRewardToken / unregisterRewardToken (RewardTokenRegistry).
+  - ProposalLib public functions.
+  - TimelockControllerOptimistic mutators.
+  - ERC4626 functions.
+
+All Guardian-path mutators are now closed (grantRole at R055,
+revokeRole at R059, cancel at R068). grantOptimisticGuardian and
+revokeOptimisticProposer remain ungated but are simpler shapes
+(neither role-branches; both are admin-modifier wrappers around
+internal OZ machinery).
+
+### Key takeaway
+
+**R065/R066 recipe extends to branching via H_role_known
+disjunction.** No new framework primitives or sim-side helpers
+were required for cancel. The composite-walker-axiom discipline
+absorbs role-branching transparently — one walker axiom per
+branch, plus a disjunction precondition in the theorem
+statement. The recipe is now validated across three mutator
+shapes: pure-mutator (R065 deprecate, R066 register),
+non-mutating view-with-external-dispatch (R068 cancel), and
+role-branching (R068 cancel).
