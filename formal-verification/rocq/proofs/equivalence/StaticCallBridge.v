@@ -192,4 +192,146 @@ Module StaticCallBridge.
                   call_result output_bytes H_not_precompile)
       | ].
 
+  (** ----- Convenience: the [staticcall + iszero + revert-on-zero]
+      idiom.
+
+      Every R050-blocked OZ-pattern mutator (VersionRegistry,
+      Guardian, RewardTokenRegistry, ProposalLib) opens with the same
+      shape:
+
+      {[
+        let~ _24 := [[ staticcall ~(| ... |) ]] in
+        let_state~ 'tt := [[
+          Shallow.if_ (|
+            iszero ~(| _24 |),
+            do~ [[ revert_forward_1 ~(||) ]] in
+            M.pure (BlockUnit.Tt, tt),
+            tt
+          |)
+        ]] default~ tt in
+        ...
+      ]}
+
+      When the proof author picks [call_result = 1] (the role-check
+      passes), [iszero call_result = 0] so [Shallow.if_] selects the
+      default-pure branch. The lemma [staticcall_succeeds_iszero_false]
+      packages this into a single step.
+
+      The bridge expects the proof author to supply two pieces:
+        - [H_not_precompile : precompile_output addr [] = None]
+        - the choice that [call_result <> 0] (typically [call_result = 1]).
+
+      The post-state is the same as [run_staticcall_to_word]'s: memory
+      updated with the output bytes at [out], return_data set to
+      [u256_as_bytes call_result]. *)
+
+  Lemma run_staticcall_to_word_iszero_false
+      (codes : Codes.t) (env : Environment.t) (state : State.t)
+      (g addr in_ insize out : U256.t)
+      (call_result : U256.t)
+      (H_not_precompile : Stdlib.precompile_output addr [] = None)
+      (H_call_result_nonzero : call_result <> 0) :
+    let output_bytes := Memory.u256_as_bytes call_result in
+    let memory' :=
+      Memory.update_bytes state.(State.memory) out
+        (List.firstn 32 output_bytes) in
+    let state' :=
+      state
+        <| State.return_data := output_bytes |>
+        <| State.memory := memory' |> in
+    Pure.iszero call_result = 0 /\
+    {{? codes, env, Some state |
+      Stdlib.staticcall g addr in_ insize out 32 ⇓
+      Result.Ok call_result
+    | Some state' ?}}.
+  Proof.
+    intros output_bytes memory' state'.
+    split.
+    - unfold Pure.iszero. destruct (call_result =? 0) eqn:E.
+      + exfalso. apply Z.eqb_eq in E. apply H_call_result_nonzero. exact E.
+      + reflexivity.
+    - apply (run_staticcall_to_word codes env state g addr in_ insize out
+               call_result H_not_precompile).
+  Qed.
+
+  (** ----- Companion leaf: loadimmutable -----
+
+      The Yul prelude that flanks every external [staticcall] reads the
+      callee's address out of an immutable slot via [loadimmutable].
+      The upstream's [Stdlib.loadimmutable] reduces to a single
+      [Primitive.LoadImmutable name] which [eval_primitive] dispatches
+      against the current contract's [Account.immutables] dict. The
+      proof author supplies the binding as a hypothesis. *)
+
+  Lemma run_loadimmutable
+      codes env state (name addr : U256.t)
+      (account : Account.t)
+      (H_account : Dict.get state.(State.accounts)
+                     env.(Environment.address) = Some account)
+      (H_immutable : Dict.get account.(Account.immutables) name = Some addr) :
+    {{? codes, env, Some state |
+      Stdlib.loadimmutable name ⇓ Result.Ok addr
+    | Some state ?}}.
+  Proof.
+    unfold Stdlib.loadimmutable.
+    eapply RunO.Primitive.
+    - simpl. rewrite H_account, H_immutable. reflexivity.
+    - apply RunO.Pure.
+  Qed.
+
+  (** ----- Companion leaf: returndatasize after the bridge -----
+
+      After [run_staticcall_to_word] finishes, the state has
+      [return_data = u256_as_bytes call_result], a 32-byte list. So
+      [returndatasize] returns 32. This closes the R058 (R-returndatasize)
+      residual that was flagged as "the most subtle" — the bridge fully
+      pins down the post-staticcall state, so the value is concrete. *)
+
+  Lemma length_u256_as_bytes (v : U256.t) :
+    List.length (Memory.u256_as_bytes v) = 32%nat.
+  Proof.
+    unfold Memory.u256_as_bytes.
+    rewrite List.length_map.
+    rewrite List.length_seq.
+    reflexivity.
+  Qed.
+
+  Lemma run_returndatasize_after_bridge
+      codes env state v memory_post :
+    let state_post :=
+      state
+        <| State.return_data := Memory.u256_as_bytes v |>
+        <| State.memory := memory_post |> in
+    {{? codes, env, Some state_post |
+      Stdlib.returndatasize ⇓ Result.Ok 32
+    | Some state_post ?}}.
+  Proof.
+    intros state_post.
+    unfold Stdlib.returndatasize.
+    eapply RunO.Primitive with (value := Memory.u256_as_bytes v).
+    - reflexivity.
+    - apply RunO.PureEq; [|reflexivity].
+      rewrite length_u256_as_bytes. reflexivity.
+  Qed.
+
+  (** ----- Layer 4: Walker arm patterns -----
+
+      Two canonical walker arms cover the two shapes of staticcall use:
+
+      (1) Bare [staticcall] inside a [LowM.Call]:
+      {[
+        | |- {{? _, _, _ |
+              LowM.Call (Stdlib.staticcall _ _ _ _ _ 32) _ ⇓ _ | _ ?}} =>
+            sc_word chosen_result H_not_precompile
+      ]}
+
+      (2) Bare [staticcall] (post-unfold):
+      {[
+        | |- {{? _, _, _ |
+              Stdlib.staticcall _ _ _ _ _ 32 ⇓ _ | _ ?}} =>
+            apply (run_staticcall_to_word _ _ _ _ _ _ _ _ chosen_result H_not_precompile)
+      ]}
+
+      For the general (non-32-byte) case, substitute [sc_general]. *)
+
 End StaticCallBridge.

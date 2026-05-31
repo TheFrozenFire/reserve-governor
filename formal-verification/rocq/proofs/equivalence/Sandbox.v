@@ -178,4 +178,38 @@ Module R050VerificationCheck.
              call_result H_not_precompile).
   Qed.
 
+  (** The bridge composes through the [LowM.Call (Stdlib.staticcall ...)
+      LowM.Pure] shape that the shallow-form notation
+      [[[ staticcall ~(| ... |) ]]] produces. This is the actual goal
+      shape a walker arm sees inside a [let~ _24 := [[ staticcall ... ]]]. *)
+  Lemma staticcall_composes_through_call
+      codes env state
+      (g addr in_ insize out : U256.t)
+      (call_result : U256.t)
+      (H_not_precompile : Stdlib.precompile_output addr [] = None) :
+    exists state',
+    {{? codes, env, Some state |
+      LowM.Call (Stdlib.staticcall g addr in_ insize out 32) LowM.Pure ⇓
+      Result.Ok call_result
+    | state' ?}}.
+  Proof.
+    eexists.
+    StaticCallBridge.sc_word call_result H_not_precompile.
+    apply RunO.Pure.
+  Qed.
+
+  (** [iszero] post-bridge dispatches the canonical revert-on-zero
+      branch trivially when the proof author picks a non-zero
+      [call_result]. This exercises the [Pure.iszero] companion lemma. *)
+  Lemma iszero_after_bridge_is_false
+      (call_result : U256.t) :
+    call_result <> 0 ->
+    Pure.iszero call_result = 0.
+  Proof.
+    unfold Pure.iszero.
+    destruct (call_result =? 0) eqn:E; intro Hne.
+    - apply Z.eqb_eq in E. contradiction.
+    - reflexivity.
+  Qed.
+
 End R050VerificationCheck.
