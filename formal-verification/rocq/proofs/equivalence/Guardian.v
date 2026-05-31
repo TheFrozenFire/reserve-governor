@@ -127,6 +127,12 @@ Module GuardianEquivalence.
     DEFAULT_ADMIN_ROLE_bytes32 <> OPTIMISTIC_GUARDIAN_ROLE_bytes32.
   Axiom DEFAULT_neq_OGM :
     DEFAULT_ADMIN_ROLE_bytes32 <> OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32.
+  (** OG vs OGM distinctness — needed for the OG/OGM extensions of the
+      grantRole milestone (R055 follow-up). Same parametric-trust shape
+      as the two above. *)
+  Axiom OG_neq_OGM :
+    OPTIMISTIC_GUARDIAN_ROLE_bytes32
+    <> OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32.
 
   (** ----- Project a (role, list<addr>) pair into Map2 entries -----
 
@@ -566,6 +572,191 @@ Module GuardianEquivalence.
     destruct s as [admins g m]; reflexivity.
   Qed.
 
+  (** ===== Bridge: per-slot helpers for OG / OGM additions =====
+
+      The OG (OPTIMISTIC_GUARDIAN_ROLE) and OGM
+      (OPTIMISTIC_GUARDIAN_MANAGER_ROLE) blocks sit MID-LIST in
+      [role_member_map], [role_positions_map], [role_values_body_map]
+      (after the DEFAULT block, and OG comes before OGM). The bridge
+      lemmas below produce mid-list-insertion forms — the inserted
+      entry lives between the unrelated-role blocks rather than
+      cons-prepended at the head.
+
+      R055 follow-up: needed for extending [run_grantRole_1359_equivalent]
+      from DEFAULT-only to all three Guardian roles. *)
+
+  (** Slot 0 (members) — OG variant. The added entry sits at the head
+      of the OG block, between the DEFAULT prefix and the OGM suffix. *)
+  Lemma role_member_map_add_optimistic_guardian_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.optimisticGuardians) ->
+      role_member_map (Guardian.add_optimistic_guardian s addr) =
+      members_for_role DEFAULT_ADMIN_ROLE_bytes32 s.(State.admins) ++
+      ((OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr), 1)
+      :: (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+           s.(State.optimisticGuardians) ++
+          members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+           s.(State.optimisticGuardianManagers)).
+  Proof.
+    intros s addr Hni.
+    unfold role_member_map, Guardian.add_optimistic_guardian, Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    simpl. reflexivity.
+  Qed.
+
+  (** Slot 0 (members) — OGM variant. The added entry sits at the head
+      of the OGM block, after both DEFAULT and OG blocks. *)
+  Lemma role_member_map_add_optimistic_guardian_manager_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.optimisticGuardianManagers) ->
+      role_member_map (Guardian.add_optimistic_guardian_manager s addr) =
+      (members_for_role DEFAULT_ADMIN_ROLE_bytes32 s.(State.admins) ++
+       members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+        s.(State.optimisticGuardians)) ++
+      ((OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr), 1)
+      :: members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+           s.(State.optimisticGuardianManagers).
+  Proof.
+    intros s addr Hni.
+    unfold role_member_map, Guardian.add_optimistic_guardian_manager,
+           Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    rewrite app_assoc. simpl. reflexivity.
+  Qed.
+
+  (** Slot 1 (positions) — OG variant. *)
+  Lemma role_positions_map_add_optimistic_guardian_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.optimisticGuardians) ->
+      role_positions_map (Guardian.add_optimistic_guardian s addr) =
+      positions_for_role DEFAULT_ADMIN_ROLE_bytes32 s.(State.admins) ++
+      ((OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr),
+        Z.of_nat (List.length s.(State.optimisticGuardians)) + 1)
+      :: (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+           s.(State.optimisticGuardians) ++
+          positions_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+           s.(State.optimisticGuardianManagers)).
+  Proof.
+    intros s addr Hni.
+    unfold role_positions_map, Guardian.add_optimistic_guardian,
+           Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    simpl. reflexivity.
+  Qed.
+
+  (** Slot 1 (positions) — OGM variant. *)
+  Lemma role_positions_map_add_optimistic_guardian_manager_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.optimisticGuardianManagers) ->
+      role_positions_map (Guardian.add_optimistic_guardian_manager s addr) =
+      (positions_for_role DEFAULT_ADMIN_ROLE_bytes32 s.(State.admins) ++
+       positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+        s.(State.optimisticGuardians)) ++
+      ((OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr),
+        Z.of_nat (List.length s.(State.optimisticGuardianManagers)) + 1)
+      :: positions_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+           s.(State.optimisticGuardianManagers).
+  Proof.
+    intros s addr Hni.
+    unfold role_positions_map, Guardian.add_optimistic_guardian_manager,
+           Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    rewrite app_assoc. simpl. reflexivity.
+  Qed.
+
+  (** Slot 2 (length) — OG variant. The OG entry is the second element. *)
+  Lemma role_values_length_map_add_optimistic_guardian_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.optimisticGuardians) ->
+      role_values_length_map (Guardian.add_optimistic_guardian s addr) =
+      [ (DEFAULT_ADMIN_ROLE_bytes32,
+          Z.of_nat (List.length s.(State.admins)));
+        (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+          Z.of_nat (List.length s.(State.optimisticGuardians)) + 1);
+        (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+          Z.of_nat (List.length s.(State.optimisticGuardianManagers))) ].
+  Proof.
+    intros s addr Hni.
+    unfold role_values_length_map, Guardian.add_optimistic_guardian,
+           Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    cbn [List.length].
+    f_equal. f_equal. f_equal. lia.
+  Qed.
+
+  (** Slot 2 (length) — OGM variant. The OGM entry is the third element. *)
+  Lemma role_values_length_map_add_optimistic_guardian_manager_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.optimisticGuardianManagers) ->
+      role_values_length_map (Guardian.add_optimistic_guardian_manager s addr) =
+      [ (DEFAULT_ADMIN_ROLE_bytes32,
+          Z.of_nat (List.length s.(State.admins)));
+        (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+          Z.of_nat (List.length s.(State.optimisticGuardians)));
+        (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+          Z.of_nat (List.length s.(State.optimisticGuardianManagers)) + 1) ].
+  Proof.
+    intros s addr Hni.
+    unfold role_values_length_map, Guardian.add_optimistic_guardian_manager,
+           Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    cbn [List.length].
+    f_equal. f_equal. f_equal. f_equal. f_equal. lia.
+  Qed.
+
+  (** Slot 3 (body) — OG variant. *)
+  Lemma role_values_body_map_add_optimistic_guardian_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.optimisticGuardians) ->
+      role_values_body_map (Guardian.add_optimistic_guardian s addr) =
+      values_for_role DEFAULT_ADMIN_ROLE_bytes32 s.(State.admins) ++
+      ((OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+         Z.of_nat (List.length s.(State.optimisticGuardians))), addr)
+      :: (values_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+           s.(State.optimisticGuardians) ++
+          values_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+           s.(State.optimisticGuardianManagers)).
+  Proof.
+    intros s addr Hni.
+    unfold role_values_body_map, Guardian.add_optimistic_guardian,
+           Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    rewrite (values_for_role_cons_unfold OPTIMISTIC_GUARDIAN_ROLE_bytes32 addr
+              s.(State.optimisticGuardians)).
+    simpl. reflexivity.
+  Qed.
+
+  (** Slot 3 (body) — OGM variant. *)
+  Lemma role_values_body_map_add_optimistic_guardian_manager_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.optimisticGuardianManagers) ->
+      role_values_body_map (Guardian.add_optimistic_guardian_manager s addr) =
+      (values_for_role DEFAULT_ADMIN_ROLE_bytes32 s.(State.admins) ++
+       values_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+        s.(State.optimisticGuardians)) ++
+      ((OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+         Z.of_nat (List.length s.(State.optimisticGuardianManagers))), addr)
+      :: values_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+           s.(State.optimisticGuardianManagers).
+  Proof.
+    intros s addr Hni.
+    unfold role_values_body_map, Guardian.add_optimistic_guardian_manager,
+           Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    rewrite (values_for_role_cons_unfold OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+              addr s.(State.optimisticGuardianManagers)).
+    rewrite app_assoc.
+    simpl. reflexivity.
+  Qed.
+
   (** ===== R054 foundation: observational tail-form bridges =====
 
       The Yul-level [Stdlib.sstore] for an absent key produces a
@@ -722,6 +913,54 @@ Module GuardianEquivalence.
       apply Z.eqb_eq in Hl1. apply Z.eqb_eq in Hl2. subst l1 l2.
       rewrite H_absent. reflexivity.
     - destruct (Dict.get d lookup_key); reflexivity.
+  Qed.
+
+  (** ----- Mid-list-insertion observational equivalence (R055 follow-up)
+      ===============================================================
+
+      For OG / OGM roles, the projection-side bridge produces a
+      mid-list cons [A ++ (k, v) :: B] (the new entry sits between
+      the unrelated-role prefix [A] and suffix [B]). The
+      [Dict.declare_or_assign] post-state instead produces
+      [(A ++ B) ++ [(k, v)]] (append-at-tail). When [k] is absent in
+      both [A] and [B], the two are POINT-WISE [map_get_u256]-equal.
+
+      This is the natural generalization of
+      [map_get_cons_eq_app_singleton_when_absent_ZZ] (where the
+      prefix [A] is empty), and is exactly what the OG / OGM
+      observational bridges below need to discharge their per-key
+      lookup equality. *)
+  Lemma map_get_mid_cons_eq_app_singleton_when_absent_ZZ
+      (A B : Dict.t (Z * Z) U256.t) (k : Z * Z) (v : U256.t)
+      (H_absent_A : Dict.get A k = None)
+      (H_absent_B : Dict.get B k = None)
+      (lookup_key : Z * Z) :
+    StorableValue.map_get_u256 (A ++ (k, v) :: B) lookup_key
+    = StorableValue.map_get_u256 ((A ++ B) ++ [(k, v)]) lookup_key.
+  Proof.
+    unfold StorableValue.map_get_u256.
+    (* Walk [A] from the left on both sides; they agree because the
+       same [A]-prefix is consumed identically before either form
+       reaches the [(k, v)] entry. *)
+    induction A as [|[k' v'] rest IH]; cbn.
+    - (* A = []: reduces to the cons-vs-append-singleton lemma. *)
+      change (Dict.get ((k, v) :: B) lookup_key)
+        with (if Dict.Eq.eqb lookup_key k then Some v
+              else Dict.get B lookup_key).
+      pose proof (map_get_cons_eq_app_singleton_when_absent_ZZ B k v
+                    H_absent_B lookup_key) as Hcons.
+      unfold StorableValue.map_get_u256 in Hcons.
+      simpl Dict.get in Hcons. exact Hcons.
+    - destruct (Dict.Eq.eqb lookup_key k') eqn:Heq.
+      + reflexivity.
+      + simpl Dict.get in H_absent_A.
+        destruct (Dict.Eq.eqb k k') eqn:Heqk.
+        * (* k = k' but H_absent_A says k absent in (k', v') :: rest:
+             contradiction. *)
+          (* Heqk : eqb k k' = true; H_absent_A : ... = None at the
+             cons head. Resolve k = k'. *)
+          discriminate H_absent_A.
+        * apply IH. exact H_absent_A.
   Qed.
 
   Import Guardian_325.Guardian_325_deployed.
@@ -1900,6 +2139,525 @@ Module GuardianEquivalence.
     symmetry.
     apply map_get_cons_eq_app_singleton_when_absent_ZZ.
     exact H_addr_absent.
+  Qed.
+
+  (** ===== R055 follow-up: observational bridges for OG / OGM =====
+
+      Each bridge connects the [Dict.declare_or_assign] post-state for
+      the OG (or OGM) sstore to the corresponding mid-list-inserted
+      projection of [add_optimistic_guardian] (or
+      [_optimistic_guardian_manager]). They use
+      [map_get_mid_cons_eq_app_singleton_when_absent_ZZ] (the
+      generalization of the head-cons-equals-tail-append lemma to
+      arbitrary list prefixes), plus the per-slot OG/OGM projection
+      bridges added above.
+
+      The hypothesis split: each bridge takes
+      [H_absent_prefix] — the inserted key is absent in the unrelated-
+      role prefix block (DEFAULT for OG, or DEFAULT+OG for OGM); and
+      [H_absent_suffix] — absent in the own-role block (OG for OG, OGM
+      for OGM) and the unrelated suffix (OGM for OG, empty for OGM).
+
+      To minimize bookkeeping at the call site, we instead take a
+      single hypothesis [H_get_absent : Dict.get (full map) key = None]
+      and split it via [Dict_get_app_split] inside each proof. *)
+
+  Lemma role_member_map_sstore_observes_add_optimistic_guardian_not_in
+      (sim : State.t) (addr : Address)
+      (H_addr_absent :
+         StorableValue.map_get_u256 (role_member_map sim)
+           (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) = 0)
+      (H_not_in_og : ~ In addr sim.(State.optimisticGuardians))
+      (lookup_key : U256.t * U256.t) :
+    StorableValue.map_get_u256
+      (Dict.declare_or_assign (role_member_map sim)
+         (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) 1) lookup_key
+    = StorableValue.map_get_u256
+        (role_member_map (Guardian.add_optimistic_guardian sim addr))
+        lookup_key.
+  Proof.
+    (* Step 1: get [Dict.get full = None] at (OG, addr) from
+       [map_get_u256 = 0] + values are bool. *)
+    assert (H_absent_full : Dict.get (role_member_map sim)
+                             (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) = None).
+    { destruct (Dict.get (role_member_map sim)
+                  (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr)) as [w|] eqn:Hg;
+        [|reflexivity].
+      exfalso.
+      unfold StorableValue.map_get_u256 in H_addr_absent.
+      rewrite Hg in H_addr_absent.
+      assert (Hw : w = 1).
+      { unfold role_member_map in Hg.
+        rewrite !Dict_get_app_split in Hg.
+        destruct (Dict.get (members_for_role _ sim.(State.admins))
+                    (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr)) as [w0|] eqn:Hg0.
+        - injection Hg as <-.
+          apply (members_for_role_get_is_one _ _ _ _ Hg0).
+        - destruct (Dict.get (members_for_role _ sim.(State.optimisticGuardians))
+                      (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr)) as [w1|] eqn:Hg1.
+          + injection Hg as <-.
+            apply (members_for_role_get_is_one _ _ _ _ Hg1).
+          + apply (members_for_role_get_is_one _ _ _ _ Hg). }
+      rewrite Hw in H_addr_absent. discriminate H_addr_absent. }
+    (* Step 2: split [H_absent_full] into prefix/suffix pieces. *)
+    unfold role_member_map in H_absent_full.
+    rewrite !Dict_get_app_split in H_absent_full.
+    destruct (Dict.get (members_for_role DEFAULT_ADMIN_ROLE_bytes32
+                          sim.(State.admins))
+                (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr))
+      as [w0|] eqn:Hg_def; [discriminate|].
+    destruct (Dict.get (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                          sim.(State.optimisticGuardians))
+                (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr))
+      as [w1|] eqn:Hg_og; [discriminate|].
+    rename H_absent_full into Hg_ogm.
+    (* Step 3: rewrite both sides into the canonical form. *)
+    assert (H_get_full : Dict.get (role_member_map sim)
+                          (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) = None).
+    { unfold role_member_map.
+      rewrite !Dict_get_app_split, Hg_def, Hg_og, Hg_ogm. reflexivity. }
+    rewrite (declare_or_assign_app_when_absent_ZZ _ _ _ H_get_full).
+    rewrite (role_member_map_add_optimistic_guardian_not_in sim addr H_not_in_og).
+    (* LHS: (DEFAULT_block ++ OG_block ++ OGM_block) ++ [(OG, addr, 1)]
+       RHS: DEFAULT_block ++ (OG, addr, 1) :: (OG_block ++ OGM_block)
+       Apply the mid-list helper with A=DEFAULT_block, B=OG_block++OGM_block. *)
+    symmetry.
+    apply map_get_mid_cons_eq_app_singleton_when_absent_ZZ.
+    - exact Hg_def.
+    - assert (Hb : Dict.get
+                     (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                        sim.(State.optimisticGuardians)
+                      ++ members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                           sim.(State.optimisticGuardianManagers))
+                     (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) = None).
+      { rewrite Dict_get_app_split, Hg_og. exact Hg_ogm. }
+      exact Hb.
+  Qed.
+
+  Lemma role_member_map_sstore_observes_add_optimistic_guardian_manager_not_in
+      (sim : State.t) (addr : Address)
+      (H_addr_absent :
+         StorableValue.map_get_u256 (role_member_map sim)
+           (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) = 0)
+      (H_not_in_ogm : ~ In addr sim.(State.optimisticGuardianManagers))
+      (lookup_key : U256.t * U256.t) :
+    StorableValue.map_get_u256
+      (Dict.declare_or_assign (role_member_map sim)
+         (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) 1) lookup_key
+    = StorableValue.map_get_u256
+        (role_member_map
+           (Guardian.add_optimistic_guardian_manager sim addr))
+        lookup_key.
+  Proof.
+    assert (H_absent_full : Dict.get (role_member_map sim)
+              (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) = None).
+    { destruct (Dict.get (role_member_map sim)
+                  (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr)) as [w|] eqn:Hg;
+        [|reflexivity].
+      exfalso.
+      unfold StorableValue.map_get_u256 in H_addr_absent.
+      rewrite Hg in H_addr_absent.
+      assert (Hw : w = 1).
+      { unfold role_member_map in Hg.
+        rewrite !Dict_get_app_split in Hg.
+        destruct (Dict.get (members_for_role _ sim.(State.admins))
+                    (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr)) as [w0|] eqn:Hg0.
+        - injection Hg as <-.
+          apply (members_for_role_get_is_one _ _ _ _ Hg0).
+        - destruct (Dict.get (members_for_role _ sim.(State.optimisticGuardians))
+                      (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr)) as [w1|] eqn:Hg1.
+          + injection Hg as <-.
+            apply (members_for_role_get_is_one _ _ _ _ Hg1).
+          + apply (members_for_role_get_is_one _ _ _ _ Hg). }
+      rewrite Hw in H_addr_absent. discriminate H_addr_absent. }
+    unfold role_member_map in H_absent_full.
+    rewrite !Dict_get_app_split in H_absent_full.
+    destruct (Dict.get (members_for_role DEFAULT_ADMIN_ROLE_bytes32
+                          sim.(State.admins))
+                (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr))
+      as [w0|] eqn:Hg_def; [discriminate|].
+    destruct (Dict.get (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                          sim.(State.optimisticGuardians))
+                (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr))
+      as [w1|] eqn:Hg_og; [discriminate|].
+    rename H_absent_full into Hg_ogm.
+    assert (H_get_full : Dict.get (role_member_map sim)
+                          (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) = None).
+    { unfold role_member_map.
+      rewrite !Dict_get_app_split, Hg_def, Hg_og, Hg_ogm. reflexivity. }
+    rewrite (declare_or_assign_app_when_absent_ZZ _ _ _ H_get_full).
+    rewrite (role_member_map_add_optimistic_guardian_manager_not_in
+              sim addr H_not_in_ogm).
+    (* role_member_map sim is right-assoc: D ++ (OG ++ OGM). We need
+       it as (D ++ OG) ++ OGM so the mid-list helper unifies with
+       A = D ++ OG, B = OGM. *)
+    unfold role_member_map.
+    rewrite app_assoc.
+    symmetry.
+    apply map_get_mid_cons_eq_app_singleton_when_absent_ZZ.
+    - assert (Hab : Dict.get
+                     (members_for_role DEFAULT_ADMIN_ROLE_bytes32
+                        sim.(State.admins)
+                      ++ members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                           sim.(State.optimisticGuardians))
+                     (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) = None).
+      { rewrite Dict_get_app_split, Hg_def. exact Hg_og. }
+      exact Hab.
+    - exact Hg_ogm.
+  Qed.
+
+  (** Slot 1 (positions) — OG variant. *)
+  Lemma role_positions_map_sstore_observes_add_optimistic_guardian_not_in
+      (sim : State.t) (addr : Address)
+      (H_addr_absent :
+         StorableValue.map_get_u256 (role_positions_map sim)
+           (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) = 0)
+      (H_not_in_og : ~ In addr sim.(State.optimisticGuardians))
+      (new_position : U256.t)
+      (H_new_position :
+         new_position = Z.of_nat (List.length sim.(State.optimisticGuardians)) + 1)
+      (lookup_key : U256.t * U256.t) :
+    StorableValue.map_get_u256
+      (Dict.declare_or_assign (role_positions_map sim)
+         (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) new_position) lookup_key
+    = StorableValue.map_get_u256
+        (role_positions_map (Guardian.add_optimistic_guardian sim addr))
+        lookup_key.
+  Proof.
+    (* All position values are ≥ 1, so map_get_u256 = 0 ⇒ Dict.get = None. *)
+    assert (H_absent_full : Dict.get (role_positions_map sim)
+                             (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) = None).
+    { destruct (Dict.get (role_positions_map sim)
+                  (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr)) as [w|] eqn:Hg;
+        [|reflexivity].
+      exfalso.
+      unfold StorableValue.map_get_u256 in H_addr_absent.
+      rewrite Hg in H_addr_absent.
+      assert (Hw_ge1 : w >= 1).
+      { unfold role_positions_map in Hg.
+        rewrite !Dict_get_app_split in Hg.
+        assert (Hpos_ge :
+          forall (r : U256.t) (lst : list Address) (k : U256.t * U256.t) (v : U256.t),
+            Dict.get (positions_for_role r lst) k = Some v -> v >= 1).
+        { intros r lst.
+          induction lst as [|a rest IH]; intros k v Hg2; simpl in Hg2.
+          - discriminate.
+          - destruct (Dict.Eq.eqb _ _) eqn:Heqb.
+            + injection Hg2 as <-. lia.
+            + exact (IH _ _ Hg2). }
+        destruct (Dict.get (positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                              sim.(State.admins))
+                    (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr)) as [w0|] eqn:Hg0.
+        - injection Hg as <-.
+          apply (Hpos_ge _ _ _ _ Hg0).
+        - destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                                sim.(State.optimisticGuardians))
+                      (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr)) as [w1|] eqn:Hg1.
+          + injection Hg as <-.
+            apply (Hpos_ge _ _ _ _ Hg1).
+          + apply (Hpos_ge _ _ _ _ Hg). }
+      rewrite H_addr_absent in Hw_ge1. lia. }
+    unfold role_positions_map in H_absent_full.
+    rewrite !Dict_get_app_split in H_absent_full.
+    destruct (Dict.get (positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                          sim.(State.admins))
+                (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr))
+      as [w0|] eqn:Hg_def; [discriminate|].
+    destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                          sim.(State.optimisticGuardians))
+                (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr))
+      as [w1|] eqn:Hg_og; [discriminate|].
+    rename H_absent_full into Hg_ogm.
+    assert (H_get_full : Dict.get (role_positions_map sim)
+                          (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) = None).
+    { unfold role_positions_map.
+      rewrite !Dict_get_app_split, Hg_def, Hg_og, Hg_ogm. reflexivity. }
+    rewrite (declare_or_assign_app_when_absent_ZZ _ _ _ H_get_full).
+    rewrite (role_positions_map_add_optimistic_guardian_not_in sim addr H_not_in_og).
+    rewrite H_new_position.
+    symmetry.
+    apply map_get_mid_cons_eq_app_singleton_when_absent_ZZ.
+    - exact Hg_def.
+    - assert (Hb : Dict.get
+                     (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                        sim.(State.optimisticGuardians)
+                      ++ positions_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                           sim.(State.optimisticGuardianManagers))
+                     (OPTIMISTIC_GUARDIAN_ROLE_bytes32, addr) = None).
+      { rewrite Dict_get_app_split, Hg_og. exact Hg_ogm. }
+      exact Hb.
+  Qed.
+
+  (** Slot 1 (positions) — OGM variant. *)
+  Lemma role_positions_map_sstore_observes_add_optimistic_guardian_manager_not_in
+      (sim : State.t) (addr : Address)
+      (H_addr_absent :
+         StorableValue.map_get_u256 (role_positions_map sim)
+           (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) = 0)
+      (H_not_in_ogm : ~ In addr sim.(State.optimisticGuardianManagers))
+      (new_position : U256.t)
+      (H_new_position :
+         new_position
+         = Z.of_nat (List.length sim.(State.optimisticGuardianManagers)) + 1)
+      (lookup_key : U256.t * U256.t) :
+    StorableValue.map_get_u256
+      (Dict.declare_or_assign (role_positions_map sim)
+         (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) new_position)
+        lookup_key
+    = StorableValue.map_get_u256
+        (role_positions_map
+           (Guardian.add_optimistic_guardian_manager sim addr))
+        lookup_key.
+  Proof.
+    assert (H_absent_full : Dict.get (role_positions_map sim)
+                             (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) = None).
+    { destruct (Dict.get (role_positions_map sim)
+                  (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr)) as [w|] eqn:Hg;
+        [|reflexivity].
+      exfalso.
+      unfold StorableValue.map_get_u256 in H_addr_absent.
+      rewrite Hg in H_addr_absent.
+      assert (Hw_ge1 : w >= 1).
+      { unfold role_positions_map in Hg.
+        rewrite !Dict_get_app_split in Hg.
+        assert (Hpos_ge :
+          forall (r : U256.t) (lst : list Address) (k : U256.t * U256.t) (v : U256.t),
+            Dict.get (positions_for_role r lst) k = Some v -> v >= 1).
+        { intros r lst.
+          induction lst as [|a rest IH]; intros k v Hg2; simpl in Hg2.
+          - discriminate.
+          - destruct (Dict.Eq.eqb _ _) eqn:Heqb.
+            + injection Hg2 as <-. lia.
+            + exact (IH _ _ Hg2). }
+        destruct (Dict.get (positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                              sim.(State.admins))
+                    (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr)) as [w0|] eqn:Hg0.
+        - injection Hg as <-.
+          apply (Hpos_ge _ _ _ _ Hg0).
+        - destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                                sim.(State.optimisticGuardians))
+                      (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr)) as [w1|] eqn:Hg1.
+          + injection Hg as <-.
+            apply (Hpos_ge _ _ _ _ Hg1).
+          + apply (Hpos_ge _ _ _ _ Hg). }
+      rewrite H_addr_absent in Hw_ge1. lia. }
+    unfold role_positions_map in H_absent_full.
+    rewrite !Dict_get_app_split in H_absent_full.
+    destruct (Dict.get (positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                          sim.(State.admins))
+                (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr))
+      as [w0|] eqn:Hg_def; [discriminate|].
+    destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                          sim.(State.optimisticGuardians))
+                (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr))
+      as [w1|] eqn:Hg_og; [discriminate|].
+    rename H_absent_full into Hg_ogm.
+    assert (H_get_full : Dict.get (role_positions_map sim)
+                          (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) = None).
+    { unfold role_positions_map.
+      rewrite !Dict_get_app_split, Hg_def, Hg_og, Hg_ogm. reflexivity. }
+    rewrite (declare_or_assign_app_when_absent_ZZ _ _ _ H_get_full).
+    rewrite (role_positions_map_add_optimistic_guardian_manager_not_in
+              sim addr H_not_in_ogm).
+    rewrite H_new_position.
+    unfold role_positions_map.
+    rewrite app_assoc.
+    symmetry.
+    apply map_get_mid_cons_eq_app_singleton_when_absent_ZZ.
+    - assert (Hab : Dict.get
+                     (positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                        sim.(State.admins)
+                      ++ positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                           sim.(State.optimisticGuardians))
+                     (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, addr) = None).
+      { rewrite Dict_get_app_split, Hg_def. exact Hg_og. }
+      exact Hab.
+    - exact Hg_ogm.
+  Qed.
+
+  (** Slot 2 (length) — OG variant. SYNTACTIC equality (not
+      observational): the OG entry is the second element of the
+      explicit 3-tuple length list, so [declare_or_assign] at OG_BR
+      matches via head-cons-recursion using [DEFAULT_neq_OG]. *)
+  Lemma role_values_length_map_sstore_eq_add_optimistic_guardian_not_in
+      (sim : State.t) (addr : Address)
+      (H_not_in_og : ~ In addr sim.(State.optimisticGuardians))
+      (new_length : U256.t)
+      (H_new_length :
+         new_length
+         = Z.of_nat (List.length sim.(State.optimisticGuardians)) + 1) :
+    Dict.declare_or_assign (role_values_length_map sim)
+      OPTIMISTIC_GUARDIAN_ROLE_bytes32 new_length
+    = role_values_length_map (Guardian.add_optimistic_guardian sim addr).
+  Proof.
+    rewrite H_new_length.
+    rewrite (role_values_length_map_add_optimistic_guardian_not_in
+              sim addr H_not_in_og).
+    unfold role_values_length_map, Dict.declare_or_assign.
+    cbn [Dict.declare_or_assign_function].
+    change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
+                        OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+      with (DEFAULT_ADMIN_ROLE_bytes32 =? OPTIMISTIC_GUARDIAN_ROLE_bytes32).
+    rewrite (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OG).
+    change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                        OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+      with (OPTIMISTIC_GUARDIAN_ROLE_bytes32
+            =? OPTIMISTIC_GUARDIAN_ROLE_bytes32).
+    rewrite Z.eqb_refl.
+    reflexivity.
+  Qed.
+
+  (** Slot 2 (length) — OGM variant. *)
+  Lemma role_values_length_map_sstore_eq_add_optimistic_guardian_manager_not_in
+      (sim : State.t) (addr : Address)
+      (H_not_in_ogm : ~ In addr sim.(State.optimisticGuardianManagers))
+      (new_length : U256.t)
+      (H_new_length :
+         new_length
+         = Z.of_nat (List.length sim.(State.optimisticGuardianManagers)) + 1) :
+    Dict.declare_or_assign (role_values_length_map sim)
+      OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 new_length
+    = role_values_length_map
+        (Guardian.add_optimistic_guardian_manager sim addr).
+  Proof.
+    rewrite H_new_length.
+    rewrite (role_values_length_map_add_optimistic_guardian_manager_not_in
+              sim addr H_not_in_ogm).
+    unfold role_values_length_map, Dict.declare_or_assign.
+    cbn [Dict.declare_or_assign_function].
+    change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
+                        OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+      with (DEFAULT_ADMIN_ROLE_bytes32
+            =? OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32).
+    rewrite (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OGM).
+    change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                        OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+      with (OPTIMISTIC_GUARDIAN_ROLE_bytes32
+            =? OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32).
+    rewrite (proj2 (Z.eqb_neq _ _) OG_neq_OGM).
+    change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                        OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+      with (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+            =? OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32).
+    rewrite Z.eqb_refl.
+    reflexivity.
+  Qed.
+
+  (** Slot 3 (body) — OG variant. *)
+  Lemma role_values_body_map_sstore_observes_add_optimistic_guardian_not_in
+      (sim : State.t) (addr : Address)
+      (H_addr_absent :
+         Dict.get (role_values_body_map sim)
+           (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+             Z.of_nat (List.length sim.(State.optimisticGuardians))) = None)
+      (H_not_in_og : ~ In addr sim.(State.optimisticGuardians))
+      (lookup_key : U256.t * U256.t) :
+    StorableValue.map_get_u256
+      (Dict.declare_or_assign (role_values_body_map sim)
+         (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+           Z.of_nat (List.length sim.(State.optimisticGuardians))) addr)
+        lookup_key
+    = StorableValue.map_get_u256
+        (role_values_body_map (Guardian.add_optimistic_guardian sim addr))
+        lookup_key.
+  Proof.
+    (* Split H_addr_absent across the three blocks. *)
+    unfold role_values_body_map in H_addr_absent.
+    rewrite !Dict_get_app_split in H_addr_absent.
+    destruct (Dict.get (values_for_role DEFAULT_ADMIN_ROLE_bytes32
+                          sim.(State.admins))
+                (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+                  Z.of_nat (List.length sim.(State.optimisticGuardians))))
+      as [w0|] eqn:Hg_def; [discriminate|].
+    destruct (Dict.get (values_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                          sim.(State.optimisticGuardians))
+                (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+                  Z.of_nat (List.length sim.(State.optimisticGuardians))))
+      as [w1|] eqn:Hg_og; [discriminate|].
+    rename H_addr_absent into Hg_ogm.
+    assert (H_get_full : Dict.get (role_values_body_map sim)
+                          (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+                            Z.of_nat (List.length sim.(State.optimisticGuardians)))
+                          = None).
+    { unfold role_values_body_map.
+      rewrite !Dict_get_app_split, Hg_def, Hg_og, Hg_ogm. reflexivity. }
+    rewrite (declare_or_assign_app_when_absent_ZZ _ _ _ H_get_full).
+    rewrite (role_values_body_map_add_optimistic_guardian_not_in
+              sim addr H_not_in_og).
+    symmetry.
+    apply map_get_mid_cons_eq_app_singleton_when_absent_ZZ.
+    - exact Hg_def.
+    - assert (Hb : Dict.get
+                     (values_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                        sim.(State.optimisticGuardians)
+                      ++ values_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                           sim.(State.optimisticGuardianManagers))
+                     (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+                       Z.of_nat (List.length sim.(State.optimisticGuardians)))
+                     = None).
+      { rewrite Dict_get_app_split, Hg_og. exact Hg_ogm. }
+      exact Hb.
+  Qed.
+
+  (** Slot 3 (body) — OGM variant. *)
+  Lemma role_values_body_map_sstore_observes_add_optimistic_guardian_manager_not_in
+      (sim : State.t) (addr : Address)
+      (H_addr_absent :
+         Dict.get (role_values_body_map sim)
+           (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+             Z.of_nat (List.length sim.(State.optimisticGuardianManagers)))
+           = None)
+      (H_not_in_ogm : ~ In addr sim.(State.optimisticGuardianManagers))
+      (lookup_key : U256.t * U256.t) :
+    StorableValue.map_get_u256
+      (Dict.declare_or_assign (role_values_body_map sim)
+         (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+           Z.of_nat (List.length sim.(State.optimisticGuardianManagers))) addr)
+        lookup_key
+    = StorableValue.map_get_u256
+        (role_values_body_map
+           (Guardian.add_optimistic_guardian_manager sim addr))
+        lookup_key.
+  Proof.
+    unfold role_values_body_map in H_addr_absent.
+    rewrite !Dict_get_app_split in H_addr_absent.
+    destruct (Dict.get (values_for_role DEFAULT_ADMIN_ROLE_bytes32
+                          sim.(State.admins))
+                (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+                  Z.of_nat (List.length sim.(State.optimisticGuardianManagers))))
+      as [w0|] eqn:Hg_def; [discriminate|].
+    destruct (Dict.get (values_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                          sim.(State.optimisticGuardians))
+                (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+                  Z.of_nat (List.length sim.(State.optimisticGuardianManagers))))
+      as [w1|] eqn:Hg_og; [discriminate|].
+    rename H_addr_absent into Hg_ogm.
+    assert (H_get_full : Dict.get (role_values_body_map sim)
+                          (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+                            Z.of_nat
+                              (List.length sim.(State.optimisticGuardianManagers)))
+                          = None).
+    { unfold role_values_body_map.
+      rewrite !Dict_get_app_split, Hg_def, Hg_og, Hg_ogm. reflexivity. }
+    rewrite (declare_or_assign_app_when_absent_ZZ _ _ _ H_get_full).
+    rewrite (role_values_body_map_add_optimistic_guardian_manager_not_in
+              sim addr H_not_in_ogm).
+    unfold role_values_body_map.
+    rewrite app_assoc.
+    symmetry.
+    apply map_get_mid_cons_eq_app_singleton_when_absent_ZZ.
+    - assert (Hab : Dict.get
+                     (values_for_role DEFAULT_ADMIN_ROLE_bytes32
+                        sim.(State.admins)
+                      ++ values_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                           sim.(State.optimisticGuardians))
+                     (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+                       Z.of_nat
+                         (List.length sim.(State.optimisticGuardianManagers)))
+                     = None).
+      { rewrite Dict_get_app_split, Hg_def. exact Hg_og. }
+      exact Hab.
+    - exact Hg_ogm.
   Qed.
 
   (** ----- sload via Map2 + proj_sim ----- *)
@@ -4919,12 +5677,21 @@ Module GuardianEquivalence.
       (sim : Guardian.State.t) (role account : U256.t)
       (memory : SimulatedMemory.t)
       (H_role : U256.Valid.t role)
-      (H_role_default : role = DEFAULT_ADMIN_ROLE_bytes32)
+      (H_role_known :
+         role = DEFAULT_ADMIN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
       (H_account : 0 <= account < 2^160)
       (H_caller_admin : has_admin sim env.(Environment.caller) = true)
       (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
       (H_admins_bound :
          Z.of_nat (List.length sim.(State.admins)) + 1
+         < 18446744073709551616)
+      (H_og_bound :
+         Z.of_nat (List.length sim.(State.optimisticGuardians)) + 1
+         < 18446744073709551616)
+      (H_ogm_bound :
+         Z.of_nat (List.length sim.(State.optimisticGuardianManagers)) + 1
          < 18446744073709551616)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let state := make_state env state_base memory (proj_sim sim) in
@@ -5065,7 +5832,18 @@ Module GuardianEquivalence.
         Qed not closed in this session — see WISDOM R055 for the
         residuals. *)
     subst sim_ac caller state.
-    subst role.
+    (* Case-split on the three Guardian roles. Each branch follows the
+       same shape (already-member / not-member) but uses role-specific
+       observational bridges and a different per-role list of [sim].
+
+       R055 follow-up (this commit): extend from DEFAULT-only to all
+       three roles, using the mid-list-insertion observational
+       bridges added above. *)
+    destruct H_role_known as [H_role_eq | H_role_or];
+      [subst role | destruct H_role_or as [H_role_eq | H_role_eq]; subst role].
+    { (** ====================================================
+          BRANCH 1: role = DEFAULT_ADMIN_ROLE_bytes32
+          ==================================================== *)
     (* Case-split on whether [account] is already an admin in [sim]. *)
     destruct (Guardian.addr_in sim.(State.admins) account) eqn:H_addr_in.
     - (** ===== Already-member branch ===== *)
@@ -5254,7 +6032,8 @@ Module GuardianEquivalence.
                           (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
                              sim.(State.optimisticGuardians))
                           (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
-        { induction (State.optimisticGuardians sim) as [|a rest IH]; simpl.
+        { clear -H_eqb_og.
+          induction (State.optimisticGuardians sim) as [|a rest IH]; simpl.
           - reflexivity.
           - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
             change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
@@ -5268,7 +6047,8 @@ Module GuardianEquivalence.
                            (members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
                               sim.(State.optimisticGuardianManagers))
                            (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
-        { induction (State.optimisticGuardianManagers sim) as [|a rest IH]; simpl.
+        { clear -H_eqb_ogm.
+          induction (State.optimisticGuardianManagers sim) as [|a rest IH]; simpl.
           - reflexivity.
           - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
             change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
@@ -5307,7 +6087,8 @@ Module GuardianEquivalence.
                           (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
                              sim.(State.optimisticGuardians))
                           (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
-        { induction (State.optimisticGuardians sim) as [|a rest IH]; simpl.
+        { clear -H_eqb_og.
+          induction (State.optimisticGuardians sim) as [|a rest IH]; simpl.
           - reflexivity.
           - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
             change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
@@ -5321,7 +6102,8 @@ Module GuardianEquivalence.
                            (positions_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
                               sim.(State.optimisticGuardianManagers))
                            (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
-        { induction (State.optimisticGuardianManagers sim) as [|a rest IH]; simpl.
+        { clear -H_eqb_ogm.
+          induction (State.optimisticGuardianManagers sim) as [|a rest IH]; simpl.
           - reflexivity.
           - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
             change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
@@ -5641,7 +6423,7 @@ Module GuardianEquivalence.
                          (DEFAULT_ADMIN_ROLE_bytes32,
                            Z.of_nat (Datatypes.length sim.(State.admins)))
                        = None).
-             { intros n. revert n.
+             { intros n. revert n. clear -H_eqb_og.
                induction sim.(State.optimisticGuardians) as [|a rest IH];
                  intros n; simpl.
                - reflexivity.
@@ -5661,7 +6443,7 @@ Module GuardianEquivalence.
                          (DEFAULT_ADMIN_ROLE_bytes32,
                            Z.of_nat (Datatypes.length sim.(State.admins)))
                        = None).
-             { intros n. revert n.
+             { intros n. revert n. clear -H_eqb_ogm.
                induction sim.(State.optimisticGuardianManagers) as [|a rest IH];
                  intros n; simpl.
                - reflexivity.
@@ -5674,7 +6456,18 @@ Module GuardianEquivalence.
              unfold values_for_role at 1.
              apply Hd_ogm.
           -- exact H_addr_in.
-  Qed.
+    }
+    { (** ====================================================
+          BRANCH 2: role = OPTIMISTIC_GUARDIAN_ROLE_bytes32
+          ==================================================== *)
+      admit.
+    }
+    { (** ====================================================
+          BRANCH 3: role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+          ==================================================== *)
+      admit.
+    }
+  Admitted.
 
 End GuardianEquivalence.
 
