@@ -54,6 +54,7 @@ mocks/PRBMath.v
 mocks/AccessControl.v
 mocks/ECDSA.v
 mocks/Nonces.v
+mocks/ReentrancyGuard.v
 
 # --- ProposerThrottle ---
 simulations/ProposerThrottle.v
