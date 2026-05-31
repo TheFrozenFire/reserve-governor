@@ -3819,3 +3819,105 @@ green. `Admitted` count unchanged (2 —
 `run_grantRole_1359_equivalent`). Phase 1 closes Qed both before and
 after the refactor — the difference is the strength of its
 postcondition.
+
+### 2026-05-31 follow-up: observational-equivalence foundation
+
+A second pass on R054 landed the foundational lemmas any of the three
+resolution paths will need. **The Phase 5 milestone remains
+Admitted** — the structural Dict-shape mismatch is genuinely
+irreconcilable without weakening the theorem (option 3) or extending
+the framework (option 1/2). What landed unblocks future work:
+
+**Foundational pure lemmas (no new axioms):**
+- `declare_or_assign_app_when_absent_Z` — `Dict.declare_or_assign d k
+  v = d ++ [(k, v)]` when `Dict.get d k = None`, at the `Z`-key shape
+  (slot 2's length map).
+- `declare_or_assign_app_when_absent_ZZ` — same at the `Z*Z`-key
+  shape (slots 0, 1, 3).
+- `Dict_get_app_singleton_ZZ` — helper: `Dict.get (d ++ [(k,v)]) l`
+  equals `Dict.get d l` if hit, else `Some v` if `l = k` else `None`.
+- `Dict_get_app_split` — generic option-level companion to the
+  existing `map_get_app_split`.
+- `map_get_cons_eq_app_singleton_when_absent_ZZ` — **the headline
+  observational equivalence**: under `Dict.get d k = None`, for every
+  lookup key, `map_get_u256 ((k,v) :: d) l = map_get_u256 (d ++
+  [(k,v)]) l`. This says cons-prepend and append-at-end are
+  point-wise-equal on lookups when the inserted key is absent.
+
+**Specialized R054 bridge (no new axioms):**
+- `role_member_map_sstore_observes_add_admin_not_in` — connects the
+  Yul-level `Dict.declare_or_assign` form of the slot-0 member map
+  (produced by Phase 1's `run_update_storage_value_t_bool_at_proj_sim`)
+  to the sim-side `proj_sim_add_admin_not_in` bridge's
+  cons-prefixed form, as a **point-wise** `map_get_u256` equality.
+  Routes through the headline observational lemma.
+
+**What this enables for the three resolution paths:**
+
+1. **New cons-prepend sstore axiom variant.** Use
+   `declare_or_assign_app_when_absent_ZZ` to derive the cons-prepend
+   form *from the standard `Dict.declare_or_assign` axiom*, replacing
+   the need for a new framework axiom. Then `map_get_cons_eq_app_singleton_when_absent_ZZ`
+   bridges to the bridge lemma's form. **This sidesteps the
+   trust-axiom concern** — no new axioms needed.
+
+2. **Setoid framework for dict equality.** The headline equivalence
+   `map_get_cons_eq_app_singleton_when_absent_ZZ` is exactly the
+   carrier the setoid would require — extensional equality of
+   `map_get_u256` lookups. The framework can be built on top by
+   defining `Dict.equiv d1 d2 := forall k, Dict.get d1 k = Dict.get d2 k`
+   and showing it's the observational congruence the existing axioms
+   respect.
+
+3. **Weaken the theorem statement.** Replace the third clause's
+   `state' = Some (make_state env state_base memory' (proj_sim sim'))`
+   with an existential pair: `exists memory' storage', state' = Some
+   (make_state env state_base memory' storage') /\ (forall key, slot-0
+   lookup matches `proj_sim sim'`'s slot-0 / slots-1/3 similarly /
+   slot-2 syntactic since it matches). The
+   `role_member_map_sstore_observes_add_admin_not_in` bridge
+   discharges the slot-0 conjunct; analogous slot-1/slot-3 bridges
+   (extensions of the same `_observes_` pattern) discharge the
+   others; slot-2 closes by direct rewrite via
+   `role_values_length_map_add_admin_not_in` (already syntactic).
+   This is the **cleanest scope-respecting path** — no new axioms,
+   no framework changes, only a theorem-statement adjustment plus
+   the new `_observes_` bridges.
+
+**Remaining work for milestone closure:**
+- Add `role_positions_map_sstore_observes_add_admin_not_in` (slot 1
+  analog of the slot-0 bridge, applying the same observational
+  lemmas to `Dict.declare_or_assign (role_positions_map sim) (DEFAULT,
+  account) (length+1)`).
+- Add `role_values_body_map_sstore_observes_add_admin_not_in`
+  (slot 3 analog).
+- Weaken `run_grantRole_1359_equivalent`'s third success clause to
+  per-slot observational form (and the composable wrappers
+  `run_modifier_onlyRole_1351_admin_passes` / `..._1359_inner_..` /
+  `..._1359_at_..` so their `Hbody_post` parameters take the
+  observational form).
+- Walk Phase 2+ through the modifier wrapper, dispatching the not-member
+  branch via Phase 1's existential post-state, Phase 2's
+  `run_fun_add_2085_at_proj_sim`, and the post-state observational
+  bridges. Estimated ~150-200 lines of walker code given the existing
+  composable Qed'd witnesses.
+
+### What landed this 2026-05-31 follow-up
+
+Two commits on branch `feature/formal-verification`:
+
+- **`fv(R054): observational tail-form bridges` (~270 lines)** — the
+  foundational `declare_or_assign`-vs-cons-prepend observational
+  equivalence lemmas + slot-0 specialized bridge. All Qed, no new
+  axioms. `Print Assumptions` on the headline lemmas shows only the
+  pre-existing role-bytes32 Parameters.
+- **`fv(R054): document observational-equivalence path forward`** —
+  this WISDOM follow-up.
+
+### Build status (2026-05-31 follow-up)
+
+`bash formal-verification/scripts/rocq-build proofs/equivalence/Guardian.v`
+green. `Admitted` count unchanged (still 2 — the milestone remains
+open pending one of the three resolution paths). `Print Assumptions`
+on the new lemmas reports only the existing role-bytes32 Parameters
+— no new trust axioms.

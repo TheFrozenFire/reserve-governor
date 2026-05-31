@@ -552,6 +552,164 @@ Module GuardianEquivalence.
     destruct s as [admins g m]; reflexivity.
   Qed.
 
+  (** ===== R054 foundation: observational tail-form bridges =====
+
+      The Yul-level [Stdlib.sstore] for an absent key produces a
+      post-storage of the form
+      [Dict.declare_or_assign dict key value], which (because the
+      [declare_or_assign_function] fixpoint walks left-to-right and
+      lands on the empty-list base case when no entry matches) is
+      structurally [dict ++ [(key, value)]] when
+      [Dict.get dict key = None].
+
+      The Guardian-side projection bridges (e.g.
+      [proj_sim_add_admin_not_in]) by contrast produce
+      [((key), value) :: dict] — key cons-prepended.
+
+      These two list shapes are syntactically distinct yet
+      OBSERVATIONALLY identical: every [Dict.get] (and therefore
+      every [map_get_u256]) lookup returns the same value on either
+      shape when [Dict.get dict key = None].
+
+      The lemmas below state that observational equivalence
+      explicitly. They are the foundation for any future Phase 5
+      closure that bridges the Phase-1/Phase-2
+      [Dict.declare_or_assign] post-states to the cons-prefixed
+      [proj_sim] form. See WISDOM R054 for the three resolution
+      options (new sstore axiom variant, setoid framework, or
+      theorem-statement weakening) — each of those consumes the
+      foundation built here. *)
+
+  (** ----- [Dict.declare_or_assign] is append-at-tail when key absent =====
+
+      Pure structural lemma about the upstream [Dict.t] semantics:
+      if [Dict.get d k = None], every entry of [d] mismatches [k]
+      under [Dict.Eq.eqb], so the [declare_or_assign_function]
+      fixpoint traverses to the empty-list base case and appends
+      [(k, f None)].
+
+      Stated at the [Z] key shape (slot-2 length map). The
+      [ZZ]-keyed companion below covers slots 0/1/3. *)
+  Lemma declare_or_assign_app_when_absent_Z
+      (d : Dict.t Z U256.t) (k : Z) (v : U256.t)
+      (H_absent : Dict.get d k = None) :
+    Dict.declare_or_assign d k v = d ++ [(k, v)].
+  Proof.
+    unfold Dict.declare_or_assign.
+    induction d as [|[k' v'] rest IH]; cbn in *.
+    - reflexivity.
+    - change (Dict.Eq.eqb k k') with (k =? k') in H_absent.
+      change (Dict.Eq.eqb k' k) with (k' =? k).
+      destruct (k =? k') eqn:Heq.
+      + (* k = k' but H_absent says it's mismatched. Contradiction. *)
+        discriminate H_absent.
+      + apply Z.eqb_neq in Heq.
+        replace (k' =? k) with false by
+          (symmetry; apply Z.eqb_neq; lia).
+        f_equal. apply IH. exact H_absent.
+  Qed.
+
+  (** [ZZ]-keyed companion: slots 0 (member map), 1 (positions
+      map), and 3 (values body map) all use [Z*Z] keys. *)
+  Lemma declare_or_assign_app_when_absent_ZZ
+      (d : Dict.t (Z * Z) U256.t) (k : Z * Z) (v : U256.t)
+      (H_absent : Dict.get d k = None) :
+    Dict.declare_or_assign d k v = d ++ [(k, v)].
+  Proof.
+    unfold Dict.declare_or_assign.
+    destruct k as [k1 k2].
+    induction d as [|((k1' & k2') & v') rest IH].
+    - cbn. reflexivity.
+    - simpl Dict.declare_or_assign_function. simpl app.
+      simpl Dict.get in H_absent.
+      change (Dict.Eq.eqb (k1', k2') (k1, k2))
+        with ((k1' =? k1) && (k2' =? k2))%bool.
+      change (Dict.Eq.eqb (k1, k2) (k1', k2'))
+        with ((k1 =? k1') && (k2 =? k2'))%bool in H_absent.
+      destruct (k1 =? k1') eqn:H1; destruct (k2 =? k2') eqn:H2;
+      simpl andb in H_absent.
+      + (* both eqb true ⇒ H_absent says Some v' = None: contradiction. *)
+        discriminate H_absent.
+      + apply Z.eqb_eq in H1. subst k1'.
+        rewrite Z.eqb_refl. simpl.
+        apply Z.eqb_neq in H2.
+        replace (k2' =? k2) with false by (symmetry; apply Z.eqb_neq; lia).
+        simpl. f_equal. apply IH. exact H_absent.
+      + apply Z.eqb_neq in H1.
+        replace (k1' =? k1) with false by (symmetry; apply Z.eqb_neq; lia).
+        simpl. f_equal. apply IH. exact H_absent.
+      + apply Z.eqb_neq in H1.
+        replace (k1' =? k1) with false by (symmetry; apply Z.eqb_neq; lia).
+        simpl. f_equal. apply IH. exact H_absent.
+  Qed.
+
+  (** ----- map_get of cons-prepend ≡ append-singleton, point-wise =====
+
+      The headline observational equivalence: for every lookup key,
+      [map_get_u256 ((k,v) :: d) k' = map_get_u256 (d ++ [(k,v)]) k']
+      under [Dict.get d k = None].
+
+      Proof strategy: rewrite the RHS via
+      [declare_or_assign_app_when_absent_ZZ] in reverse; the
+      [(k,v) :: d] and [declare_or_assign d k v] forms differ only
+      in walk-position, which does not affect [map_get_u256]'s
+      first-match semantics when the inserted key is absent. *)
+  (** ----- Helper: [Dict.get] of an append-singleton reduces to
+      [if]-of-singleton-or-rest, by walking the prefix.
+
+      [Dict.get (d ++ [(k,v)]) l] = either the first match in [d] or,
+      if none, [Dict.get [(k,v)] l] = Some v if l=k else None. *)
+  Lemma Dict_get_app_singleton_ZZ
+      (d : Dict.t (Z * Z) U256.t) (k : Z * Z) (v : U256.t)
+      (lookup_key : Z * Z) :
+    Dict.get (d ++ [(k, v)]) lookup_key
+    = match Dict.get d lookup_key with
+      | Some w => Some w
+      | None   => if Dict.Eq.eqb lookup_key k then Some v else None
+      end.
+  Proof.
+    induction d as [|[k' v'] rest IH].
+    - reflexivity.
+    - simpl. destruct (Dict.Eq.eqb lookup_key k') eqn:Heq.
+      + reflexivity.
+      + exact IH.
+  Qed.
+
+  (** ----- Headline observational equivalence: cons-prepend ≡ append-singleton
+
+      For every lookup key, [map_get_u256] on [(k,v) :: d] equals
+      [map_get_u256] on [d ++ [(k,v)]], provided [Dict.get d k = None].
+
+      Proof: both sides reduce to [if Dict.Eq.eqb lookup_key k then v
+      else map_get_u256 d lookup_key]. The LHS by direct cons
+      semantics, the RHS via [Dict_get_app_singleton_ZZ] and the
+      observation that when lookup_key = k, [Dict.get d k = None] so
+      the walker falls through to the singleton. *)
+  Lemma map_get_cons_eq_app_singleton_when_absent_ZZ
+      (d : Dict.t (Z * Z) U256.t)
+      (k : Z * Z) (v : U256.t)
+      (H_absent : Dict.get d k = None)
+      (lookup_key : Z * Z) :
+    StorableValue.map_get_u256 ((k, v) :: d) lookup_key
+    = StorableValue.map_get_u256 (d ++ [(k, v)]) lookup_key.
+  Proof.
+    unfold StorableValue.map_get_u256.
+    rewrite Dict_get_app_singleton_ZZ.
+    simpl Dict.get.
+    destruct (Dict.Eq.eqb lookup_key k) eqn:Heq.
+    - (* lookup_key = k. LHS: cons matches at head, Some v. RHS: walks d
+         (Dict.get d k = None by H_absent), falls through to singleton,
+         returns Some v. *)
+      destruct k as [k1 k2]; destruct lookup_key as [l1 l2].
+      change (Dict.Eq.eqb (l1, l2) (k1, k2))
+        with ((l1 =? k1) && (l2 =? k2))%bool in Heq.
+      destruct (l1 =? k1) eqn:Hl1; destruct (l2 =? k2) eqn:Hl2;
+      simpl andb in Heq; try discriminate Heq.
+      apply Z.eqb_eq in Hl1. apply Z.eqb_eq in Hl2. subst l1 l2.
+      rewrite H_absent. reflexivity.
+    - destruct (Dict.get d lookup_key); reflexivity.
+  Qed.
+
   Import Guardian_325.Guardian_325_deployed.
 
   (** ----- Bytes32 / address cleanup leaves -----
@@ -1434,6 +1592,103 @@ Module GuardianEquivalence.
   (** Z.land v 0xff = v for v ∈ {0, 1}. *)
   Lemma land_0xff_bool (v : Z) : v = 0 \/ v = 1 -> Z.land v 0xff = v.
   Proof. intros [-> | ->]; reflexivity. Qed.
+
+  (** [Dict.get] over an appended dict — same shape as [map_get_app_split]
+      but at the option-result level (no [map_get_u256] default-to-0). *)
+  Lemma Dict_get_app_split
+      {K V : Set} `{Dict.Eq.C K}
+      (m1 m2 : Dict.t K V) (k : K) :
+    Dict.get (m1 ++ m2) k =
+      match Dict.get m1 k with
+      | Some v => Some v
+      | None   => Dict.get m2 k
+      end.
+  Proof.
+    induction m1 as [|[k' v'] rest IH]; cbn; [reflexivity|].
+    destruct (Dict.Eq.eqb k k'); [reflexivity | exact IH].
+  Qed.
+
+  (** ===== R054 Phase 5 bridge: post-Phase-1 slot-0 observes
+      [add_admin]'s slot-0 — POINT-WISE =====
+
+      The headline R054 closure foundation. Connects the Yul-level
+      [Dict.declare_or_assign] form of the slot-0 member map
+      (produced by [run_update_storage_value_t_bool_at_proj_sim] and
+      Phase 1 [run_fun__grantRole_1468_at_proj_sim_not_member]) to
+      the sim-side [proj_sim_add_admin_not_in] bridge form, as a
+      POINT-WISE [map_get_u256] equality.
+
+      This is the OBSERVATIONAL form of the "syntactic-equality
+      blocker" diagnosed in WISDOM R054. Future Phase 5 closures
+      will route their post-state equality through this lemma (or
+      its slot-1/slot-3 companions) rather than demanding the
+      structurally impossible [proj_sim sim'] syntactic-list
+      equality of the post-state storage.
+
+      Hypotheses (both available at any Phase 5 not-member call site):
+        - [H_not_in_admins]: [addr] not previously an admin.
+        - [H_addr_absent]: the slot-0 [map_get] reads 0 at the
+          [(DEFAULT, addr)] key. Phase 5 derives this from the
+          hasRole-pre-call returning 0 (Phase 1's [H_not_member]
+          hypothesis) plus the sload bridge.
+
+      Conclusion: for every lookup key,
+        [map_get_u256 (Dict.declare_or_assign (role_member_map sim)
+                        (DEFAULT, addr) 1) k]
+        = [map_get_u256 (role_member_map (Guardian.add_admin sim addr)) k] *)
+  Lemma role_member_map_sstore_observes_add_admin_not_in
+      (sim : State.t) (addr : Address)
+      (H_addr_absent :
+         StorableValue.map_get_u256 (role_member_map sim)
+           (DEFAULT_ADMIN_ROLE_bytes32, addr) = 0)
+      (H_not_in_admins : ~ In addr sim.(State.admins))
+      (lookup_key : U256.t * U256.t) :
+    StorableValue.map_get_u256
+      (Dict.declare_or_assign (role_member_map sim)
+         (DEFAULT_ADMIN_ROLE_bytes32, addr) 1) lookup_key
+    = StorableValue.map_get_u256
+        (role_member_map (Guardian.add_admin sim addr)) lookup_key.
+  Proof.
+    (* [H_addr_absent] + the [role_member_map_values_bool] fact (every
+       value in the map is 0 or 1) ⇒ Dict.get returns None at that key.
+       Otherwise it would return Some 1, forcing map_get_u256 = 1. *)
+    assert (H_absent : Dict.get (role_member_map sim)
+                         (DEFAULT_ADMIN_ROLE_bytes32, addr) = None).
+    { (* Combine: [map_get_u256 = 0] from H_addr_absent +
+         [role_member_map_values_bool] (the cbv-zeta'd form gives
+         [v = 0 \/ v = 1]). If [Dict.get] hit, [v] would be 1 ≠ 0.
+         If [Dict.get] missed, [v = 0] but that's the [None] case
+         we want directly. *)
+      destruct (Dict.get (role_member_map sim)
+                  (DEFAULT_ADMIN_ROLE_bytes32, addr)) as [w|] eqn:Hg;
+        [|reflexivity].
+      exfalso.
+      (* Walk role_member_map's three-block structure and use
+         [members_for_role_get_is_one] at the matching block. *)
+      unfold StorableValue.map_get_u256 in H_addr_absent.
+      rewrite Hg in H_addr_absent.
+      assert (Hw : w = 1).
+      { unfold role_member_map in Hg.
+        (* Each of the three concat blocks is built by members_for_role
+           which only stores 1s. Walk the three blocks and apply
+           members_for_role_get_is_one on whichever yields the hit. *)
+        rewrite !Dict_get_app_split in Hg.
+        destruct (Dict.get (members_for_role _ sim.(State.admins))
+                    (DEFAULT_ADMIN_ROLE_bytes32, addr)) as [w0|] eqn:Hg0.
+        - injection Hg as <-.
+          apply (members_for_role_get_is_one _ _ _ _ Hg0).
+        - destruct (Dict.get (members_for_role _ sim.(State.optimisticGuardians))
+                      (DEFAULT_ADMIN_ROLE_bytes32, addr)) as [w1|] eqn:Hg1.
+          + injection Hg as <-.
+            apply (members_for_role_get_is_one _ _ _ _ Hg1).
+          + apply (members_for_role_get_is_one _ _ _ _ Hg). }
+      rewrite Hw in H_addr_absent. discriminate H_addr_absent. }
+    rewrite (declare_or_assign_app_when_absent_ZZ _ _ _ H_absent).
+    rewrite (role_member_map_add_admin_not_in sim addr H_not_in_admins).
+    symmetry.
+    apply map_get_cons_eq_app_singleton_when_absent_ZZ.
+    exact H_absent.
+  Qed.
 
   (** ----- sload via Map2 + proj_sim ----- *)
   Lemma run_sload_role_member_at_proj_sim
