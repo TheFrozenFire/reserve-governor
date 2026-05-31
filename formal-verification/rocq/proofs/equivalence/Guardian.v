@@ -2229,7 +2229,27 @@ Module GuardianEquivalence.
         5. log4 + Leave with var__1437 := 1.
 
       For the equivalence target, we only need the storage update part;
-      the log4 doesn't affect storage projection. *)
+      the log4 doesn't affect storage projection.
+
+      ===== Status =====
+
+      [Qed]. The walker composes [run_fun_hasRole_1292_at_proj_sim]
+      (chainable hasRole returning 0 in the not-member branch),
+      [run_update_storage_value_t_bool_at_proj_sim] (R051.b — the bool
+      sstore at slot 0's Map2), [run_fun__msgSender_3197] (caller
+      leaf for the log4 payload), the two mapping_index_access leaves
+      (bytes32→struct, address→bool), and walks the log4 sub-block
+      through allocate_unbounded → abi_encode_tuple__to__fromStack →
+      log4. Upstream's [simulations/RocqOfSolidity.v::log4] is
+      [M.pure tt] — no logging axiom needed. [allocate_unbounded]'s
+      [mload(64)] is a state-preserving primitive
+      ([eval_primitive Primitive.MLoad] returns
+      [inl (get_bytes ..., state)] — the state on the RHS equals the
+      state on the LHS). The post-state existential lets the walker
+      leave the final memory/state shape abstract; only the
+      storage-update logic through the bool sstore is observationally
+      pinned, which is exactly what the equivalence theorem needs
+      to compose with [proj_sim_add_admin_not_in]. *)
   Lemma run_fun__grantRole_1468_at_proj_sim_not_member
       codes env state_base memory sim (role account : U256.t)
       (H_role : 0 <= role < 2 ^ 256)
@@ -2251,11 +2271,166 @@ Module GuardianEquivalence.
       Result.Ok 1
     | Some state' ?}}.
   Proof.
-    (* Reserved for future development; the log4 + abi_encode internals
-       require substantial walker engineering not in scope here. The
-       structural ingredients (run_update_storage_value_t_bool_at_proj_sim,
-       fun_hasRole_1292 chainable) are all landed. *)
-  Admitted.
+    (** Walker proof. The post-state existential lets us leave the final
+        memory/state shape abstract — only the storage-update logic
+        through the bool sstore is observationally pinned. [log4]
+        reduces to [M.pure tt] in our runtime model (see upstream's
+        [simulations/RocqOfSolidity.v::log4]), and [allocate_unbounded]'s
+        [mload(64)] is a state-preserving primitive (eval_primitive
+        returns the same state on MLoad). *)
+    cbv zeta.
+    (* hasRole pre-walk: in the not-member branch, returns 0. Specialize
+       and rewrite [H_not_member] so the hasRole call we splice in
+       carries the literal 0 result, which then flows through
+       iszero/cleanup to take the [else] arm of the switch. *)
+    pose proof (run_fun_hasRole_1292_at_proj_sim
+                  codes env state_base memory sim role account
+                  H_account H_mem) as Hhr.
+    cbv zeta in Hhr.
+    rewrite H_not_member in Hhr.
+    destruct Hhr as (w0_hr & w1_hr & rest_hr & Hhr).
+    set (mem_after_hr := w0_hr :: w1_hr :: rest_hr).
+    (* First MIA (bytes32 → struct ptr) post-hasRole. *)
+    pose proof (MappingIndexAccessBytes32RoleData.run_mapping_index_access
+                  codes env state_base 0 role (proj_sim sim) mem_after_hr
+                  (ex_intro _ w0_hr (ex_intro _ w1_hr
+                    (ex_intro _ rest_hr eq_refl)))) as Hmia1.
+    destruct Hmia1 as (w0_a & w1_a & rest_a & Hmia1).
+    set (mem_after_mia1 := w0_a :: w1_a :: rest_a).
+    (* Second MIA (address → bool). Its slot arg is [Pure.add (kec2 role
+       0) 0]; rewrite away the [+0] so the result aligns with the bool
+       sstore's expected [kec2 account (kec2 role 0)] shape. *)
+    pose proof (MappingIndexAccessAddressBool.run_mapping_index_access
+                  codes env state_base (keccak256_tuple2 role 0) account
+                  (proj_sim sim) mem_after_mia1 H_account
+                  (ex_intro _ w0_a (ex_intro _ w1_a
+                    (ex_intro _ rest_a eq_refl)))) as Hmia2.
+    destruct Hmia2 as (w0_b & w1_b & rest_b & Hmia2).
+    set (mem_after_mia2 := w0_b :: w1_b :: rest_b).
+    assert (H_pa1 : Pure.add (keccak256_tuple2 role 0) 0
+                  = keccak256_tuple2 role 0).
+    { rewrite Pure_add_keccak_offset by lia. lia. }
+    assert (Hmia2' :
+      {{? codes, env,
+          Some (make_state env state_base mem_after_mia1 (proj_sim sim))
+      | mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address
+          (Pure.add (keccak256_tuple2 role 0) 0) account
+        ⇓ Result.Ok (keccak256_tuple2 account (keccak256_tuple2 role 0))
+      | Some (make_state env state_base mem_after_mia2 (proj_sim sim)) ?}}).
+    { rewrite H_pa1. exact Hmia2. }
+    (* sstore at slot 0's Map2 (R051.b leaf). *)
+    pose proof (run_update_storage_value_t_bool_at_proj_sim
+                  codes env state_base mem_after_mia2 sim role account)
+      as Hsstore.
+    cbv zeta in Hsstore.
+    set (proj_sim_post :=
+           [ StorableValue.Map2
+               (Dict.declare_or_assign (role_member_map sim)
+                  (role, account) 1);
+             StorableValue.Map2 (role_positions_map sim);
+             StorableValue.Map (role_values_length_map sim);
+             StorableValue.Map2 (role_values_body_map sim) ]).
+    fold proj_sim_post in Hsstore.
+    set (state_after_sstore :=
+           make_state env state_base mem_after_mia2 proj_sim_post).
+    (* msgSender: state-preserving leaf. *)
+    pose proof (run_fun__msgSender_3197 codes env state_after_sstore)
+      as Hms.
+    (* Post-state existential: the final state after the log4 sub-block
+       is observationally [state_after_sstore]. The walker discharges
+       any remaining mload/log4 primitives below, leaving the post-state
+       as an evar that closes when the final [RunO.Pure] fires. *)
+    eexists.
+    unfold fun__grantRole_1468.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
+    repeat (lazymatch goal with
+      (* Re-unfold M-monad operators that re-introduce themselves at
+         each step (inner let~ ' forms reach an M.strong_let_ that the
+         top-level unfold doesn't see through). Mirrors the
+         [run_array_push_at_proj_sim] walker pattern. *)
+      | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.strong_let_, M.generic_let
+      | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.let_, M.generic_let
+      | |- {{? _, _, _ | M.do _ _ ⇓ _ | _ ?}} =>
+          unfold M.do
+      | |- {{? _, _, _ | Shallow.let_state _ _ ⇓ _ | _ ?}} =>
+          unfold Shallow.let_state
+      | |- {{? _, _, _ | Shallow.if_ _ _ _ ⇓ _ | _ ?}} =>
+          unfold Shallow.if_
+      | |- {{? _, _, _ | M.call _ ⇓ _ | _ ?}} =>
+          unfold M.call
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_hasRole_1292 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hhr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.iszero, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_cleanup_t_bool_of_1 | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_RoleData_ₓ1233_storage_ₓ_of_t_bytes32 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia1 | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia2' | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (update_storage_value_offset_0_t_bool_to_t_bool _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ exact Hsstore | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__msgSender_3197) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hms | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_bytes32_to_t_bytes32 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_bytes32_to_t_bytes32 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_address_to_t_address _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_address_to_t_address;
+               first [ exact H_account
+                     | exact H_caller_bound ] | ]
+      (* allocate_unbounded: mload(64). The MLoad primitive's
+         eval_primitive returns [(get_bytes memory 64 32, state)] —
+         state-preserving. CallUnfold the body to inline. *)
+      | |- {{? _, _, _ |
+            LowM.Call allocate_unbounded _ ⇓ _ | _ ?}} =>
+          unfold allocate_unbounded; cu
+      (* abi_encode_tuple__to__fromStack: pure [add headStart 0]. *)
+      | |- {{? _, _, _ |
+            LowM.Call (abi_encode_tuple__to__fromStack _) _ ⇓ _ | _ ?}} =>
+          unfold abi_encode_tuple__to__fromStack; cu
+      | |- {{? _, _, _ | LowM.Call (Stdlib.mload _) _ ⇓ _ | _ ?}} =>
+          unfold Stdlib.mload; cu
+      | |- {{? _, _, _ |
+            LowM.Primitive (Primitive.MLoad _ _) _ ⇓ _ | _ ?}} =>
+          pr
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sub _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.sub, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.log4 _ _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.log4, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
 
   (** ===== R053 Phase 4 — [grantRole_1359_inner] composable wrapper =====
 
@@ -2910,10 +3085,13 @@ Module GuardianEquivalence.
           composes getRoleAdmin + checkRole + parameterized [Hbody] for the
           inner body. Discharges [H_admin_member] from [has_admin] via the
           [members_for_role] dict-lookup.
-        - [run_fun__grantRole_1468_at_proj_sim_not_member] — STATEMENT, body
-          [Admitted]. The body composition is the R051.b
-          [run_update_storage_value_t_bool_at_proj_sim] leaf plus log4 / abi
-          payload walker; the log4 walker remains a TODO.
+        - [run_fun__grantRole_1468_at_proj_sim_not_member] — [Qed]. Body
+          walker composes the R051.b
+          [run_update_storage_value_t_bool_at_proj_sim] leaf with the
+          two mapping_index_access leaves, [run_fun__msgSender_3197],
+          and the log4 sub-block (which reduces to [M.pure tt] in the
+          upstream runtime model; [allocate_unbounded]'s mload(64) is a
+          state-preserving primitive). No new trust axioms.
 
       Remaining for [run_grantRole_1359_equivalent] Qed:
         1. Body of [run_fun__grantRole_1468_at_proj_sim_not_member] — walk
