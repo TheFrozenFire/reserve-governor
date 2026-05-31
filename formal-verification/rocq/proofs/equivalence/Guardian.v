@@ -1999,6 +1999,149 @@ Module GuardianEquivalence.
     all: apply RunO.Pure.
   Qed.
 
+  (** ===== Chainable variant of [run_hasRole_equivalent] =====
+
+      The standard [run_hasRole_equivalent] uses [exists state'] for
+      the post-state, which makes it hard to thread through other
+      callers because the witness shape is undetermined. This variant
+      exposes the post-state as [make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)]
+      so callers can compose. *)
+  Lemma run_fun_hasRole_1292_at_proj_sim
+      codes env state_base memory sim (role account : U256.t)
+      (H_account : 0 <= account < 2^160)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let expected := StorableValue.map_get_u256
+                      (role_member_map sim) (role, account) in
+    exists w0' w1' rest',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun_hasRole_1292 role account ⇓
+      Result.Ok expected
+    | Some (make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)) ?}}.
+  Proof.
+    cbv zeta.
+    (* First mapping_index_access: role → struct ptr. *)
+    pose proof (MappingIndexAccessBytes32RoleData.run_mapping_index_access
+                  codes env state_base 0 role (proj_sim sim) memory H_mem) as Hmia1.
+    destruct Hmia1 as (w0_a & w1_a & rest_a & Hmia1).
+    set (mem_after1 := w0_a :: w1_a :: rest_a).
+    pose proof (MappingIndexAccessAddressBool.run_mapping_index_access
+                  codes env state_base (keccak256_tuple2 role 0) account
+                  (proj_sim sim) mem_after1
+                  H_account (ex_intro _ w0_a (ex_intro _ w1_a (ex_intro _ rest_a eq_refl))))
+      as Hmia2.
+    destruct Hmia2 as (w0_b & w1_b & rest_b & Hmia2).
+    assert (H_pa1 : Pure.add (keccak256_tuple2 role 0) 0
+                  = keccak256_tuple2 role 0).
+    { rewrite Pure_add_keccak_offset by lia. lia. }
+    assert (H_pa2 :
+      Pure.add (keccak256_tuple2 account (keccak256_tuple2 role 0)) 0
+      = keccak256_tuple2 account (keccak256_tuple2 role 0)).
+    { rewrite Pure_add_keccak_offset by lia. lia. }
+    assert (Hmia2_add :
+      {{? codes, env, Some (make_state env state_base mem_after1 (proj_sim sim))
+      | mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address
+          (Pure.add (keccak256_tuple2 role 0) 0) account
+        ⇓ Result.Ok (keccak256_tuple2 account (keccak256_tuple2 role 0))
+      | Some (make_state env state_base (w0_b :: w1_b :: rest_b) (proj_sim sim)) ?}}).
+    { rewrite H_pa1. exact Hmia2. }
+    exists w0_b, w1_b, rest_b.
+    unfold fun_hasRole_1292.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _
+            ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_RoleData_ₓ1233_storage_ₓ_of_t_bytes32 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia1 | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_address_ₓ_t_bool_ₓ_of_t_address _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia2_add | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call (read_from_storage_split_offset_0_t_bool _) _
+            ⇓ _ | _ ?}} =>
+          try rewrite H_pa2;
+          c; [ apply run_read_role_member_at_proj_sim | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: apply RunO.Pure.
+  Qed.
+
+  (** ===== Helper leaves for the auth gate =====
+
+      [cleanup_t_bool v = iszero (iszero v)] = 1 if v != 0, else 0.
+      For v ∈ {0, 1} this returns [v]. *)
+  Lemma run_cleanup_t_bool_of_bool codes env state v
+      (Hv : v = 0 \/ v = 1) :
+    {{? codes, env, Some state |
+      cleanup_t_bool v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    destruct Hv as [-> | ->].
+    - unfold cleanup_t_bool. lu. repeat (lu || cu || p).
+    - apply run_cleanup_t_bool_of_1.
+  Qed.
+
+  (** ===== [fun__checkRole_1326] — admin gate, [hasRole] = 1 branch =====
+
+      Given the caller IS a member of [role], the gate fires the
+      no-op (failure) branch of [Shallow.if_]. State is unchanged
+      structurally. *)
+  Lemma run_fun__checkRole_1326_at_proj_sim_pass
+      codes env state_base memory sim (role account : U256.t)
+      (H_account : 0 <= account < 2^160)
+      (H_member : StorableValue.map_get_u256
+                    (role_member_map sim) (role, account) = 1)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    exists w0' w1' rest',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__checkRole_1326 role account ⇓
+      Result.Ok tt
+    | Some (make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)) ?}}.
+  Proof.
+    pose proof (run_fun_hasRole_1292_at_proj_sim
+                  codes env state_base memory sim role account
+                  H_account H_mem) as Hhr.
+    cbv zeta in Hhr.
+    rewrite H_member in Hhr.
+    destruct Hhr as (w0' & w1' & rest' & Hhr).
+    exists w0', w1', rest'.
+    unfold fun__checkRole_1326.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (fun_hasRole_1292 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hhr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.iszero, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_cleanup_t_bool_of_bool; left; reflexivity | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+    (* Goal 1: the outer let~ pulls in M.strong_let_; unfold and step Pure.
+       Goal 2: depends on goal 1's metavar. *)
+    - unfold M.strong_let_, M.let_, M.generic_let, M.pure.
+      lu. cbn match. apply RunO.Pure.
+    - cbn match. apply RunO.Pure.
+  Qed.
+
   (** ===== Caller leaf: [fun__msgSender_3197] =====
 
       The OZ [_msgSender()] hook in non-meta-tx contracts is just
@@ -2241,6 +2384,46 @@ Module GuardianEquivalence.
     simpl. rewrite Z.eqb_refl. reflexivity.
   Qed.
 
+  (** Every role in [project_sim_to_ac sim] has admin
+      [AccessControl.DEFAULT_ADMIN_ROLE] by construction (the projection
+      never sets a non-default admin chain). For role-keys we model,
+      [getRoleAdmin] therefore returns [AccessControl.DEFAULT_ADMIN_ROLE];
+      for unknown roles, [getRoleEntry] returns the fallback (empty,
+      DEFAULT_ADMIN_ROLE), so the result is the same. *)
+  Lemma project_sim_to_ac_getRoleAdmin (sim : State.t) (role : U256.t) :
+    AccessControl.getRoleAdmin (project_sim_to_ac sim) role
+    = AccessControl.DEFAULT_ADMIN_ROLE.
+  Proof.
+    unfold AccessControl.getRoleAdmin, AccessControl.getRoleEntry,
+           AccessControl.find_entry, project_sim_to_ac.
+    simpl.
+    destruct (DEFAULT_ADMIN_ROLE_bytes32 =? role); [reflexivity|].
+    destruct (OPTIMISTIC_GUARDIAN_ROLE_bytes32 =? role); [reflexivity|].
+    destruct (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 =? role); reflexivity.
+  Qed.
+
+  (** [hasRole] of the [DEFAULT_ADMIN_ROLE] key. Inside [project_sim_to_ac],
+      the first role-entry is keyed by [DEFAULT_ADMIN_ROLE_bytes32]; the
+      [AccessControl.DEFAULT_ADMIN_ROLE = 0] key from [getRoleAdmin]'s
+      output finds the [DEFAULT_ADMIN_ROLE_bytes32] entry only if
+      [DEFAULT_ADMIN_ROLE_bytes32 = 0]. We axiomatize that equality (it's
+      the Solidity reality: OZ defines [DEFAULT_ADMIN_ROLE = bytes32(0)]).
+      Same parametric-trust shape as the other Guardian-side role
+      parameters. *)
+  Axiom DEFAULT_ADMIN_ROLE_bytes32_is_zero :
+    DEFAULT_ADMIN_ROLE_bytes32 = 0.
+
+  Lemma project_sim_to_ac_hasRole_admin_chain (sim : State.t) (role : U256.t) (a : Address) :
+    AccessControl.hasRole (project_sim_to_ac sim)
+                          (AccessControl.getRoleAdmin (project_sim_to_ac sim) role) a
+    = has_admin sim a.
+  Proof.
+    rewrite project_sim_to_ac_getRoleAdmin.
+    unfold AccessControl.DEFAULT_ADMIN_ROLE.
+    rewrite <- DEFAULT_ADMIN_ROLE_bytes32_is_zero.
+    apply project_sim_to_ac_hasRole_admin.
+  Qed.
+
   (** Theorem statement for the public [fun_grantRole_1359] equivalence.
 
       This is the canonical "mutator equivalence" target for task #234.
@@ -2467,76 +2650,54 @@ Module GuardianEquivalence.
         True
     end.
   Proof.
-    (** Scaffold — R046 unblocked the inner sstore but the outer
-        wrapper still needs (A)-(D) above. The structure below is the
-        same shape the eventual proof will take. *)
+    (** ===== Phase 1: reduce [result] to [Result.Success].
+
+        Under [H_caller_admin] and our every-role-defaults-to-DEFAULT_ADMIN
+        projection, [AccessControl.grantRole sim_ac caller role account]
+        is always [Result.Success] — the auth gate fires with [hasRole
+        (getRoleAdmin sim_ac role) caller = has_admin sim caller = true].
+
+        We reduce [result] to its concrete success form so the outer
+        [match] reduces and the Revert branch (vacuous) disappears. *)
     intros state sim_ac caller result.
-    (** Phase 1: auth gate.
+    (* Compute hasRole at the admin chain. The projection makes every
+       role's admin entry be DEFAULT_ADMIN_ROLE; [getRoleAdmin sim_ac role]
+       therefore returns [DEFAULT_ADMIN_ROLE], which lifts to
+       [has_admin sim caller] via [project_sim_to_ac_hasRole_admin]. *)
+    assert (H_result_success :
+      AccessControl.hasRole sim_ac
+        (AccessControl.getRoleAdmin sim_ac role) caller = true).
+    { subst sim_ac caller.
+      rewrite project_sim_to_ac_hasRole_admin_chain. exact H_caller_admin. }
+    (* Reduce [result]: gate passes, so result is Success. *)
+    subst result.
+    unfold AccessControl.grantRole at 1.
+    rewrite H_result_success. cbn match.
+    (** ===== Phase 2: walk fun_grantRole_1359 to Result.Ok tt.
 
-        The mock's [AccessControl.grantRole] bifurcates on
-        [hasRole (getRoleAdmin sim_ac role) caller]. Under our
-        projection (Guardian's every-role-defaults-to-DEFAULT_ADMIN_ROLE
-        convention), this reduces to
-        [hasRole DEFAULT_ADMIN_ROLE_bytes32 caller], which equals
-        [has_admin sim caller] via [project_sim_to_ac_hasRole_admin],
-        which is [true] by H_caller_admin.
-
-        Therefore [result] is always Success — the Revert branch is
-        vacuously [True].
-
-        Closing the Revert branch is trivial; the Success branch
-        requires the walker for the chain. We case-split BEFORE
-        eexists per R047 so witnesses live in disjoint scopes. *)
-    subst result. subst sim_ac. subst caller. subst state.
-    (** Per (B): [AccessControl.grantRole sim_ac caller role account]
-        reduces to [Result.Success sim_ac'] under H_caller_admin +
-        [project_sim_to_ac_hasRole_admin] + the (TBD)
-        [project_sim_to_ac_getRoleAdmin] lemma. Once that reduction
-        fires we case-split on the [match] and the Revert branch
-        closes by exact I (since the goal is True). *)
-    (** Phase 2: body walker.
-
-        The Success branch then opens with:
-          - the inner [run_hasRole_equivalent] pose for the modifier's
-            gate (already in scope),
-          - the R040 wrapper for the bool sstore in
-            [fun__grantRole_1468]'s success arm (residual C),
-          - the walker arms threading through
-            [fun_getRoleAdmin_1340] → [fun__checkRole_1305] →
-            [fun_grantRole_1359_inner] → [fun__grantRole_704] →
-            [fun__grantRole_1468] + [fun_add_2085],
-          - the case-split on [hasRole] inside [_grantRole_1468]
-            (R047: already-member vs not-a-member),
-          - the projection-side bridge (residual B) to close the
-            post-state equality with [proj_sim sim']. *)
-
-    (** Scaffold pose: this is the canonical entry-point for the
-        eventual walker. Left commented since the immediate residuals
-        block its use, but documented for the next agent. *)
-    (* pose proof (run_hasRole_equivalent codes env state_base sim
-                    DEFAULT_ADMIN_ROLE_bytes32 (env.(Environment.caller))
-                    memory H_role H_account H_mem) as Hhr_admin. *)
-
-    (** All structural residuals closed:
-          (A) slot modeling — task #248 + #264 (R051.c)
-          (B) projection-side bridge — task #248 + #264 (R051.c)
-          (C.1) bool sstore wrapper — R051.b
-                [run_update_storage_value_t_bool_at_proj_sim]
-          (C.2) admin-field read — R051.a
-                [run_fun_getRoleAdmin_1340_at_proj_sim] +
-                [run_sload_role_admin_at_proj_sim] (out-of-projection
-                trust axiom)
-          (C.3) array_push wrapper — R051.c
-                [run_array_push_at_proj_sim]
-          (D) caller bridge — [run_fun__msgSender_3197]
-
-        What remains for grantRole's full Qed is threading these leaves
-        through the outer chain
-        ([fun_grantRole_1359] → [modifier_onlyRole_1351] →
-        [fun_getRoleAdmin_1340] + [fun__checkRole_1305] →
-        [fun_grantRole_1359_inner] → [fun__grantRole_704] →
-        [fun__grantRole_1468] + [fun_add_2085]). No remaining
-        structural gaps. *)
+        Strategy: provide witnesses [sim' := Guardian.add_admin sim account]
+        for the [DEFAULT_ADMIN_ROLE] case (and analogous for other roles).
+        For unmodeled roles, the AccessControl mutation still goes through
+        but our sim isn't structured to represent it; we case-split on
+        the role to dispatch. *)
+    subst sim_ac caller state.
+    (* Phase 2 witness — choose sim' based on the role. Three cases:
+       DEFAULT_ADMIN_ROLE, OPTIMISTIC_GUARDIAN_ROLE,
+       OPTIMISTIC_GUARDIAN_MANAGER_ROLE, plus fallthrough. The
+       fallthrough is interesting — in OZ semantics _grantRole still
+       performs the storage write at the unknown role's slot, but our
+       proj_sim only models the three named roles. For now this proof
+       targets the three named roles only and the fallthrough remains
+       a residual structural gap. *)
+    (** Walker pending: the 5-deep call chain
+        ([modifier_onlyRole_1351] →
+         [fun_getRoleAdmin_1340] + [fun__checkRole_1305] →
+         [fun_grantRole_1359_inner] → [fun__grantRole_704] →
+         [fun__grantRole_1468] + [fun_add_2085]) with state-threading,
+        case-split on [hasRole] (already-member vs not-a-member),
+        Shallow.if_ admin gate reduction, and post-state projection
+        equality remains to be assembled. All required leaves are landed
+        — see WISDOM R051 + this docstring's residual catalogue. *)
   Admitted.
 
 End GuardianEquivalence.
