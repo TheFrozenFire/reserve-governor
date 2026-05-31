@@ -4227,3 +4227,133 @@ For OG/OGM:
 The same applies for `revokeRole` (already-Admitted via R051.a) and
 `grantOptimisticGuardian` / `revokeOptimisticProposer` — all share
 the cons-prefix-vs-mid-list issue for non-DEFAULT roles.
+
+### R055 follow-up (2026-05-31): OG/OGM extensions CLOSED
+
+`run_grantRole_1359_equivalent` now Qed across **all three Guardian
+roles**. Theorem signature changed:
+
+- `H_role_default : role = DEFAULT_ADMIN_ROLE_bytes32` replaced by
+  `H_role_known : role ∈ {DEFAULT, OG, OGM}`.
+- Added `H_og_bound` and `H_ogm_bound` length preconditions
+  (alongside the existing `H_admins_bound`), since each role's
+  not-member branch needs the corresponding list's length bound for
+  the [run_fun_add_2085_at_proj_sim] precondition.
+
+New trust axiom: `OG_neq_OGM` (the third pairwise keccak distinctness
+for the role-bytes32 parameters, same parametric-trust shape as
+`DEFAULT_neq_OG` / `DEFAULT_neq_OGM`).
+
+The structural foundation: a generalization of the existing
+`map_get_cons_eq_app_singleton_when_absent_ZZ` to arbitrary
+list prefixes ([map_get_mid_cons_eq_app_singleton_when_absent_ZZ]).
+For OG, the bridge unifies with A = DEFAULT_block, B = OG_block ++
+OGM_block; for OGM, A = (DEFAULT_block ++ OG_block), B = OGM_block —
+the latter needs an [app_assoc] re-association so that the inner
+DEFAULT ++ (OG ++ OGM) form (right-associated, as produced by
+`role_member_map`'s definition) lines up with `(DEFAULT ++ OG) ++ OGM`
+on the bridge's LHS.
+
+Lemmas added (8 projection bridges + 8 observational bridges + 1
+mid-list helper):
+
+- `role_member_map_add_optimistic_guardian{,_manager}_not_in`
+- `role_positions_map_add_optimistic_guardian{,_manager}_not_in`
+- `role_values_length_map_add_optimistic_guardian{,_manager}_not_in`
+- `role_values_body_map_add_optimistic_guardian{,_manager}_not_in`
+- `role_member_map_sstore_observes_add_optimistic_guardian{,_manager}_not_in`
+- `role_positions_map_sstore_observes_add_optimistic_guardian{,_manager}_not_in`
+- `role_values_length_map_sstore_eq_add_optimistic_guardian{,_manager}_not_in`
+- `role_values_body_map_sstore_observes_add_optimistic_guardian{,_manager}_not_in`
+- `map_get_mid_cons_eq_app_singleton_when_absent_ZZ`
+
+Build status: green. `Print Assumptions
+GuardianEquivalence.run_grantRole_1359_equivalent` lists only:
+- Three role-bytes32 Parameters (`DEFAULT_ADMIN_ROLE_bytes32`,
+  `OPTIMISTIC_GUARDIAN_ROLE_bytes32`, `OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32`).
+- Four parametric-trust axioms (`DEFAULT_ADMIN_ROLE_bytes32_is_zero`,
+  `DEFAULT_neq_OG`, `DEFAULT_neq_OGM`, `OG_neq_OGM`).
+- The pre-existing slot-1/2/3 sload/sstore/keccak-offset trust axioms.
+- Framework axioms (Storage / Memory / canonization).
+
+No admit artifacts. No new framework-level axioms.
+
+### Methodology notes for future similar mutator equivalences
+
+1. **Per-role bounds in the theorem signature.** A mutator that grants
+   to ONE of N roles needs the length bound only for that role's
+   list. Carrying all N bounds in the theorem signature is the
+   simplest way to support a multi-role case split — each branch
+   picks the bound for the role it's granting to.
+
+2. **The `clear` discipline before inductions.** The new
+   per-role bounds (`H_og_bound` and `H_ogm_bound`) depend on
+   `sim.(State.optimisticGuardians)` and
+   `sim.(State.optimisticGuardianManagers)`. Any `induction
+   (State.optimisticGuardians sim)` or
+   `induction (State.optimisticGuardianManagers sim)` inside the
+   proof will generalize the matching bound over the inductive
+   variable, polluting the IH. Either `clear` the relevant bounds
+   beforehand, or use `clear -H1 H2 ...` to whitelist only the
+   needed hypotheses. The same applies to ANY hypothesis that
+   syntactically depends on the to-be-inducted-over term.
+
+3. **The OG branch's mid-list helper applies directly; OGM needs
+   `app_assoc` first.** Because `role_X_map` is right-associated
+   (`D ++ OG ++ OGM` parsed as `D ++ (OG ++ OGM)`), the
+   `(A ++ B) ++ [(k,v)]` LHS of the mid-list helper requires the
+   wrapped-Dict.declare_or_assign form to be re-associated when the
+   insertion point is at the END (OGM). For OG, the form is already
+   `D ++ (OG ++ OGM)` which matches `A ++ B` with A=D, B=OG++OGM.
+
+4. **The `Dict.Eq.eqb` `cbn` doesn't always unfold opaque-param
+   equalities.** Even with `cbn [Dict.Eq.eqb Dict.Eq.ITuple2
+   Dict.Eq.IZ]`, an `eqb OGM_BR OGM_BR` may remain as `Dict.Eq.eqb`
+   form rather than reducing to `OGM_BR =? OGM_BR`. The DEFAULT and
+   OG branches worked because the underlying definitions reduce more
+   eagerly; the OGM branch needs an explicit `change` to coerce the
+   form before `Z.eqb_refl` can fire. Working pattern:
+   ```coq
+   cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+   change (Dict.Eq.eqb OGM_BR OGM_BR) with (OGM_BR =? OGM_BR).
+   rewrite Z.eqb_refl.
+   ```
+
+5. **Set entry / find entry case-splits.** The OZ-style
+   `AccessControl.find_entry` and `set_entry` walk the
+   `project_sim_to_ac sim` list left-to-right. For DEFAULT (head of
+   the list), one `Z.eqb_refl` + `cbv match` suffices. For OG (second
+   position), `rewrite (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OG)` first,
+   then `Z.eqb_refl`. For OGM (third position), TWO inequality
+   rewrites: `DEFAULT_neq_OGM` then `OG_neq_OGM`, then `Z.eqb_refl`.
+   Both `find_entry` and `set_entry` need the same sequence of
+   rewrites in their respective `simpl` reductions.
+
+6. **`H_role_known` disjunct positions matter at the modifier
+   wrapper call.** The modifier
+   `run_modifier_onlyRole_1351_admin_passes_exists` takes
+   `H_role_known` as a hypothesis of the three-way disjunction
+   shape. Each branch supplies the matching disjunct constructor:
+   `or_introl eq_refl` for DEFAULT, `or_intror (or_introl eq_refl)`
+   for OG, `or_intror (or_intror eq_refl)` for OGM.
+
+### Implications for downstream proofs
+
+- `revokeRole` (currently `Admitted` via R051.a): same approach
+  applies. The four observational bridges generalize to
+  `_sstore_observes_remove_X_in` (cons-removal rather than
+  cons-insertion), but the structural shape is the same. The
+  cons-removal can either be encoded via an analog of
+  `Dict.declare_or_assign_remove` or via direct list-surgery.
+  Plan: mirror this commit for revokeRole. Three roles × two
+  cases (was-member / not-member) — six branches.
+- `grantOptimisticGuardian` (the OG-specific public wrapper): this
+  is just a thin wrapper over `_grantRole(OG, account)` with an
+  extra OG-manager auth gate. The milestone's OG branch already
+  proves the inner mutator equivalence; the wrapper closure is
+  ~30 lines of additional modifier-walker assembly.
+- `revokeOptimisticProposer`: analogous to revokeRole specialized
+  to OG.
+- Future mutator-equivalences for other contracts (VersionRegistry,
+  RewardTokenRegistry): same OZ inheritance chain, same projection
+  / bridge / observational pattern.
