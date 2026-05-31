@@ -585,6 +585,97 @@ Module VersionRegistryEquivalence.
       end).
   Qed.
 
+  (** ===== Phase 3.2 infrastructure (R058) — mutator-equivalence leaves =====
+
+      The following lemmas land the *non-staticcall* infrastructure
+      needed by both [deprecateVersion] and [registerVersion]. They
+      mirror the corresponding pieces in Guardian.v (R055 milestone)
+      and ThrottleLib_Leaves.v (R040 wrapper-shape pattern), specialized
+      to VersionRegistry's flat 3-slot projection.
+
+      The R050 chain (loadimmutable + memory prelude + staticcall +
+      abi_decode + returndatasize) is what blocks the full mutator
+      equivalence — see WISDOM R058 for the residual catalogue. The
+      pieces below are still useful: once the staticcall infrastructure
+      lands, the outer walker composes them mechanically. *)
+
+  (** ----- require_helper leaves -----
+
+      Each of VersionRegistry's four custom-error require helpers wraps
+      the same Yul shape:
+        if iszero(condition) { mstore selector; revert }
+      i.e., revert when [condition = 0], otherwise succeed and leave
+      the state unchanged. The proofs mirror ThrottleLib_Leaves'
+      [run_require_helper_succeeds] verbatim. *)
+
+  Lemma run_require_helper_t_error_10_VersionRegistry__InvalidCaller_succeeds
+      codes env state (condition : U256.t) :
+    condition <> 0 ->
+    {{? codes, env, Some state |
+      require_helper_t_error_10_VersionRegistry__InvalidCaller condition ⇓
+      Result.Ok tt
+    | Some state ?}}.
+  Proof.
+    intros Hcond.
+    unfold require_helper_t_error_10_VersionRegistry__InvalidCaller.
+    unfold Shallow.let_state, Shallow.if_.
+    unfold Stdlib.iszero, Pure.iszero.
+    destruct (condition =? 0) eqn:Hcz.
+    - exfalso. apply Z.eqb_eq in Hcz. apply Hcond. exact Hcz.
+    - lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_require_helper_t_error_16_VersionRegistry__AlreadyDeprecated_succeeds
+      codes env state (condition : U256.t) :
+    condition <> 0 ->
+    {{? codes, env, Some state |
+      require_helper_t_error_16_VersionRegistry__AlreadyDeprecated condition ⇓
+      Result.Ok tt
+    | Some state ?}}.
+  Proof.
+    intros Hcond.
+    unfold require_helper_t_error_16_VersionRegistry__AlreadyDeprecated.
+    unfold Shallow.let_state, Shallow.if_.
+    unfold Stdlib.iszero, Pure.iszero.
+    destruct (condition =? 0) eqn:Hcz.
+    - exfalso. apply Z.eqb_eq in Hcz. apply Hcond. exact Hcz.
+    - lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_require_helper_t_error_12_VersionRegistry__ZeroAddress_succeeds
+      codes env state (condition : U256.t) :
+    condition <> 0 ->
+    {{? codes, env, Some state |
+      require_helper_t_error_12_VersionRegistry__ZeroAddress condition ⇓
+      Result.Ok tt
+    | Some state ?}}.
+  Proof.
+    intros Hcond.
+    unfold require_helper_t_error_12_VersionRegistry__ZeroAddress.
+    unfold Shallow.let_state, Shallow.if_.
+    unfold Stdlib.iszero, Pure.iszero.
+    destruct (condition =? 0) eqn:Hcz.
+    - exfalso. apply Z.eqb_eq in Hcz. apply Hcond. exact Hcz.
+    - lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_require_helper_t_error_14_VersionRegistry__InvalidRegistration_succeeds
+      codes env state (condition : U256.t) :
+    condition <> 0 ->
+    {{? codes, env, Some state |
+      require_helper_t_error_14_VersionRegistry__InvalidRegistration condition ⇓
+      Result.Ok tt
+    | Some state ?}}.
+  Proof.
+    intros Hcond.
+    unfold require_helper_t_error_14_VersionRegistry__InvalidRegistration.
+    unfold Shallow.let_state, Shallow.if_.
+    unfold Stdlib.iszero, Pure.iszero.
+    destruct (condition =? 0) eqn:Hcz.
+    - exfalso. apply Z.eqb_eq in Hcz. apply Hcond. exact Hcz.
+    - lu. repeat (lu || cu || p).
+  Qed.
+
   (** ----- Phase 3.2 — deprecateVersion mutator equivalence scaffold -----
 
       Target: prove [fun_deprecateVersion_187] is equivalent to the
