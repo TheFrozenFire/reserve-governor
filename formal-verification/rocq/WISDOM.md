@@ -2963,3 +2963,119 @@ between the sim's Boolean membership checks and the projection's
   this R049 entry is about EnumerableSet's CONSUMER (the
   `AccessControlEnumerable` pattern), where the set is woven into
   a contract's `proj_sim` rather than reasoned about in isolation.
+
+## R050: External `staticcall`-gated mutators — infrastructure gap blocking VersionRegistry.deprecateVersion
+
+**Status: open. Scaffold landed in
+`proofs/equivalence/VersionRegistry.v::run_deprecateVersion_equivalent_make_state`
+with the residual catalogue documented inline.**
+
+VersionRegistry.deprecateVersion was nominated as the first OZ
+mutator-equivalence target after the R046 generator fix, on the
+premise that it "JUST sstores true at slot 1". The actual contract
+gates the sstore with an EXTERNAL `staticcall` to a separate
+`roleRegistry` contract — NOT an internal OZ `AccessControl.hasRole`
+read. The Yul body's prelude is, before the sstore can fire:
+
+```
+loadimmutable(roleRegistry)
+mstore(_22, shift_left_224(0x1918a29c))   ; hasRole_OwnerOrEmergency selector
+abi_encode_tuple_t_address(_22 + 4, caller)
+_24 := staticcall(gas, roleRegistry, _22, _23 - _22, _22, 32)
+if iszero(_24) { revert_forward_1 }       ; staticcall failure
+expr_162 := abi_decode_tuple_t_bool_fromMemory(_22, _22 + _25)
+require_helper_t_error_10_InvalidCaller(expr_162)
+```
+
+The trust-based `RunO.CallContract` rule (R021) lets us choose a
+result `call_result = 1` and step past the staticcall, but the
+surrounding memory machinery (allocate_unbounded, finalize_allocation,
+abi_encode_tuple_t_address, abi_decode_tuple_t_bool_fromMemory,
+returndatasize) needs to be built before the walker can fire through.
+NONE of that infrastructure exists in the corpus today — every
+equivalence proof so far (ThrottleLib, Guardian view side,
+RewardTokenRegistry view side, etc.) avoids contracts that do an
+EXTERNAL staticcall as part of their mutator gate.
+
+### The residual catalogue (transcribed from the scaffold)
+
+1. **R-statcall** — choose `call_result = 1` via `RunO.CallContract`,
+   tied to a callee-spec axiom that says
+   `is_owner_or_emergency env.caller = true ⇒ roleRegistry returns 1`.
+   The axiom lives alongside `version_hash_injective` and similar
+   opaque assumptions in `simulations/VersionRegistry.v`.
+2. **R-memprelude** — six new memory leaves:
+   `run_allocate_unbounded`, `run_finalize_allocation`,
+   `run_mstore_with_shift_left_224`,
+   `run_abi_encode_tuple_t_address__to_t_address__fromStack`,
+   `run_abi_decode_tuple_t_bool_fromMemory`,
+   `run_returndatasize_after_callcontract`. The trickiest is the
+   last — the trust-based `cc` rule does NOT canonicalize the
+   `Primitive.RLoad` state set by `LowM.CallContract`, so the proof
+   author has to assert the post-staticcall return-data length is
+   32 bytes either as a hypothesis or as a separate axiom on the
+   chosen `state_inter`.
+3. **R-immutable** — `run_loadimmutable_returns_role_registry`:
+   models `Primitive.LoadImmutable` against a hypothesis
+   `env.(immutables) ! "roleRegistry" = Some addr`. ~10 lines.
+4. **R-bool-sstore** — `run_update_storage_value_offset_0_t_bool_to_t_bool_at_proj_sim`:
+   R040-style wrapper baking in `proj_sim sim`'s 3-slot layout for
+   the bool flavor sstore. The body is
+   `sload + prepare_store_t_bool + update_byte_slice_1_shift_0 +
+   sstore`. ~80 lines once attempted.
+5. **R-require** — `run_require_helper_t_error_10_InvalidCaller_succeeds`
+   and `run_require_helper_t_error_16_AlreadyDeprecated_succeeds`.
+   Mirror ThrottleLib's `run_require_helper_succeeds`. ~15 lines each.
+6. **R-postbridge** — `proj_sim_deprecate_at`: R049-style multi-slot
+   projection bridge for the deprecate-at-index sim operation.
+   ~40 lines.
+
+### Why "simplest OZ mutator" was wrong
+
+The premise that VersionRegistry.deprecateVersion is the simplest OZ
+mutator missed the EXTERNAL gating. Guardian.grantRole is actually
+the simpler shape (its gate is an internal `hasRole` read against
+`_roles[role].members`, same contract, same projection). The R046 fix
+unblocks BOTH — but Guardian.grantRole only needs R-bool-sstore +
+R-postbridge + the upfront `run_hasRole_equivalent` pose (already
+landed). VersionRegistry.deprecateVersion additionally needs all of
+R-statcall + R-memprelude + R-immutable.
+
+### Implication for the OZ mutator equivalence roadmap
+
+The "first OZ mutator equivalence" milestone is more naturally hit
+via Guardian.grantRole (which the existing
+`run_grantRole_1359_equivalent` scaffold is set up for), not
+VersionRegistry.deprecateVersion. The latter requires R050's
+external-staticcall infrastructure as a prerequisite, which is a
+multi-day workstream on its own. The former blocks on R049's
+EnumerableSet walker + R-bool-sstore — both of which are visible
+on the existing Guardian scaffold's residual list.
+
+Recommend retargeting the "first OZ mutator equivalence" goal to
+Guardian.grantRole. VersionRegistry.deprecateVersion remains a valid
+target but needs the R050 infrastructure landed first.
+
+### Touchpoints
+
+- `proofs/equivalence/VersionRegistry.v::run_deprecateVersion_equivalent_make_state`
+  — the scaffold with theorem statement + admitted proof + full
+  residual catalogue in the docstring.
+- `proofs/equivalence/Sandbox.v::R021VerificationCheck` — the only
+  existing in-corpus use of `RunO.CallContract` (`cc` tactic), a
+  one-liner that confirms the constructor + tactic compose.
+- `generated/VersionRegistry_shallow.v::fun_deprecateVersion_187`
+  — the Yul body referenced above.
+- `simulations/VersionRegistry.v::deprecateVersion` — the sim-side
+  reference that the equivalence binds against.
+
+### Cross-references
+
+- R021 — the trust-based `RunO.CallContract` rule that R-statcall
+  builds on.
+- R040 — wrapper-shape sstore that R-bool-sstore mirrors for the
+  bool flavor.
+- R046 — the upstream generator fix that put the sstore body BACK
+  in the success arm (without R046, even the R050 leaves wouldn't
+  have an sstore to dispatch on).
+- R049 — the multi-slot proj_sim pattern that R-postbridge mirrors.

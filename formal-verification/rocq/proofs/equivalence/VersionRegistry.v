@@ -585,4 +585,201 @@ Module VersionRegistryEquivalence.
       end).
   Qed.
 
+  (** ----- Phase 3.2 — deprecateVersion mutator equivalence scaffold -----
+
+      Target: prove [fun_deprecateVersion_187] is equivalent to the
+      sim's [deprecateVersion] on the success branch (caller passes the
+      role check, version is registered and not yet deprecated).
+
+      The contract gates with an EXTERNAL role-registry [staticcall]
+      (NOT an internal hasRole, unlike OZ AccessControl's grantRole).
+      That makes this proof structurally harder than the Guardian
+      grantRole case it was originally labelled an analogue of. The
+      full Yul chain from [fun_deprecateVersion_187]:
+
+        1. loadimmutable(roleRegistry)                  (immutable read)
+        2. mstore selector + abi_encode_tuple_t_address (memory prep)
+        3. staticcall(gas, roleRegistry, ...)           (EXTERNAL CALL)
+        4. iszero(staticcall_result) → revert_forward_1 (call success
+           branch — Shallow.if_ over the call's 0/1 result)
+        5. abi_decode_tuple_t_bool_fromMemory(_22, _22+_25) (decode)
+        6. require_helper_t_error_10_InvalidCaller       (role check)
+        7. mapping_index_access(1, versionHash)          (slot 1 keccak)
+        8. read_from_storage_split_offset_0_t_bool       (isDep read)
+        9. require_helper_t_error_16_AlreadyDeprecated   (not already)
+       10. mapping_index_access(1, versionHash) (again for the write)
+       11. update_storage_value_offset_0_t_bool_to_t_bool 1   (SSTORE)
+       12. log2(...VersionDeprecated event...)          (no-op in sim)
+
+      ===== Residual catalogue (R050 candidate) =====
+
+      Closing this proof requires the following leaves, NONE of which
+      exist in the corpus today:
+
+      (R-statcall) [run_role_registry_hasRole_staticcall_via_cc]:
+          Use [RunO.CallContract] (R021's trust-based rule) to choose
+          call_result = 1 (the role check passes), tied to a callee-spec
+          axiom — analogous to [version_hash_injective] in the sim —
+          that says the roleRegistry's hasRole_OwnerOrEmergencyCouncil
+          returns 1 when [is_owner_or_emergency env.caller = true].
+
+      (R-memprelude) Memory leaves for the abi prelude:
+          [run_allocate_unbounded], [run_finalize_allocation],
+          [run_mstore_with_shift_left_224],
+          [run_abi_encode_tuple_t_address__to_t_address__fromStack],
+          [run_abi_decode_tuple_t_bool_fromMemory],
+          [run_returndatasize_after_callcontract]. Each is a focused
+          ~20-30 line leaf. The trickiest is [returndatasize] — it
+          depends on the [Primitive.RLoad] state set by the prior
+          [LowM.CallContract] step, which the trust-based [cc] rule
+          does NOT canonicalize for us. The proof author would have to
+          assert (or prove) the post-staticcall return-data length is
+          32 bytes.
+
+      (R-immutable) [run_loadimmutable_returns_role_registry]:
+          model the [Primitive.LoadImmutable] read against a hypothesis
+          [env.(immutables) ! "roleRegistry" = Some addr]. Straightforward
+          once stated, ~10 lines.
+
+      (R-bool-sstore) [run_update_storage_value_offset_0_t_bool_to_t_bool_at_proj_sim]:
+          a R040-style wrapper baking in [proj_sim sim]'s 3-slot
+          layout, writing 1 at slot 1's map entry. The body composes
+          [sload + prepare_store_t_bool + update_byte_slice_1_shift_0 +
+          sstore] — analogous to ThrottleLib's uint256 wrapper but for
+          the bool flavor (different prepare/byte-slice helpers).
+          ~80 lines once attempted.
+
+      (R-require) [run_require_helper_t_error_10_InvalidCaller_succeeds]
+          and [run_require_helper_t_error_16_AlreadyDeprecated_succeeds].
+          Mirror ThrottleLib's [run_require_helper_succeeds] for the
+          uint256 case — same structural shape, different error payload
+          bytes. ~15 lines each.
+
+      (R-postbridge) [proj_sim_deprecate_at]: a multi-slot proj_sim
+          bridge analogous to R049's [proj_sim_add_admin], stating
+
+            proj_sim (deprecate_at sim i) =
+            [ Map (deployments_map history) ;
+              Map (Dict.declare_or_assign (isDeprecated_map history)
+                     (entry_hash_at sim i) 1) ;
+              U256 (latestVersion_value sim) ]
+
+          The bridge would close once we have
+          [find_entry_versionHash_lookup_eq] showing
+          [Dict.get (isDeprecated_map history) versionHash = Some 1]
+          iff the entry exists with deprecated = true. ~40 lines.
+
+      ===== Honest assessment =====
+
+      The original task brief described this as "the SIMPLEST OZ mutator
+      pattern... JUST sstores true here". That mis-read the contract:
+      the role check is an EXTERNAL [staticcall] to a separate
+      [roleRegistry] contract, not an internal hasRole. None of the
+      six residual leaves above exist in the corpus. Individually each
+      is tractable; together they constitute the [staticcall]-gated-
+      mutator infrastructure for every subsequent OZ-shape proof.
+
+      Net effort: NOT 75 minutes. Conservative estimate is a multi-day
+      workstream, with R-memprelude and R-statcall being the load-
+      bearing pieces. Once that infrastructure lands, this theorem
+      closes mechanically along the lines of
+      [run_consumeProposalCharge_make_state] (the canonical mutator
+      template in ThrottleLib).
+
+      The theorem statement below is the contract our future work has
+      to satisfy. The proof body sets up the upfront [pose] for the
+      mapping_index_access and the isDeprecated read leaf (both of
+      which ARE in scope today) and admits on the staticcall + memory
+      prelude residuals. *)
+
+  Theorem run_deprecateVersion_equivalent_make_state
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : VersionRegistry.State.t) (versionHash : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_valid_sim : VersionRegistry.Valid.state sim)
+      (H_caller_or_emergency :
+        VersionRegistry.is_owner_or_emergency env.(Environment.caller) = true)
+      (* Existence of an entry for [versionHash] in the history that's
+         not yet deprecated. The unregistered-hash case in the sim
+         leaves state unchanged (see comment in simulations/VersionRegistry.v)
+         and is left out of scope for this scaffold. *)
+      (H_entry_present :
+        exists i e,
+          List.nth_error sim.(VersionRegistry.State.history) i = Some e /\
+          e.(VersionRegistry.VersionEntry.versionHash) = versionHash /\
+          e.(VersionRegistry.VersionEntry.deprecated) = false)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    let sim_result :=
+      VersionRegistry.deprecateVersion
+        sim env.(Environment.caller) versionHash in
+    match sim_result with
+    | VersionRegistry.Result.Success new_sim =>
+        exists state',
+        {{? codes, env, Some state |
+          fun_deprecateVersion_187 versionHash ⇓
+          Result.Ok tt
+        | state' ?}} /\
+        (exists memory',
+          state' = Some (make_state env state_base memory' (proj_sim new_sim)))
+    | VersionRegistry.Result.Revert _ _ =>
+        (* The success-branch shape is the load-bearing claim; the
+           revert side is vacuously True under H_caller_or_emergency
+           + H_entry_present. *)
+        True
+    end.
+  Proof.
+    intros state sim_result.
+
+    (* Phase A: pose the in-scope leaves upfront (R036). These are
+       the only two pieces of infrastructure that exist today. *)
+    pose proof (MappingIndexAccessBytes32Bool.run_mapping_index_access
+                  codes env state_base 1 versionHash (proj_sim sim) memory
+                  H_mem) as Hmia.
+    destruct Hmia as (w0_m & w1_m & rest_m & Hmia).
+    pose proof (run_read_isDeprecated_at_proj_sim
+                  codes env state_base memory sim versionHash) as Hread.
+
+    (* Phase B: the staticcall + memory-prelude residuals
+       (R-statcall, R-memprelude, R-immutable) block the walker. We
+       cannot fire the body without first poseing a callee-spec
+       [Hrolereg] saying "the roleRegistry returns 1 under
+       H_caller_or_emergency". That axiom is the R-statcall leaf
+       above.
+
+       Once R-statcall + R-memprelude + R-immutable land, this proof
+       continues:
+
+         eexists.
+         unfold fun_deprecateVersion_187.
+         repeat (lazymatch goal with
+           | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+           | |- {{? _, _, _ | LowM.Call (loadimmutable _) _ ⇓ _ | _ ?}} =>
+               c; [ apply run_loadimmutable_returns_role_registry | ]
+           | |- {{? _, _, _ | LowM.CallContract _ _ _ true false _ ⇓ _ | _ ?}} =>
+               cc; (* choose call_result = 1 per R-statcall *) ...
+           | |- {{? _, _, _ |
+                 LowM.Call (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_bool_ₓ_of_t_bytes32 _ _) _
+                 ⇓ _ | _ ?}} =>
+               eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
+           | |- {{? _, _, _ |
+                 LowM.Call (read_from_storage_split_dynamic_t_bool _ _) _
+                 ⇓ _ | _ ?}} =>
+               c; [ apply Hread | ]
+           | |- {{? _, _, _ |
+                 LowM.Call (update_storage_value_offset_0_t_bool_to_t_bool _ _) _
+                 ⇓ _ | _ ?}} =>
+               c; [ apply run_update_storage_value_offset_0_t_bool_to_t_bool_at_proj_sim | ]
+           | |- {{? _, _, _ | LowM.Primitive _ _ ⇓ _ | _ ?}} => pr
+           | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+           | |- _ => s
+           end).
+
+       Final post-state equality discharges via [proj_sim_deprecate_at]
+       (R-postbridge) showing
+         proj_sim (deprecate_at sim i) =
+         [Map deployments_map; Map (isDeprecated_map updated); U256 latest]. *)
+  Admitted.
+
 End VersionRegistryEquivalence.
