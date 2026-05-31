@@ -1230,6 +1230,35 @@ Module VersionRegistryEquivalence.
     List.length (proj_sim_post_deprecate sim hash) = 3%nat.
   Proof. reflexivity. Qed.
 
+  (** Symmetry of [observationally_eq_storage_vr]. Direct from the
+      definition: each per-slot clause is symmetric under value
+      equality, so swapping arguments preserves the predicate. *)
+  Lemma observationally_eq_storage_vr_sym s1 s2 :
+    observationally_eq_storage_vr s1 s2 ->
+    observationally_eq_storage_vr s2 s1.
+  Proof.
+    unfold observationally_eq_storage_vr.
+    intros (H0 & H1 & H2).
+    split; [|split].
+    - intros key. specialize (H0 key).
+      destruct (List.nth_error s2 0) as [v2|] eqn:E2; [|exact I].
+      destruct v2 as [d2| | |]; try exact I.
+      destruct (List.nth_error s1 0) as [v1|] eqn:E1; [|exact I].
+      destruct v1 as [d1| | |]; try exact I.
+      symmetry. exact H0.
+    - intros key. specialize (H1 key).
+      destruct (List.nth_error s2 1) as [v2|] eqn:E2; [|exact I].
+      destruct v2 as [d2| | |]; try exact I.
+      destruct (List.nth_error s1 1) as [v1|] eqn:E1; [|exact I].
+      destruct v1 as [d1| | |]; try exact I.
+      symmetry. exact H1.
+    - destruct (List.nth_error s2 2) as [v2|] eqn:E2; [|exact I].
+      destruct v2 as [| u2 | |]; try exact I.
+      destruct (List.nth_error s1 2) as [v1|] eqn:E1; [|exact I].
+      destruct v1 as [| u1 | |]; try exact I.
+      symmetry. exact H2.
+  Qed.
+
   (** Per-target observational bridge: stated as the walker-facing
       claim. The proof for slot 1 (the isDeprecated map) goes by
       case-split on [key =? hash]:
