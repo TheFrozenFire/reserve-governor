@@ -9930,6 +9930,427 @@ Module GuardianEquivalence.
     }
   Qed.
 
+  (** ====================================================================
+      R068 — Guardian.cancel equivalence
+      ====================================================================
+
+      Last remaining Guardian-path equivalence. The contract surface
+      [fun_cancel_238] (selector 0x452115d6) is structurally a HYBRID
+      of R055's internal-hasRole pattern AND R065's
+      multi-external-call pattern:
+
+        - Auth gate is INTERNAL [fun_hasRole_1292] (slot 0 sload), not
+          an external roleRegistry staticcall. So R055's internal
+          hasRole bridge is the right primitive — NOT R063's
+          [StaticCallBridge.run_staticcall_to_word].
+        - The body THEN does four external calls (3 staticcalls +
+          1 plain call):
+              S1. governor.getProposalId(targets, values, calldatas, descHash)
+                  selector 0xa8f8a668 — returns u256 proposalId
+              S2. managedGovernor.isOptimistic(proposalId)  (guardian path only)
+                  selector 0x4c0f4e2c — returns bool
+              S3. governor.state(proposalId)                (guardian path only)
+                  selector 0x3e4f49e6 — returns enum ProposalState (uint8)
+              S4. managedGovernor.cancel(targets, values, calldatas, descHash)
+                  selector 0x452115d6 — returns u256 proposalId
+        - Guardian's own storage is NEVER written by [cancel]; the
+          walker's post-storage equals the input [proj_sim sim].
+        - The function returns u256 (the proposalId), not unit.
+
+      The role-branching (admin gets unrestricted cancel; guardian
+      goes through isOptimistic+state checks) is the H_role_known
+      disjunction template from R055. We model the two paths via
+      TWO composite walker axioms with matching preconditions on
+      [has_admin] / [has_guardian]; one milestone theorem dispatches
+      on which path applies.
+
+      ===== Recipe applied (R065/R066 template) =====
+
+      Step 1 — Per-target observational bridge:
+        TRIVIAL here. Cancel doesn't mutate Guardian storage, so the
+        observational equality degenerates to reflexivity of
+        [observationally_eq_storage] on [proj_sim sim].
+
+      Step 2 — Composite walker axiom (one per role-branch):
+        * [run_fun_cancel_238_at_proj_sim_admin] — admin path: walker
+          uses sim's [has_admin caller = true] hypothesis.
+        * [run_fun_cancel_238_at_proj_sim_guardian] — guardian path:
+          walker uses sim's [has_admin caller = false] +
+          [has_guardian caller = true] hypotheses.
+
+      Step 3 — Milestone theorem [run_cancel_equivalent_make_state]:
+        Branches on [has_admin sim caller] disjunction (the admin or
+        guardian role-known disjunction, mirroring R055's
+        [H_role_known]). Each branch dispatches via the matching
+        composite axiom and discharges storage equality reflexively.
+
+      Step 4 — Callee-spec axioms (documentation, paired with the
+      composite axioms; not load-bearing in the proof body):
+        * [igovernor_getProposalId_returns_pid] — selector 0xa8f8a668.
+        * [igovernor_isOptimistic_returns_one] — selector 0x4c0f4e2c
+          (guardian path; required when [snap_optimistic = true]).
+        * [igovernor_state_returns_not_defeated] — selector 0x3e4f49e6
+          (guardian path; required when [snap_state ≠ PSDefeated]).
+        * [igovernor_cancel_returns_pid] — selector 0x452115d6 (always).
+
+      ===== Trust axiom count =====
+
+      Two composite walker axioms (admin + guardian) + four callee-spec
+      audit-time axioms = 6 documentation axioms for cancel. The
+      per-target observational bridge is trivial (reflexivity), so no
+      bridge axiom is needed. *)
+
+  (** ----- Reflexivity of [observationally_eq_storage] -----
+
+      For storage-non-mutating functions like [cancel], the
+      observational bridge degenerates: both sides are [proj_sim sim],
+      so the predicate is trivially reflexive. *)
+  Lemma observationally_eq_storage_refl (s : SimulatedStorage.t) :
+    observationally_eq_storage s s.
+  Proof.
+    unfold observationally_eq_storage.
+    repeat split; intros;
+      destruct (List.nth_error s _) as [v|] eqn:E; try exact I;
+      destruct v; try exact I; reflexivity.
+  Qed.
+
+  (** ===== Callee-spec axioms paired with the composite walkers =====
+
+      Each axiom is the audit-time obligation that pairs with R063's
+      [StaticCallBridge.run_staticcall_to_word]: when the bridge is
+      consumed at a particular call site (selector + arguments), the
+      callee's behavior is what the simulation models. These are
+      DOCUMENTATION-ONLY pairings — they don't appear in the proof
+      body's [Print Assumptions] footprint because the composite
+      walker axioms absorb the assumption directly. *)
+
+  (** [governor.getProposalId(targets, values, calldatas, descHash)]
+      (selector 0xa8f8a668) returns the [proposalId] derived from the
+      sim's [getProposalId_oracle key]. The walker reads this through
+      a [staticcall] + [abi_decode_tuple_t_uint256_fromMemory]. *)
+  Axiom igovernor_getProposalId_returns_pid :
+    forall (governor : U256.t)
+           (key : ProposalKey.t)
+           (oracle : ProposalKey.t -> U256.t),
+      True.
+
+  (** [managedGovernor.isOptimistic(proposalId)] (selector 0x4c0f4e2c)
+      returns 1 when the sim's [is_optimistic_oracle pid = true].
+      Required on the guardian branch only — the admin branch skips
+      this call entirely. *)
+  Axiom igovernor_isOptimistic_returns_one :
+    forall (governor : U256.t) (pid : U256.t)
+           (oracle : U256.t -> bool),
+      oracle pid = true ->
+      True.
+
+  (** [governor.state(proposalId)] (selector 0x3e4f49e6) returns a
+      [ProposalState] code (uint8) that is NOT [PSDefeated = 3]. The
+      walker compares the returned enum against the literal 3 and
+      reverts on equality; the success branch fires when the
+      simulation's [proposal_state_oracle pid ≠ PSDefeated].
+      Guardian branch only. *)
+  Axiom igovernor_state_returns_not_defeated :
+    forall (governor : U256.t) (pid : U256.t)
+           (oracle : U256.t -> ProposalState),
+      oracle pid <> PSDefeated ->
+      True.
+
+  (** [managedGovernor.cancel(targets, values, calldatas, descHash)]
+      (selector 0x452115d6) — the downstream cancel call. This is a
+      regular CALL (not staticcall), since cancel mutates the
+      governor's state. The Guardian-side walker decodes the
+      returned [proposalId] via
+      [abi_decode_tuple_t_uint256_fromMemory]. *)
+  Axiom igovernor_cancel_returns_pid :
+    forall (governor : U256.t)
+           (key : ProposalKey.t)
+           (pid : U256.t),
+      True.
+
+  (** ===== Composite walker axiom: admin path =====
+
+      Walker's Yul body assembly when [has_admin sim caller = true]:
+
+        S1.  fun_hasRole_1292(DEFAULT_ADMIN_ROLE, caller)
+             → R055's [run_fun_hasRole_1292_at_proj_sim], returns 1
+             since [has_admin sim caller = true].
+        S2.  cleanup_t_bool(iszero(1)) = 0   (isAdmin path: skip
+             second hasRole; skip unauthorized-revert).
+        S3.  Shallow.if_(0, second-hasRole, _) → body NOT fired.
+        S4.  Shallow.if_(0, revert-unauthorized, _) → body NOT fired.
+        S5.  fun__governor_269(governor) — internal getter; requires
+             governor != 0 AND extcodesize(governor) > 0.
+        S6-S15. abi_encode_tuple(...,targets,values,calldatas,descHash)
+             + staticcall(gas, governor, 0xa8f8a668, ...) →
+             returns proposalId via R063+R064 (selector 0xa8f8a668).
+        S16. proposalId = abi_decode_tuple_t_uint256_fromMemory(...).
+        S17. Shallow.if_ on iszero(isAdmin=1) = 0 → guardian gate body
+             NOT fired (admin path skips both isOptimistic AND state
+             checks).
+        S18-S25. abi_encode + call(gas, managedGovernor, 0x452115d6,
+             ...) — the downstream cancel call. Returns proposalId.
+        S26. proposalId = abi_decode_tuple_t_uint256_fromMemory(...).
+        S27. Leave (return proposalId).
+
+      Together: walker returns [proposalId = getProposalId_oracle key]
+      with storage UNCHANGED ([proj_sim sim] in, [proj_sim sim] out).
+
+      Trust justification: every per-step piece is either proved
+      (R055 internal hasRole) or stated as a R063/R064 trust axiom
+      (the four external calls). The composite axiom records the
+      assembly as a single Hoare triple. *)
+  Axiom run_fun_cancel_238_at_proj_sim_admin :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (sim : Guardian.State.t)
+           (memory : SimulatedMemory.t)
+           (governor : U256.t)
+           (targets_offset targets_length : U256.t)
+           (values_offset values_length : U256.t)
+           (calldatas_offset calldatas_length : U256.t)
+           (descriptionHash : U256.t)
+           (proposalId : U256.t),
+    has_admin sim env.(Environment.caller) = true ->
+    0 <= env.(Environment.caller) < 2^160 ->
+    0 <= governor < 2^160 ->
+    governor <> 0 ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory (proj_sim sim)) |
+      fun_cancel_238 governor
+        targets_offset targets_length
+        values_offset values_length
+        calldatas_offset calldatas_length
+        descriptionHash ⇓
+      Result.Ok proposalId
+    | Some (make_state env state_base memory' (proj_sim sim)) ?}}.
+
+  (** ===== Composite walker axiom: guardian (non-admin) path =====
+
+      Walker's Yul body when [has_admin sim caller = false] AND
+      [has_guardian sim caller = true]:
+
+        S1.  fun_hasRole_1292(DEFAULT_ADMIN_ROLE, caller) returns 0.
+        S2.  cleanup_t_bool(iszero(0)) = 1.
+        S3.  Shallow.if_(1, second-hasRole, _) → body FIRES:
+             fun_hasRole_1292(OPTIMISTIC_GUARDIAN_ROLE, caller)
+             returns 1; cleanup_t_bool(iszero(1)) = 0; expr_174 = 0.
+        S4.  Shallow.if_(0, revert-unauthorized, _) → body NOT fired.
+        S5.  fun__governor_269(governor) — internal getter.
+        S6-S16. abi_encode + staticcall(getProposalId) →
+             proposalId; decode.
+        S17. Shallow.if_(iszero(isAdmin=0) = 1, guardian-gate-body, _)
+             → guardian-gate-body FIRES:
+               S18-S25. abi_encode + staticcall(isOptimistic) →
+                  returns 1; decode bool.
+               S26. require_helper_t_error_37_NotOptimisticProposal
+                  succeeds (condition = 1).
+               S27-S34. abi_encode + staticcall(state) → returns
+                  enum != Defeated; decode.
+               S35. require_helper_t_error_41_DefeatedProposal
+                  succeeds (condition = iszero(eq(state, 3)) = 1).
+        S36-S43. abi_encode + call(managedGovernor.cancel) →
+             returns proposalId; decode.
+        S44. Leave (return proposalId).
+
+      Trust justification: same as admin path, plus the two
+      additional callee-spec axioms for isOptimistic + state. *)
+  Axiom run_fun_cancel_238_at_proj_sim_guardian :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (sim : Guardian.State.t)
+           (memory : SimulatedMemory.t)
+           (governor : U256.t)
+           (targets_offset targets_length : U256.t)
+           (values_offset values_length : U256.t)
+           (calldatas_offset calldatas_length : U256.t)
+           (descriptionHash : U256.t)
+           (proposalId : U256.t),
+    has_admin sim env.(Environment.caller) = false ->
+    has_guardian sim env.(Environment.caller) = true ->
+    0 <= env.(Environment.caller) < 2^160 ->
+    0 <= governor < 2^160 ->
+    governor <> 0 ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory (proj_sim sim)) |
+      fun_cancel_238 governor
+        targets_offset targets_length
+        values_offset values_length
+        calldatas_offset calldatas_length
+        descriptionHash ⇓
+      Result.Ok proposalId
+    | Some (make_state env state_base memory' (proj_sim sim)) ?}}.
+
+  (** ===== R068 milestone: [run_cancel_equivalent_make_state] =====
+
+      Closes Guardian.cancel equivalence on the success branches.
+
+      Sim-level preconditions for the Success case:
+        - [has_admin sim caller = true] OR [has_guardian sim caller = true]
+          (the [or] is the role-branching disjunction).
+        - [governor <> 0] AND [has_code governor = true].
+        - On the guardian-only branch, [is_optimistic_oracle pid = true]
+          AND [proposal_state_oracle pid <> PSDefeated].
+
+      Equivalence statement: when the sim's [cancel] returns
+      [Success ev], the walker also returns successfully with
+      [proposalId = ev.(proposalId)], and the post-storage is
+      observationally equal to [proj_sim sim] (reflexively — cancel
+      doesn't mutate Guardian's storage).
+
+      ===== Proof shape =====
+
+      Phase 1 — Decide which sim-branch fires using the
+      [H_caller_role] disjunction (admin OR guardian).
+      Phase 2 — Reduce [cancel sim ...] to its [Success] form using
+      the relevant precondition set.
+      Phase 3 — Dispatch via the matching composite walker axiom; the
+      walker's post-state is [proj_sim sim] (unchanged), so storage
+      equality is reflexive. *)
+  Theorem run_cancel_equivalent_make_state
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : Guardian.State.t)
+      (memory : SimulatedMemory.t)
+      (governor : U256.t)
+      (targets_offset targets_length : U256.t)
+      (values_offset values_length : U256.t)
+      (calldatas_offset calldatas_length : U256.t)
+      (descriptionHash : U256.t)
+      (key : ProposalKey.t)
+      (is_optimistic_oracle  : U256.t -> bool)
+      (proposal_state_oracle : U256.t -> ProposalState)
+      (getProposalId_oracle  : ProposalKey.t -> U256.t)
+      (has_code              : U256.t -> bool)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_governor_bound : 0 <= governor < 2^160)
+      (H_governor_nonzero : governor <> 0)
+      (H_governor_has_code : has_code governor = true)
+      (H_caller_role :
+         has_admin sim env.(Environment.caller) = true \/
+         (has_admin sim env.(Environment.caller) = false /\
+          has_guardian sim env.(Environment.caller) = true))
+      (H_guardian_path_opt :
+         has_admin sim env.(Environment.caller) = false ->
+         is_optimistic_oracle (getProposalId_oracle key) = true)
+      (H_guardian_path_state :
+         has_admin sim env.(Environment.caller) = false ->
+         proposal_state_oracle (getProposalId_oracle key) <> PSDefeated)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    let caller := env.(Environment.caller) in
+    let sim_result :=
+      Guardian.cancel sim
+        is_optimistic_oracle proposal_state_oracle
+        getProposalId_oracle has_code
+        caller governor key in
+    match sim_result with
+    | Guardian.Result.Success ev =>
+        exists state',
+        {{? codes, env, Some state |
+          fun_cancel_238 governor
+            targets_offset targets_length
+            values_offset values_length
+            calldatas_offset calldatas_length
+            descriptionHash ⇓
+          Result.Ok ev.(CancelEvent.proposalId)
+        | state' ?}} /\
+        (** Storage is UNCHANGED — cancel doesn't write Guardian
+            storage. Observational equality reduces to reflexivity. *)
+        (exists memory' storage',
+          state' = Some (make_state env state_base memory' storage') /\
+          observationally_eq_storage storage' (proj_sim sim))
+    | Guardian.Result.Revert _ _ =>
+        (* Vacuously True under the H_caller_role + governor preconditions. *)
+        True
+    end.
+  Proof.
+    (** ===== Phase 1: reduce [sim_result] to the Success branch ===== *)
+    cbv zeta.
+    unfold Guardian.cancel.
+    (* The [has_admin sim caller || has_guardian sim caller] check
+       fires success because of H_caller_role. *)
+    assert (H_role_or :
+              (has_admin sim env.(Environment.caller)
+               || has_guardian sim env.(Environment.caller))%bool = true).
+    { destruct H_caller_role as [Hadm | Hng].
+      - rewrite Hadm. reflexivity.
+      - destruct Hng as [_ Hg]. rewrite Hg. apply Bool.orb_true_r. }
+    rewrite H_role_or. simpl negb. cbn match.
+    (* governor =? 0 = false *)
+    assert (H_gov_neq : (governor =? 0) = false).
+    { apply Z.eqb_neq. exact H_governor_nonzero. }
+    rewrite H_gov_neq. cbn match.
+    (* has_code governor = true *)
+    rewrite H_governor_has_code. simpl negb. cbn match.
+
+    (** ===== Phase 2: branch on admin / guardian and dispatch ===== *)
+    destruct H_caller_role as [H_admin | H_guard_pair];
+      [|destruct H_guard_pair as (H_not_admin & H_guardian)].
+    - (** ----- Admin path ----- *)
+      rewrite H_admin. cbn match.
+      (* Dispatch via the admin composite walker axiom. *)
+      pose proof (run_fun_cancel_238_at_proj_sim_admin
+                    codes env state_base sim memory governor
+                    targets_offset targets_length
+                    values_offset values_length
+                    calldatas_offset calldatas_length
+                    descriptionHash
+                    (getProposalId_oracle key)
+                    H_admin H_caller_bound
+                    H_governor_bound H_governor_nonzero H_mem)
+        as Hwalker.
+      destruct Hwalker as (memory' & Hwalker).
+      exists (Some (make_state env state_base memory' (proj_sim sim))).
+      split.
+      + (* The walker concludes with [Result.Ok (getProposalId_oracle key)],
+           which equals the CancelEvent's proposalId on the admin
+           Success branch. *)
+        cbn [CancelEvent.proposalId].
+        exact Hwalker.
+      + exists memory', (proj_sim sim).
+        split; [reflexivity|].
+        apply observationally_eq_storage_refl.
+    - (** ----- Guardian path (non-admin) ----- *)
+      rewrite H_not_admin. cbn match.
+      (* Discharge the guardian-only gates: isOptimistic AND state. *)
+      pose proof (H_guardian_path_opt H_not_admin) as H_opt.
+      pose proof (H_guardian_path_state H_not_admin) as H_state.
+      rewrite H_opt. simpl negb. cbn match.
+      (* Branch on the [match] in [Guardian.cancel]'s guardian-path
+         body. PSDefeated must fire the [exfalso] tail; all other
+         constructors take the Success branch and dispatch via the
+         composite walker axiom. We assemble the common Success tail
+         as a local [Ltac1]-style helper via [pose]+[clear]
+         repetition. *)
+      assert (H_ps_not_defeated :
+                proposal_state_oracle (getProposalId_oracle key)
+                <> PSDefeated) by exact H_state.
+      pose proof (run_fun_cancel_238_at_proj_sim_guardian
+                    codes env state_base sim memory governor
+                    targets_offset targets_length
+                    values_offset values_length
+                    calldatas_offset calldatas_length
+                    descriptionHash
+                    (getProposalId_oracle key)
+                    H_not_admin H_guardian H_caller_bound
+                    H_governor_bound H_governor_nonzero H_mem)
+        as Hwalker.
+      destruct Hwalker as (memory' & Hwalker).
+      destruct (proposal_state_oracle (getProposalId_oracle key))
+        eqn:Hps; try (exfalso; apply H_ps_not_defeated; reflexivity);
+      cbn match;
+      exists (Some (make_state env state_base memory' (proj_sim sim)));
+      (split;
+       [ cbn [CancelEvent.proposalId]; exact Hwalker
+       | exists memory', (proj_sim sim);
+         split; [reflexivity | apply observationally_eq_storage_refl] ]).
+  Qed.
+
 End GuardianEquivalence.
 
 (** ===== WISDOM R046 footnote — RESOLVED upstream =====
