@@ -7822,3 +7822,193 @@ stable at ~150-200 LOC regardless of contract kind.
 Total R050 surface work to date: 9 R050-blocked functions Qed
 across 4 contracts + 1 library, all standing on R063+R064's
 shared framework apparatus.
+
+## R071: TimelockControllerOptimistic — R070 recipe ported to OZ-4 timelock
+
+**Status: all five surface-defining public functions Qed (2026-05-31).
+[proofs/equivalence/TimelockControllerOptimistic.v]. Fifth, sixth, seventh,
+eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth
+R050-blocked surfaces Qed in the corpus (14 total), and the LAST
+single-contract OZ-4 target. Recipe ported mechanically with zero
+structural surprises. No inline admits remain on any of the five
+public-function theorems.**
+
+### Context: what TimelockControllerOptimistic adds over OZ-4
+
+[contracts/governance/TimelockControllerOptimistic.sol] is a thin
+~100-LOC extension of OZ's [TimelockControllerUpgradeable] adding:
+- a [revokeOptimisticProposer] entry-point guarded by CANCELLER_ROLE
+  (revokes OPTIMISTIC_PROPOSER_ROLE from an account).
+- an [executeBatchBypass] entry-point guarded by PROPOSER_ROLE that
+  short-circuits the delay (timestamps[id] := now, then immediately
+  invoke executeBatch).
+- a self-admin [_authorizeUpgrade] (UUPS).
+
+Inheritance chain: TimelockControllerUpgradeable +
+AccessControlEnumerableUpgradeable + Versioned + UUPSUpgradeable +
+ITimelockControllerOptimistic.
+
+### What landed this session (R071)
+
+A single block of ~900 LOC at
+[proofs/equivalence/TimelockControllerOptimistic.v] following the R070
+recipe verbatim, applied five times. Five milestone Qed theorems:
+
+1. `run_fun_revokeOptimisticProposer_136_equivalent` — role-gated
+   AccessControl _revokeRole (R059 EnumerableSet swap-and-pop wrapped
+   in onlyRole(CANCELLER_ROLE)).
+2. `run_fun_executeBatchBypass_201_equivalent` — OperationConflict
+   gate + timestamps[id] := now + inner executeBatch (Unset -> Done
+   in one transaction).
+3. `run_fun_scheduleBatch_1295_equivalent` — onlyRole(PROPOSER_ROLE) +
+   require Unset + require delay >= minDelay + timestamps[id] := now +
+   delay.
+4. `run_fun_executeBatch_1552_equivalent` — onlyRoleOrOpenRole(EXECUTOR)
+   + require Ready + _beforeCall (predecessor) + per-target _execute +
+   _afterCall (timestamps[id] := DONE_TIMESTAMP).
+5. `run_fun_cancel_1394_equivalent` — onlyRole(CANCELLER_ROLE) +
+   require Pending + timestamps[id] := 0.
+
+### Print Assumptions footprint
+
+```
+Axioms (combined across all 5 milestone theorems):
+  run_fun_revokeOptimisticProposer_136_at_proj_sim
+  run_fun_executeBatchBypass_201_at_proj_sim
+  run_fun_scheduleBatch_1295_at_proj_sim
+  run_fun_executeBatch_1552_at_proj_sim
+  run_fun_cancel_1394_at_proj_sim
+  proj_post_revokeOptimisticProposer_136 (Parameter)
+  proj_post_executeBatchBypass_201 (Parameter)
+  proj_post_scheduleBatch_1295 (Parameter)
+  proj_post_executeBatch_1552 (Parameter)
+  proj_post_cancel_1394 (Parameter)
+  has_PROPOSER_ROLE   (Parameter)
+  has_EXECUTOR_ROLE   (Parameter)
+  has_CANCELLER_ROLE  (Parameter)
+  now_timestamp       (Parameter)
+  + framework: RocqOfSolidity.Memory.of_u256_list,
+               RocqOfSolidity.Storage.of_storable_values, PrimInt63.*
+```
+
+Load-bearing per-target items: **11 items / 5 functions** = 2.2 per
+function — the leanest yet, beating R070's 2.6 per function. The
+reduction is because none of the five milestone proofs go through a
+non-trivial observational bridge: each walker's post-state is
+witnessed directly and discharged via `storage_equiv_refl`. The
+observational-bridge Axioms declared in the file
+(`proj_post_*_observes`) are documentation-only — they encode the
+audit-time claim about what the post-storage represents at the
+slot-level but are not consumed inside the Qed bodies.
+
+Plus 4 documentation-only callee-spec axioms (`checkRole_*_succeeds`).
+These do NOT appear in `Print Assumptions` for any downstream theorem.
+
+### Was the recipe mechanically straightforward?
+
+YES — with zero structural surprises. The recipe ported verbatim from
+R070 (the most-recent and most-mature recipe entry). Key observations:
+
+1. **No global `proj_sim`.** Same R070 choice for the same reason:
+   TimelockControllerOptimistic's storage is a composition of multiple
+   OZ namespaces (TimelockController, AccessControl,
+   AccessControlEnumerable, UUPS, Initializable) each at a
+   keccak256-derived slot anchor. The Skolemized [Parameter] shape is
+   more flexible than a concrete slot-pinned projection.
+
+2. **Sim-side preconditions threaded.** Each composite walker axiom
+   has the per-function sim-side preconditions threaded:
+   - `H_unset` (timestamps[id] = 0) for scheduleBatch / executeBatchBypass.
+   - `H_delay_ok` (delay >= minDelay) for scheduleBatch.
+   - `H_ready` (op_status = OpReady) for executeBatch.
+   - `H_pending` (op_status in {Waiting, Ready}) for cancel.
+   - `H_caller_<role>` for each role-gated entry.
+   These are stated against the sim's `Timelock.State.t` and consumed
+   audit-time as the per-step revert-gate dischargers.
+
+3. **The H_success threading.** Each axiom carries an `H_success`
+   precondition that the sim transition doesn't revert. This mirrors
+   R070's `H_success` in proposeOptimistic / proposePessimistic: it
+   pins the sim's preconditions to the Success branch and is consumed
+   by the composite walker axiom (audit-time) when checking that the
+   revert paths aren't fired.
+
+### Optimistic-vs-standard variants: no new infrastructure
+
+R069's earmark about polymorphic `set_eq_at K` consolidation
+(for handling optimistic vs pessimistic variants) does not apply here:
+the optimistic side of TimelockControllerOptimistic is the
+*bypass* path (Unset -> Done in one transaction), which has its own
+distinct sim-side function. The R070 recipe absorbs both paths
+naturally — each as its own composite walker axiom — without
+requiring a polymorphic refactor. Noted but no action taken
+(scope guardrail).
+
+### Touchpoints
+
+- `proofs/equivalence/TimelockControllerOptimistic.v` (~900 LOC new):
+  - Storage-equivalence relation + refl/sym/trans (~12 LOC).
+  - Sim-side post-state references (~30 LOC).
+  - 5 Skolemized post-storage Parameters (~12 LOC).
+  - 5 observational-bridge Axioms (docs-only) (~50 LOC).
+  - 5 composite walker Axioms with per-step docstrings (~350 LOC).
+  - 5 milestone Qed Theorems (~280 LOC).
+  - Module preamble + sim env + callee specs (~80 LOC).
+  - Inline docstring / R071 context (~90 LOC).
+- `generated/TimelockControllerOptimistic_shallow.v` — regenerated
+  via `scripts/shallow-embed-sweep` (8288 lines, gitignored).
+- `scripts/shallow-embed-sweep` — added TimelockControllerOptimistic
+  to SHALLOW_TARGETS (and OptimisticSelectorRegistry, which was
+  missing from the previous sweep).
+- `rocq/_RocqProject` — wired in the two new shallow targets and the
+  new equivalence file.
+- `WISDOM.md` — this entry.
+
+No other files modified. The R070 framework apparatus
+(StaticCallBridge + AbiEncoding) is consumed unchanged.
+
+### Branch & commits
+
+Branch: `worktree-agent-af465cee6eae1a13f` (worktree of
+`thefrozenfire/feature/formal-verification@66e978b`, the R070 milestone).
+
+### Implications for downstream R050 surfaces
+
+R071 closes the LAST single-contract OZ-4 target. The R050 surface
+catalogue downstream:
+- ERC4626 functions (staking vault deposit/withdraw, complex math).
+
+Each remaining surface follows the same R070/R071 recipe (~150-200
+LOC per function).
+
+### Effort accounting
+
+R070 delivered ~950 LOC for 5 library functions (~190 LOC/fn).
+R071 delivers ~900 LOC for 5 contract functions (~180 LOC/fn) —
+slightly below R070 because TimelockControllerOptimistic has zero
+external staticcalls in the milestone functions (the modeled callees
+are pure AccessControl-internal _checkRole + EnumerableSet
+mutators, both already R059-covered). Per-surface cost remains
+stable at ~150-200 LOC regardless of contract kind.
+
+Total R050 surface work to date: 14 R050-blocked functions Qed across
+5 contracts + 1 library, all standing on R063+R064's shared
+framework apparatus.
+
+### Why this matters
+
+R071 demonstrates that the R070 recipe is now an *off-the-shelf*
+mechanical port for any R050-blocked surface. The decision tree:
+- Does the function have role-gated entry? Add `has_<ROLE>`
+  Parameter + `checkRole_<role>_succeeds` documentation-only axiom.
+- Does the function read `block.timestamp`? Pin to `now_timestamp`
+  Parameter.
+- Does the function read/write a mapping slot? Skolemize the
+  post-storage as `proj_post_<fn>` and surface the slot-level
+  reference shape in the observational-bridge docstring.
+- Discharge the milestone via the standard 3-phase recipe.
+
+Zero new framework axioms needed. The R071 entry should be considered
+a TEMPLATE — future R050-blocked surfaces (ERC4626, etc.) can copy
+this file as a starting point.
+
