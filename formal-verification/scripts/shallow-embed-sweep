@@ -65,6 +65,8 @@ SHALLOW_TARGETS=(
   "contracts/VersionRegistry.sol:VersionRegistry"
   "contracts/staking/RewardTokenRegistry.sol:RewardTokenRegistry"
   "contracts/Guardian.sol:Guardian"
+  # Phase 4: ProposalLib (governor proposal-lifecycle helpers).
+  "contracts/governance/lib/ProposalLib.sol:ProposalLib"
 )
 
 keep_json=0
