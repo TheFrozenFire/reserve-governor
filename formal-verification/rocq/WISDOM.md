@@ -3209,14 +3209,34 @@ The next session should pick ONE of the three structural lifts
 
 ## R052: AccessControlEnumerable `_values` array — projection landed, walker leaf blocked on framework-shape gap
 
-**Status: partially closed. Slots 2/3 + projection bridge landed for
-[Guardian.add_admin] (R051.c Phases 1-2; task #264). Phase 3 —
-[run_array_push_at_proj_sim] walker leaf — deferred: framework's
-storage axioms expose nested-keccak shapes ([keccak256_tuple2 key
-(Z.of_nat index)] for single-Map, [keccak256_tuple2 key2
-(keccak256_tuple2 key1 (Z.of_nat index))] for Map2), but OZ's
-[array_push] generator emits ARRAY shapes ([sstore(array, len+1)]
-where [array = set_slot]; [sstore(keccak256(array) + i, value)] at
+**Status: Option 3 RESOLVED upstream at
+`TheFrozenFire/rocq-of-solidity:integration@86d1392e86` (2026-05-30).
+Slots 2/3 + projection bridge landed for [Guardian.add_admin] (R051.c
+Phases 1-2; task #264). Phase 3 — [run_array_push_at_proj_sim] walker
+leaf — newly unblocked: the upstream patch adds [keccak256_single]
+(sim-level [Parameter]) and [run_keccak256_single] +
+[apply_run_keccak256_single] (proof-side lemma + Ltac), the minimum
+primitive that lets the [mstore(0, anchor); keccak256(0, 0x20)]
+composite emit a usable [keccak256_single anchor] symbol. The
+slot-expression sload/sstore axioms at the array body shape
+[keccak256_single anchor + offset] are intentionally left to callers
+— their shape depends on the caller's projection (whether the array
+body is exposed as a per-anchor [Dict.t U256.t U256.t], a
+[Dict.t (U256.t * U256.t) U256.t] keyed by [(anchor, offset)], or a
+multi-role [Map2] bridged to the array shape via a per-contract trust
+axiom). The smoke lemma
+[Guardian.v::ArrayDataslotBytes32.run_array_dataslot] closes the
+[array_dataslot_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr] composite
+([mstore + keccak256]) with Qed, demonstrating Option 3 composes
+cleanly with the existing memory machinery.
+
+Original framework-shape diagnosis (kept for the historical
+record): framework's storage axioms expose nested-keccak shapes
+([keccak256_tuple2 key (Z.of_nat index)] for single-Map,
+[keccak256_tuple2 key2 (keccak256_tuple2 key1 (Z.of_nat index))]
+for Map2), but OZ's [array_push] generator emits ARRAY shapes
+([sstore(array, len+1)] where [array = set_slot];
+[sstore(keccak256(array) + i, value)] at
 the keccak-derived dataslot). The two shapes are NOT
 unifiable by simple rewriting — they're different storage
 expressions.**
@@ -3327,20 +3347,49 @@ distinct symbolic terms with no shared structure.
    0x20)] composite into a [keccak256_one x] term. Then options 1
    or 2 can be built on top. Standalone ~30-line addition to
    [rocq-of-solidity/proofs/RocqOfSolidity.v].
+   **RESOLVED 2026-05-30** at
+   `TheFrozenFire/rocq-of-solidity:integration@86d1392e86`. Final
+   patch: 53 lines (15 sim + 38 proof = [keccak256_single]
+   [Parameter], [run_keccak256_single] [Admitted] proof lemma,
+   [apply_run_keccak256_single] Ltac). Smoke-tested downstream by
+   [Guardian.v::ArrayDataslotBytes32.run_array_dataslot] (Qed).
 
 ### Recommendation
 
-Option 2 is the right long-term direction — it grows the
-framework's storage taxonomy faithfully and makes EnumerableSet
-modeling cleanly first-class. But it's an upstream PR with cycle
-time. Option 1 (the slot-1-precedent extension) gets the proof
-closed THIS week at the cost of more axiomatic trust.
+**Updated 2026-05-30**: Option 3 (the single-word keccak helper)
+has landed upstream, providing the minimum primitive needed to
+land the [array_dataslot] composite. The next session attempting
+[run_grantRole_1359_equivalent] closure can now build the full
+[run_array_push_at_proj_sim] walker leaf on top of Option 3 — the
+remaining work is the per-contract sload/sstore axioms at the
+[keccak256_single anchor + offset] shape, which are intentionally
+governor-local (their projection-vs-array bridge is the same
+trust-based pattern as the slot-1 positions approximation from
+R049). Concrete next-session sketch:
 
-For the next session attempting [run_grantRole_1359_equivalent]
-closure: pick Option 1 if the timeline is tight; pick Option 2 if
-this is part of a longer-running corpus extension (e.g.,
-[Guardian.revokeRole] which compounds the array-shape issue with
-swap-and-pop tail-rewrites).
+  - In [simulations/Guardian.v] or alongside [proj_sim], declare
+    [Axiom run_sstore_at_keccak_single_offset_proj_sim] (or similar
+    name) that, given [set_slot = keccak256_tuple2 role <values-slot>],
+    discharges [sstore(keccak256_single set_slot + i, value)] to a
+    [Dict.declare_or_assign (role_values_body_map sim) (role, i)
+    value] post-state. Mirror the [sload] companion.
+  - The [array_push] walker then chains:
+    [sload(set_slot)] (length read, via [run_sload_map_u256]) →
+    [sstore(set_slot, len+1)] (length bump, via [run_sstore_map_u256]) →
+    [mstore(0, set_slot)] (memory write, via [apply_run_mstore]) →
+    [keccak256(0, 32)] (via [apply_run_keccak256_single]) →
+    [sstore(<keccak_single> + len, value)] (body write, via the
+    new per-contract axiom above) → final state-equality via
+    [proj_sim_add_admin_not_in].
+
+(Historical recommendation, kept for reference: Option 2 is the
+right long-term direction — it grows the framework's storage
+taxonomy faithfully and makes EnumerableSet modeling cleanly
+first-class. With Option 3 landed Option 2 becomes a follow-on
+clean-up, not a blocker. Option 1 (the slot-1-precedent extension)
+remains available for sessions that want to skip even the
+per-contract trust axiom; with Option 3 in place its surface area
+is smaller.)
 
 ### Touchpoints
 

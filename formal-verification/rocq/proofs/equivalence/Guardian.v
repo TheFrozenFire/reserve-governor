@@ -695,6 +695,53 @@ Module GuardianEquivalence.
 
   End MappingIndexAccessAddressBool.
 
+  (** ----- ArrayDataslot — single-word keccak smoke (R052 Option 3) -----
+
+      [fun_add_2085] / [fun__add_1614] invokes
+      [array_dataslot_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr ptr] to
+      derive the array body's anchor slot — the sequence is
+      [mstore(0, ptr); keccak256(0, 0x20)] (a SINGLE-word keccak).
+      Pre-R052 the framework only exposed [keccak256_tuple2] (a
+      two-word keccak), so this composite had no leaf to land
+      against. The upstream addition of [keccak256_single] +
+      [run_keccak256_single] (in rocq-of-solidity's
+      [simulations/RocqOfSolidity.v] and [proofs/RocqOfSolidity.v])
+      closes the gap. This lemma is the in-repo smoke test that the
+      primitive composes cleanly with the existing memory machinery
+      — same shape as [MappingIndexAccess]'s two-word case. *)
+  Module ArrayDataslotBytes32.
+
+    Lemma run_array_dataslot codes env state_base
+        (ptr : U256.t) (storage : SimulatedStorage.t)
+        (memory : SimulatedMemory.t)
+        (H_mem : exists w0 rest, memory = w0 :: rest) :
+      let st := make_state env state_base memory storage in
+      exists w0' rest',
+      {{? codes, env, Some st |
+        array_dataslot_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr ptr ⇓
+        Result.Ok (keccak256_single ptr)
+      | Some (make_state env state_base (w0' :: rest') storage) ?}}.
+    Proof.
+      destruct H_mem as (w0 & rest & ->).
+      do 2 eexists.
+      unfold array_dataslot_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr.
+      l. {
+        lu. l. {
+          c. { apply_run_mstore. }
+          CanonizeState.execute.
+          p.
+        }
+        l. {
+          c. { apply_run_keccak256_single. }
+          p.
+        }
+        p.
+      }
+      p.
+    Qed.
+
+  End ArrayDataslotBytes32.
+
   (** ----- Bool-path leaves (offset-0 static variants) ----- *)
 
   Lemma run_cleanup_from_storage_t_bool codes env state v :
