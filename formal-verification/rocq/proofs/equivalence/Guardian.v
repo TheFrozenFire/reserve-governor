@@ -877,12 +877,13 @@ Module GuardianEquivalence.
       [proj_sim sim] shape). *)
   Axiom run_sload_role_values_length_at_proj_sim_post :
     forall codes env state_base memory sim (role : U256.t)
-        (length_map' : Dict.t U256.t U256.t),
+        (length_map' : Dict.t U256.t U256.t)
+        (body_map' : Dict.t (U256.t * U256.t) U256.t),
     let proj_sim_post :=
       [ StorableValue.Map2 (role_member_map sim);
         StorableValue.Map2 (role_positions_map sim);
         StorableValue.Map length_map';
-        StorableValue.Map2 (role_values_body_map sim) ] in
+        StorableValue.Map2 body_map' ] in
     {{? codes, env, Some (make_state env state_base memory proj_sim_post) |
       Stdlib.sload (keccak256_tuple2 role 1) ⇓
       Result.Ok (StorableValue.map_get_u256 length_map' role)
@@ -1130,9 +1131,11 @@ Module GuardianEquivalence.
          generic over the stored value. For OZ's [add_admin] consumers
          the value is an Address (< 2^160 < 2^256). *)
       (H_value_u256 : 0 <= value < 2 ^ 256)
-      (* The memory layout has at least one word so mstore at offset 0
-         lands cleanly. *)
-      (H_mem : exists w0 rest, memory = w0 :: rest) :
+      (* The memory layout has at least two words so the post-state
+         memory ([keccak256_tuple2 role 1 :: w1 :: rest]) has a 2-word
+         handle for composability (the [_add_1614] caller's MIA call
+         needs 2 scratch words). *)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let oldLen :=
       StorableValue.map_get_u256 (role_values_length_map sim) role in
     let length_map' :=
@@ -1146,23 +1149,24 @@ Module GuardianEquivalence.
         StorableValue.Map2 (role_positions_map sim);
         StorableValue.Map length_map';
         StorableValue.Map2 body_map' ] in
-    exists memory' state',
+    exists w1' rest' state',
     {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
       array_push_from_t_bytes32_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr
         (keccak256_tuple2 role 1) value ⇓
       Result.Ok tt
     | Some state' ?}}
-    /\ state' = make_state env state_base memory' proj_sim'.
+    /\ state' = make_state env state_base
+                  (keccak256_tuple2 role 1 :: w1' :: rest') proj_sim'.
   Proof.
     (** R051.c Phase 3 walker. See the docstring above for the
         eight-step outline; below is the concrete assembly. *)
     intros oldLen length_map' body_map' proj_sim'.
-    destruct H_mem as (w0 & rest & ->).
+    destruct H_mem as (w0 & w1 & rest & ->).
     (* The mstore inside array_dataslot writes [keccak256_tuple2 role 1]
-       to memory word 0; afterwards memory = (kec : rest). Pose the
-       post-state memory ahead of time so we can use it for the
+       to memory word 0; afterwards memory = (kec :: w1 :: rest). Pose
+       the post-state memory ahead of time so we can use it for the
        existential witness at the end. *)
-    set (mem_after_mstore := keccak256_tuple2 role 1 :: rest).
+    set (mem_after_mstore := keccak256_tuple2 role 1 :: w1 :: rest).
     (* The post-state has the body sstored on top of the length sstore.
        Pose it explicitly to drive the existential witness. *)
     set (proj_sim_after_length :=
@@ -1246,7 +1250,7 @@ Module GuardianEquivalence.
       unfold Pure.lt. destruct (Z.ltb_spec oldLen (oldLen + 1));
       [reflexivity | lia]. }
     (* Final witnesses for the existentials. *)
-    exists mem_after_mstore.
+    exists w1, rest.
     eexists.
     split; [|reflexivity].
     unfold array_push_from_t_bytes32_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr,
@@ -3092,6 +3096,266 @@ Module GuardianEquivalence.
       | |- {{? _, _, _ |
             LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
           c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== R053 Phase 2 sub-wrapper: [run_fun__add_1614_at_proj_sim_not_in]
+      =====
+
+      [fun__add_1614(set_slot, value)] is OZ EnumerableSet's [_add]
+      internal. In the not-in-set branch:
+
+        1. [_contains(set_slot, value)] → 0  (positions sload returns 0)
+        2. iszero(0) = 1, cleanup_t_bool(1) = 1, switch takes else arm
+        3. [array_push(set_slot, value)] — body+length sstore chain
+           (R051.c).
+        4. Re-read [array_length(set_slot)] = oldLen + 1.
+        5. MIA on [set_slot + 1] with key=value → positions slot expr.
+        6. [update_storage_value(positions_slot, oldLen+1)] — writes
+           the new position into slot 1's positions sub-mapping.
+        7. Return 0x01.
+
+      Composes three Qed'd witnesses:
+        - [run_fun__contains_1760_at_proj_sim_not_in] for step 1.
+        - [run_array_push_at_proj_sim] for step 3.
+        - [run_update_storage_value_t_uint256_at_positions_proj_sim]
+          for step 6.
+
+      Plus the array-length post-bump axiom
+      [run_sload_role_values_length_at_proj_sim_post] for the re-read
+      against the post-push 4-slot projection.
+
+      The post-state has slot 2 (length) bumped to [oldLen+1], slot 3
+      (body) with [(role, oldLen) := value], and slot 1 (positions)
+      with [(role, value) := oldLen+1]. Memory shape is left
+      existential.
+
+      The wrapper is set up for the call from [fun_add_2085] where
+      [set_slot = keccak256_tuple2 role 1]. *)
+  Lemma run_fun__add_1614_at_proj_sim_not_in
+      codes env state_base memory sim (role value : U256.t)
+      (H_value_u256 : 0 <= value < 2^256)
+      (H_not_in :
+         StorableValue.map_get_u256 (role_positions_map sim) (role, value) = 0)
+      (H_len_bound :
+         StorableValue.map_get_u256 (role_values_length_map sim) role
+         + 1 < 18446744073709551616)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    exists state',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__add_1614 (keccak256_tuple2 role 1) value ⇓
+      Result.Ok 1
+    | Some state' ?}}.
+  Proof.
+    (* The slot expression for the [+0] and [+1] field-offset writes
+       reduces under [Pure_add_keccak_offset]. *)
+    assert (H_pa_kec_0 :
+              Pure.add (keccak256_tuple2 role 1) 0
+              = keccak256_tuple2 role 1).
+    { rewrite Pure_add_keccak_offset by lia. lia. }
+    assert (H_pa_kec_1 :
+              Pure.add (keccak256_tuple2 role 1) 1
+              = keccak256_tuple2 role 1 + 1).
+    { apply Pure_add_keccak_offset. lia. }
+    (* Set oldLen / length_map' / body_map' for the state-tracking
+       through the walker. *)
+    set (oldLen := StorableValue.map_get_u256
+                     (role_values_length_map sim) role).
+    set (length_map' := Dict.declare_or_assign
+                          (role_values_length_map sim) role (oldLen + 1)).
+    set (body_map' := Dict.declare_or_assign
+                        (role_values_body_map sim) (role, oldLen) value).
+    (* oldLen bounds (same proof as [run_fun_add_2085_at_proj_sim]). *)
+    assert (H_oldLen_bound : oldLen < 18446744073709551616) by
+      (unfold oldLen; lia).
+    assert (H_oldLen_nn : 0 <= oldLen).
+    { unfold oldLen, StorableValue.map_get_u256, role_values_length_map.
+      simpl Dict.get.
+      destruct (Dict.Eq.eqb role DEFAULT_ADMIN_ROLE_bytes32);
+        [apply Nat2Z.is_nonneg|].
+      destruct (Dict.Eq.eqb role OPTIMISTIC_GUARDIAN_ROLE_bytes32);
+        [apply Nat2Z.is_nonneg|].
+      destruct (Dict.Eq.eqb role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32);
+        [apply Nat2Z.is_nonneg|].
+      lia. }
+    (* [oldLen + 1] fits in u256 — needed for the positions write bound. *)
+    assert (H_newLen_u256 : 0 <= oldLen + 1 < 2 ^ 256) by lia.
+    (* Step 1: contains_1760 walker — returns 0, memory shape preserved
+       (modulo MIA scratch). *)
+    pose proof (run_fun__contains_1760_at_proj_sim_not_in
+                  codes env state_base memory sim role value
+                  H_not_in H_mem) as Hcontains.
+    destruct Hcontains as (w0_c & w1_c & rest_c & Hcontains).
+    set (mem_after_c := w0_c :: w1_c :: rest_c).
+    (* Step 3: array_push walker — bumps length+body. The walker needs
+       a 2-word memory layout (it does an [mstore(0, anchor)] then
+       exposes the surviving tail). Our 2-word [mem_after_c] satisfies
+       that. Returns a post-state with the post-push 4-slot projection
+       and memory of the form [keccak256_tuple2 role 1 :: w1' :: rest']. *)
+    assert (H_mem_after_c_2 :
+              exists w0 w1 rest, mem_after_c = w0 :: w1 :: rest).
+    { unfold mem_after_c. eauto 10. }
+    pose proof (run_array_push_at_proj_sim
+                  codes env state_base mem_after_c sim role value
+                  H_len_bound H_value_u256 H_mem_after_c_2) as Hpush.
+    cbv zeta in Hpush.
+    fold oldLen length_map' body_map' in Hpush.
+    destruct Hpush as (w1_p & rest_p & state_after_push & Hpush & Hstate_after_push).
+    set (mem_after_push := keccak256_tuple2 role 1 :: w1_p :: rest_p).
+    set (proj_sim_after_push :=
+           [ StorableValue.Map2 (role_member_map sim);
+             StorableValue.Map2 (role_positions_map sim);
+             StorableValue.Map length_map';
+             StorableValue.Map2 body_map' ]).
+    fold mem_after_push proj_sim_after_push in Hstate_after_push.
+    rewrite Hstate_after_push in Hpush.
+    (* MIA leaf for the positions sub-mapping (step 5), against the
+       post-push 4-slot projection — uses the 2-word memory handle. *)
+    pose proof (MappingIndexAccessBytes32Uint256.run_mapping_index_access
+                  codes env state_base
+                  (keccak256_tuple2 role 1 + 1) value
+                  proj_sim_after_push
+                  mem_after_push
+                  (ex_intro _ (keccak256_tuple2 role 1)
+                    (ex_intro _ w1_p
+                      (ex_intro _ rest_p eq_refl)))) as Hmia.
+    destruct Hmia as (w0_m & w1_m & rest_m & Hmia).
+    set (mem_after_mia := w0_m :: w1_m :: rest_m).
+    (* Repackage the MIA with [Pure.add _ 1] surface shape. *)
+    assert (Hmia' :
+      {{? codes, env,
+          Some (make_state env state_base mem_after_push proj_sim_after_push)
+      | mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_uint256_ₓ_of_t_bytes32
+          (Pure.add (keccak256_tuple2 role 1) 1) value
+        ⇓ Result.Ok (keccak256_tuple2 value (keccak256_tuple2 role 1 + 1))
+      | Some (make_state env state_base mem_after_mia proj_sim_after_push) ?}}).
+    { rewrite H_pa_kec_1. exact Hmia. }
+    (* Pre-pose the post-bump length sload: at [keccak256_tuple2 role 1]
+       against the post-push 4-slot state, returns
+       [map_get_u256 length_map' role = oldLen + 1]. *)
+    pose proof (run_sload_role_values_length_at_proj_sim_post
+                  codes env state_base mem_after_push sim role
+                  length_map' body_map')
+      as Hsload_len_post.
+    cbv zeta in Hsload_len_post.
+    fold proj_sim_after_push in Hsload_len_post.
+    assert (H_get_length_map' :
+              StorableValue.map_get_u256 length_map' role = oldLen + 1).
+    { unfold length_map', StorableValue.map_get_u256.
+      generalize (role_values_length_map sim) as d. intro d.
+      induction d as [|[k v] rest_d IH].
+      - cbn.
+        change (Dict.Eq.eqb role role) with (role =? role).
+        rewrite Z.eqb_refl. reflexivity.
+      - cbn -[Z.eqb].
+        change (Dict.Eq.eqb k role) with (k =? role).
+        destruct (Z.eqb_spec k role) as [Hek | Hne].
+        + subst k. cbn -[Z.eqb].
+          change (Dict.Eq.eqb role role) with (role =? role).
+          rewrite Z.eqb_refl. reflexivity.
+        + cbn -[Z.eqb].
+          change (Dict.Eq.eqb role k) with (role =? k).
+          replace (role =? k) with false by
+            (symmetry; apply Z.eqb_neq; lia).
+          exact IH. }
+    rewrite H_get_length_map' in Hsload_len_post.
+    (* Step 6: positions write. We feed it the [length_map'] threaded
+       in, the unchanged [role_positions_map sim] as positions_map_in,
+       and [body_map'] as body_map'. New position = oldLen + 1. *)
+    pose proof (run_update_storage_value_t_uint256_at_positions_proj_sim
+                  codes env state_base mem_after_mia sim role value
+                  (oldLen + 1) length_map'
+                  (role_positions_map sim) body_map' H_newLen_u256)
+      as Hpos.
+    cbv zeta in Hpos.
+    (* Post-state for the existential. *)
+    eexists.
+    (* Unfold the body and prepare for the walker. We leave
+       [fun__contains_1760], [array_push_*], and
+       [update_storage_value_*] FOLDED so the corresponding witnesses
+       ([Hcontains], [Hpush], [Hpos]) dispatch the entire call (rather
+       than have the walker step through the body).
+
+       [array_length_t_arrayₓ_t_bytes32_ₓdyn_storage] IS unfolded
+       eagerly so its body (a single [sload]) flows into the generic
+       sload arm. *)
+    unfold fun__add_1614,
+           array_length_t_arrayₓ_t_bytes32_ₓdyn_storage.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
+    (* Setup: switch δ = cleanup_t_bool (iszero 0) = cleanup_t_bool 1
+       = 1 ≠ 0, so the else arm fires (the push branch). *)
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.strong_let_, M.generic_let
+      | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.let_, M.generic_let
+      | |- {{? _, _, _ | M.do _ _ ⇓ _ | _ ?}} =>
+          unfold M.do
+      | |- {{? _, _, _ | Shallow.let_state _ _ ⇓ _ | _ ?}} =>
+          unfold Shallow.let_state
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (LowM.Let _ _) _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      (* Step 1: contains call — use the pre-posed witness. *)
+      | |- {{? _, _, _ |
+            LowM.Call (fun__contains_1760 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hcontains | ]
+      (* iszero, eq, cleanup_t_bool — pure arithmetic. *)
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.iszero, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold cleanup_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      (* add(set_slot, 0) and add(set_slot, 1) — pure. *)
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      (* convert_array_bytes32_storage_to_ptr — no-op. *)
+      | |- {{? _, _, _ |
+            LowM.Call (convert_array_t_arrayₓ_t_bytes32_ₓdyn_storage_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_array_bytes32_storage_to_ptr | ]
+      (* Step 3: array_push call. The slot is [Pure.add (kec) 0];
+         rewrite away to [kec], then dispatch via the pre-posed
+         witness. *)
+      | |- {{? _, _, _ |
+            LowM.Call (array_push_from_t_bytes32_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr _ _) _ ⇓ _ | _ ?}} =>
+          first [ rewrite H_pa_kec_0 | idtac ];
+          c; [ exact Hpush | ]
+      (* Step 4: post-push length re-read = sload at set_slot. The
+         body of [array_length_t_arrayₓ_t_bytes32_ₓdyn_storage] is a
+         single [sload(value)]; the wrapper is unfolded ahead so the
+         sload arm fires directly. Slot is [Pure.add (kec) 0];
+         rewrite to [kec] first then dispatch via [Hsload_len_post]. *)
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload (Pure.add (keccak256_tuple2 _ 1) 0)) _ ⇓ _ | _ ?}} =>
+          rewrite H_pa_kec_0;
+          c; [ exact Hsload_len_post | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload (keccak256_tuple2 _ 1)) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hsload_len_post | ]
+      (* Step 5: MIA dispatch — use pre-posed witness. *)
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_uint256_ₓ_of_t_bytes32 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia' | apply RunO.Pure ]
+      (* Step 6: positions write — use pre-posed witness. *)
+      | |- {{? _, _, _ |
+            LowM.Call
+              (update_storage_value_offset_0_t_uint256_to_t_uint256 _ _) _
+            ⇓ _ | _ ?}} =>
+          c; [ exact Hpos | ]
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
           apply RunO.Pure
       | |- _ => s
