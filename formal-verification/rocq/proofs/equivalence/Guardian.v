@@ -985,19 +985,22 @@ Module GuardianEquivalence.
       Critical missing infrastructure (each is a separate lemma to be
       landed before this Qed):
 
-        (A) Slot 1+ modeling: [proj_sim] currently only models slot 0
-            (the [_roles] members Map2). [AccessControlEnumerable]'s
-            [_roleMembers] EnumerableSet sits at slot 1+ and is
-            touched by [fun__grantRole_704] on the success path via
-            [fun_add_2085]. Either extend [proj_sim] to slot 1 (with
-            a corresponding EnumerableSet sim-side lift) OR thread an
-            unconstrained slot-1 tail through the walker.
+        (A) [CLOSED — task #248] Slot 1+ modeling: [proj_sim] now
+            covers BOTH slot 0 (the [_roles] members Map2) and slot 1
+            (the [_roleMembers] positions Map2; see [positions_for_role]
+            and [role_positions_map] above). The [_values] length cell
+            and array body slots are not modelled — they're either
+            reconstructable from the positions map plus list length, or
+            unobserved by the grant equivalence path.
 
-        (B) Projection-side bridge: [project_sim_to_ac]-after-
-            [add_member]-on-sim equals [set_entry]-after-
-            [project_sim_to_ac]. Mechanical induction on the [::]
-            shape; ~30 lines. Companion to the existing
-            [project_sim_to_ac_hasRole_admin] lemma.
+        (B) [CLOSED — task #248] Projection-side bridge:
+            [proj_sim_add_admin_not_in] (and idempotency companion
+            [proj_sim_add_admin_in]) equates the projection of the
+            post-[add_admin] sim to a cons-prefixed projection of the
+            pre-add sim, in both slots simultaneously. Closed by
+            induction on the role list, with
+            [addr_in_false_iff_not_In] as the bridge between the
+            sim's Boolean membership and the Coq [In] predicate.
 
         (C) Walker leaves: [run_update_storage_value_offset_0_t_bool_to_t_bool]
             (R040 pattern for the bool-slot sstore — needs
@@ -1013,12 +1016,15 @@ Module GuardianEquivalence.
             [Stdlib.caller] primitive and returns [env.(Environment.caller)].
             Short leaf composed against the function's zero-init prelude.
 
-      Until (A)-(D) land, the proof body below sets up the R047
+      Status as of task #248: residuals (A) and (B) closed. (C)
+      and (D) remain. The proof body below sets up the R047
       case-split structure (case on [AccessControl.grantRole]'s
       result) and poses [run_hasRole_equivalent] for the modifier's
-      auth check, then [Admitted]s with documented residuals. This
-      is a scaffold, not a Qed — but the structure is faithful to the
-      eventual proof. *)
+      auth check, then [Admitted]s on residuals (C)+(D). The
+      multiplicative unblocker has fired: the projection now has a
+      slot-1 entry the walker can talk about, and the bridge lemma
+      [proj_sim_add_admin_not_in] gives the post-state equality
+      shape that the success branch will need to discharge. *)
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -1105,9 +1111,12 @@ Module GuardianEquivalence.
                     DEFAULT_ADMIN_ROLE_bytes32 (env.(Environment.caller))
                     memory H_role H_account H_mem) as Hhr_admin. *)
 
-    (** Residuals (A)-(D) are not closable in the current proof
-        state; each is a discrete piece of work documented above.
-        Pending those, the theorem statement and scaffold remain. *)
+    (** Residuals (C) and (D) remain; (A) and (B) closed in task
+        #248. (C) is the EnumerableSet-mutator walker (fun_add_2085
+        + fun__add_1614) and the R040-shape bool-slot sstore
+        wrapper. (D) is the [run_fun__msgSender_3197] caller leaf.
+        Once (C)+(D) land, the scaffold above composes into a Qed via
+        [proj_sim_add_admin_not_in] for the post-state equality. *)
   Admitted.
 
 End GuardianEquivalence.

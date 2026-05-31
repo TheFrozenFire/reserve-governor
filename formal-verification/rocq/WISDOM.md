@@ -2872,3 +2872,94 @@ modifier, use the standalone-consistency shape.
   the shallow form unreachable for OZ AccessControl mutators;
   blocks the natural EnumerableSet binding via
   AccessControlEnumerable.
+
+## R049: Multi-slot proj_sim — cons-to-front Map2 encoding for EnumerableSet positions
+
+**Status: closed. Landed in
+`proofs/equivalence/Guardian.v::proj_sim` (slot 1) and
+`proj_sim_add_admin_not_in` (bridge lemma); task #248.**
+
+When a sim collapses an OZ `AccessControlEnumerable`-derived role
+machinery into one `list Address` per named role, the natural
+storage projection is multi-slot:
+
+  - slot 0 = `Map2 (role, account) -> 0/1` (the `_roles` members
+    sub-mapping; reads close the `hasRole` view).
+  - slot 1 = `Map2 (role, value) -> position` (the `_roleMembers`
+    EnumerableSet `_positions` sub-mapping; reads come up only on
+    `_remove`'s gate check, but the slot is touched on every `add`).
+
+The catch: OZ's `EnumerableSet._add` appends to the end of the
+internal `_values` array and assigns `position = new_length`. A sim
+that conses to the FRONT (e.g., `add_role lst a = a :: lst`) has a
+different ordering. To get a clean inductive bridge lemma without
+contorting the sim, define `positions_for_role role (a :: rest) =
+((role, a), Z.of_nat (List.length rest) + 1) :: positions_for_role
+role rest` — i.e., assign the new position based on the AT-TIME-OF-
+INSERT tail length. Under this convention the sim's cons-to-front
+gives the same set of (key, value) pairs the OZ append-and-assign
+would, just enumerated in reverse insertion order.
+
+The bridge lemma then reads:
+
+```coq
+~ In addr s.(State.admins) ->
+proj_sim (add_admin s addr) =
+  [ Map2 (((role, addr), 1) :: role_member_map s);
+    Map2 (((role, addr), length admins + 1) :: role_positions_map s) ].
+```
+
+Proof closes by `unfold; addr_in_false_iff_not_In; reflexivity`. The
+`addr_in_X_iff_In` pair (boolean ↔ Coq `In`) is the canonical bridge
+between the sim's Boolean membership checks and the projection's
+`In`-flavored hypothesis.
+
+### When to use
+
+- The sim has a list-of-elements per role/category, with cons-style
+  add and the OZ implementation uses an EnumerableSet (or open-coded
+  equivalent — see RewardTokenRegistry).
+- The projection covers the `_roles`/`_positions` slots faithfully
+  but not the `_values` array body (which is unobserved by the
+  equivalence-of-interest path).
+
+### What this doesn't address
+
+- The `_values` array length cell and the `_values[i]` array body
+  slots. They live at `keccak256(set_slot)` (length) and
+  `keccak256(set_slot) + i` (body). If a future equivalence touches
+  `getRoleMember(role, idx)` or `getRoleMemberCount`, extend
+  `proj_sim` with additional slots.
+- The walker-side bridge: this lemma states the post-state shape
+  but doesn't run the sstore. The companion walker proof (residual C
+  in the task #248 plan) uses
+  `Storage.run_sstore_map2_u256` which produces a
+  `Dict.declare_or_assign`-shaped post-map; the conversion from
+  that shape to the cons-prefixed shape used by this bridge needs a
+  separate `declare_or_assign_eq_cons_when_absent` lemma (~5 lines,
+  by induction on the dict).
+
+### Touchpoints
+
+- `proofs/equivalence/Guardian.v` — multi-slot `proj_sim`,
+  `positions_for_role`, `role_positions_map`,
+  `addr_in_{false,true}_iff_{not_,}In`,
+  `role_{member,positions}_map_add_admin_not_in`,
+  `proj_sim_add_admin_not_in` (the headline B-residual closure),
+  `proj_sim_add_admin_in` (idempotency companion).
+- The pattern transposes to revoke (slot 1 update is more complex —
+  OZ's swap-and-pop reshuffles the last element into the removed
+  slot; the position invariant needs a tail-rewrite). Defer until a
+  revoke equivalence is needed.
+
+### Cross-references
+
+- R044 — outer-wrapper proof patterns (this bridge is the
+  companion to a wrapper-walker pose).
+- R046 — the upstream `shallow_embed.py` fix that made the slot-0
+  sstore body re-emit; same fix recovers the slot-1 EnumerableSet
+  mutator bodies.
+- R048 — pure-function-library shape that EnumerableSet itself fits;
+  this R049 entry is about EnumerableSet's CONSUMER (the
+  `AccessControlEnumerable` pattern), where the set is woven into
+  a contract's `proj_sim` rather than reasoned about in isolation.
