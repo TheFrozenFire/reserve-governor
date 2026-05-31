@@ -744,6 +744,201 @@ Module VersionRegistryEquivalence.
     repeat (lu || cu || p).
   Qed.
 
+  (** ----- Bool sstore wrapper at slot 1 (R040 pattern, flat-Map flavor)
+
+      The slot-1 sstore in [fun_deprecateVersion_187]'s success arm fires:
+        update_storage_value_offset_0_t_bool_to_t_bool slot 1
+      where [slot = keccak256_tuple2 versionHash 1] — i.e., the
+      [isDeprecated[versionHash]] address. The slot expression IS the
+      framework's [Map U256→U256] shape at index 1, so the framework's
+      [run_sstore_map_u256] axiom applies cleanly after a list-shape
+      unfold (no per-shape trust axiom needed, mirroring Guardian's
+      slot-0 [Map2] case).
+
+      Below land two pieces, matching Guardian's R051.b structure but
+      adapted for the flat-Map (not Map2) flavor and the 3-slot proj_sim
+      layout:
+
+      - [run_sstore_isDeprecated_at_proj_sim]: thin wrapper baking in
+        [proj_sim]'s 3-slot list shape so the [List.update_nth] match
+        reduces and the wrapper's conclusion is a clean Hoare triple.
+      - [run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim]:
+        the composite walker leaf for the full
+        [update_storage_value_offset_0_t_bool_to_t_bool] body. *)
+
+  (** ----- Sub-lemmas re-ported from Guardian ----- *)
+
+  (** [convert_t_bool_to_t_bool 1] = [cleanup_t_bool 1] = 1. *)
+  Lemma run_cleanup_t_bool_of_1 codes env state :
+    {{? codes, env, Some state |
+      cleanup_t_bool 1 ⇓ Result.Ok 1
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_bool.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_bool_to_t_bool_of_1 codes env state :
+    {{? codes, env, Some state |
+      convert_t_bool_to_t_bool 1 ⇓ Result.Ok 1
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_bool_to_t_bool.
+    lu. l. { c. { apply run_cleanup_t_bool_of_1. } p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** [prepare_store_t_bool v = v] — Yul body is a plain assignment. *)
+  Lemma run_prepare_store_t_bool codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      prepare_store_t_bool v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold prepare_store_t_bool.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** [shift_left_0 v = shl 0 v = v] for [v ∈ [0, 2^256)]. *)
+  Lemma run_shift_left_0 codes env state (v : U256.t)
+      (H_v : 0 <= v < 2^256) :
+    {{? codes, env, Some state |
+      shift_left_0 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_left_0.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.shl.
+    rewrite Z.mul_1_r.
+    rewrite Z.mod_small by exact H_v.
+    apply RunO.PureEq; reflexivity.
+  Qed.
+
+  (** [update_byte_slice_1_shift_0 prev 1 = 1] for [prev ∈ {0, 1}]. *)
+  Lemma run_update_byte_slice_1_shift_0_bool_1
+      codes env state (prev : U256.t)
+      (H_prev : prev = 0 \/ prev = 1) :
+    {{? codes, env, Some state |
+      update_byte_slice_1_shift_0 prev 1 ⇓ Result.Ok 1
+    | Some state ?}}.
+  Proof.
+    unfold update_byte_slice_1_shift_0.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (shift_left_0 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_shift_left_0;
+               change (2^256) with 115792089237316195423570985008687907853269984665640564039457584007913129639936;
+               lia | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.not _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.not, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.and _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.and, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.or _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.or, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    s.
+    apply RunO.PureEq; [|reflexivity].
+    destruct H_prev as [-> | ->]; vm_compute; reflexivity.
+  Qed.
+
+  (** ----- Slot-1 flat-Map sstore wrapper (R040 pattern) -----
+
+      The framework's [run_sstore_map_u256] gives the sstore at slot
+      [keccak256_tuple2 key (Z.of_nat index)] — for [index = 1],
+      exactly the [isDeprecated[key]] address. The wrapper bakes in
+      [proj_sim]'s 3-slot list shape so the [List.update_nth] match
+      reduces. *)
+  Lemma run_sstore_isDeprecated_at_proj_sim
+      codes env state_base memory sim (key value : U256.t) :
+    let isDep_map' :=
+      Dict.declare_or_assign
+        (isDeprecated_map sim.(VersionRegistry.State.history))
+        key value in
+    let proj_sim' :=
+      [ StorableValue.Map (deployments_map
+                             sim.(VersionRegistry.State.history));
+        StorableValue.Map isDep_map';
+        StorableValue.U256 (latestVersion_value sim) ] in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      Stdlib.sstore (keccak256_tuple2 key 1) value ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_sim') ?}}.
+  Proof.
+    cbv zeta.
+    pose proof (Storage.run_sstore_map_u256
+                  (proj_sim sim) 1%nat key value
+                  codes env (make_state env state_base memory (proj_sim sim)))
+      as H.
+    unfold make_state in H at 1.
+    specialize (H (State.get_current_storage_with_current_storage_eq _ _ _)).
+    unfold proj_sim in H at 1.
+    simpl List.nth_error in H.
+    cbv beta iota in H.
+    simpl List.update_nth in H.
+    cbv beta iota in H.
+    change (Z.of_nat 1) with 1 in H.
+    unfold make_state in H at 2.
+    rewrite CanonizeState.with_current_storage_twice_eq in H.
+    unfold make_state at 2.
+    exact H.
+  Qed.
+
+  (** ----- Composite bool sstore wrapper at slot 1's flat Map (R040) -----
+
+      Composes [convert / sload / prepare / update_byte_slice / sstore]
+      into a single Hoare triple. The pre-state's slot-1 value is
+      bool-domain ([map_get_u256 (isDeprecated_map history) key ∈ {0, 1}],
+      proved by [isDeprecated_map_values_bool]). The post-state's slot-1
+      becomes [declare_or_assign ... key 1]. *)
+  Lemma run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim
+      codes env state_base memory sim (key : U256.t) :
+    let isDep_map' :=
+      Dict.declare_or_assign
+        (isDeprecated_map sim.(VersionRegistry.State.history))
+        key 1 in
+    let proj_sim' :=
+      [ StorableValue.Map (deployments_map
+                             sim.(VersionRegistry.State.history));
+        StorableValue.Map isDep_map';
+        StorableValue.U256 (latestVersion_value sim) ] in
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      update_storage_value_offset_0_t_bool_to_t_bool
+        (keccak256_tuple2 key 1) 1 ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_sim') ?}}.
+  Proof.
+    cbv zeta.
+    unfold update_storage_value_offset_0_t_bool_to_t_bool.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    pose proof (isDeprecated_map_values_bool
+                  sim.(VersionRegistry.State.history) key) as H_prev_bool.
+    cbv zeta in H_prev_bool.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_bool_to_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_bool_to_t_bool_of_1 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_sload_isDeprecated_at_proj_sim | ]
+      | |- {{? _, _, _ |
+            LowM.Call (prepare_store_t_bool _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_prepare_store_t_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (update_byte_slice_1_shift_0 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_update_byte_slice_1_shift_0_bool_1;
+               exact H_prev_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply (run_sstore_isDeprecated_at_proj_sim
+                       codes env state_base memory sim key 1) | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
+
   (** ----- Phase 3.2 — deprecateVersion mutator equivalence scaffold -----
 
       Target: prove [fun_deprecateVersion_187] is equivalent to the
