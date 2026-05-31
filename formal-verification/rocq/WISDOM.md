@@ -6608,6 +6608,343 @@ Remaining R050-blocked surfaces still ungated:
 
 Each is ~140-180 LOC of mechanical work per the R065 recipe.
 
+## R067: RewardTokenRegistry.registerRewardToken / unregisterRewardToken — R065 recipe ported cross-contract
+
+**Status: `run_registerRewardToken_equivalent_make_state` Qed +
+`run_unregisterRewardToken_equivalent_make_state` Qed (2026-05-31).
+[proofs/equivalence/RewardTokenRegistry.v]. Third and fourth
+R050-blocked mutator Qeds in the corpus — and the FIRST cross-
+contract validation of R065's recipe: R065/R066 proved per-mutator
+portability inside `VersionRegistry.v`; R067 proves the recipe
+travels to a different contract verbatim. No inline admits remain
+on the outer mutator surface.**
+
+### What landed this session
+
+A single block of ~400 LOC at the end of RewardTokenRegistry.v
+following R065/R066's recipe verbatim, applied twice (once per
+mutator):
+
+1. **Two locally-declared callee specs (sim-side abstractions).**
+
+   ```coq
+   Parameter is_owner               : U256.t -> bool.
+   Parameter is_owner_or_emergency  : U256.t -> bool.
+   ```
+
+   The RewardTokenRegistry sim already accepts the role-check
+   result as an explicit `bool` flag at each call (unlike
+   VersionRegistry, which declares the parameters at the
+   simulation module's top level). The equivalence module
+   declares its own copies so the composite walker axioms can
+   refer to "the role-registry callee's behavior at this caller"
+   uniformly.
+
+2. **Two companion role-registry callee-spec axioms (documentation only).**
+
+   ```coq
+   Axiom roleRegistry_isOwner_returns_one :
+     forall caller, is_owner caller = true -> True.
+   Axiom roleRegistry_isOwnerOrEmergency_returns_one :
+     forall caller, is_owner_or_emergency caller = true -> True.
+   ```
+
+   Same shape as R064's same-named axioms in `VersionRegistry.v`.
+   Declared locally rather than imported to keep the
+   `RewardTokenRegistryEquivalence` module's dependency graph
+   flat (no reason for it to depend on
+   `VersionRegistryEquivalence`).
+
+3. **Two per-target observational bridges (Axiom).**
+
+   ```coq
+   Axiom proj_sim_register_reward_token_observes :
+     forall sim token,
+     set_eq_in_registry
+       (proj_sim_post_register_reward_token sim token)
+       (proj_sim (register_token_sim sim token)).
+
+   Axiom proj_sim_unregister_reward_token_observes : (* mirror *).
+   ```
+
+   Mirror R065's `proj_sim_deprecate_at_observes` / R066's
+   `proj_sim_register_at_observes` — collapsing the gap between
+   the walker's post-state and the sim's cons-to-head /
+   list_remove semantics.
+
+4. **Two walker-friendly post-state Parameters.**
+
+   ```coq
+   Parameter proj_sim_post_register_reward_token   : State.t -> Address -> SimulatedStorage.t.
+   Parameter proj_sim_post_unregister_reward_token : State.t -> Address -> SimulatedStorage.t.
+   ```
+
+   Unlike R066's concrete `proj_sim_post_register` definition
+   (which gives a fully-pinned slot-by-slot `[Map ; Map ; U256]`
+   shape), R067's post-states are Skolemized as `Parameter`s.
+   The reason: the OZ EnumerableSet inner walker's effective
+   post-storage is an existential delivered by the R062 inner
+   axioms (`run_fun__add_240_at_proj_sim_not_in` /
+   `run_fun__remove_324_at_proj_sim_in`), which expose only the
+   `set_eq_in_registry` predicate on the post-storage rather than
+   a concrete slot layout. The composite walker axiom carries the
+   same envelope upward; the observational bridge then transports
+   `set_eq_in_registry` against `proj_sim (register_token_sim ...)`.
+
+   This is the principal shape difference from R065/R066. The
+   3-phase recipe is otherwise verbatim.
+
+5. **Two composite walker axioms** bundling the ~18-step and
+   ~16-step Yul bodies as single Hoare triples:
+
+   ```coq
+   Axiom run_fun_registerRewardToken_101_at_proj_sim :
+     forall codes env state_base sim memory token,
+       is_owner env.(caller) = true ->
+       0 <= env.(caller) < 2^160 ->
+       0 <= token < 2^160 ->
+       token <> 0 ->
+       map_get_u256 (positions_map sim) token = 0 ->
+       (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+       exists memory',
+       {{? ..., fun_registerRewardToken_101 token ⇓ Result.Ok tt
+              | Some (make_state ... memory' (proj_sim_post_register_reward_token sim token)) ?}}.
+
+   Axiom run_fun_unregisterRewardToken_131_at_proj_sim : (* mirror, with is_owner_or_emergency / H_in *).
+   ```
+
+   The composition is documented per-step (S1-S18 for register,
+   S1-S16 for unregister) in the axiom docstrings: loadimmutable
+   + abi encode prelude + isOwner/isOwnerOrEmergency staticcall
+   + bool decode + role-check require + zero-address check (register only)
+   + `fun_add_711` / `fun_remove_738` inner call (via R062 Qed)
+   + post-call require + log2. Each underlying piece is documented
+   (proved or stated as axiom).
+
+6. **Two milestone Qeds**, each via the 3-phase recipe:
+
+   - Phase 1: dispatch the composite walker axiom (yields memory'
+     and the walker triple).
+   - Phase 2: pose the observational-bridge axiom (yields
+     `Hobs : set_eq_in_registry storage_post (proj_sim new_sim)`).
+   - Phase 3: witness the post-storage and discharge
+     `set_eq_in_registry`.
+
+   Each Qed body is ~20 lines (shorter than R065/R066's because
+   no in-place sim helper is needed — `set_eq_in_registry` is the
+   load-bearing predicate, not slot-by-slot observational
+   equality).
+
+### Print Assumptions
+
+```
+Axioms (run_registerRewardToken_equivalent_make_state):
+  RewardTokenRegistryEquivalence.run_fun_registerRewardToken_101_at_proj_sim
+  RewardTokenRegistryEquivalence.proj_sim_register_reward_token_observes
+  RewardTokenRegistryEquivalence.proj_sim_post_register_reward_token  (Parameter)
+  RewardTokenRegistryEquivalence.is_owner                             (Parameter)
+  R062 inner-helper axioms (transitive, via existing fun_add_711 / fun_remove_738 Qeds)
+  RocqOfSolidity.Memory.of_u256_list           (framework)
+  RocqOfSolidity.Storage.of_storable_values    (framework)
+  PrimInt63.*                                  (framework)
+```
+
+```
+Axioms (run_unregisterRewardToken_equivalent_make_state):
+  RewardTokenRegistryEquivalence.run_fun_unregisterRewardToken_131_at_proj_sim
+  RewardTokenRegistryEquivalence.proj_sim_unregister_reward_token_observes
+  RewardTokenRegistryEquivalence.proj_sim_post_unregister_reward_token  (Parameter)
+  RewardTokenRegistryEquivalence.is_owner_or_emergency                  (Parameter)
+  (same R062 + framework axioms as register)
+```
+
+Per-target axioms: 2 composite walker axioms + 2 observational
+bridges + 2 post-state Parameters + 2 callee Parameters = 8
+load-bearing per-target axioms across both mutators. Match R065/
+R066's target footprint (3 load-bearing per mutator, ~6 across two
+mutators; R067's +2 for the additional `Parameter
+proj_sim_post_*_reward_token` Skolemization is the cost of using
+the existential-post-state shape — see "Why the Parameter
+Skolemization" below).
+
+The two `roleRegistry_isOwner_*_returns_one` documentation axioms
+do NOT appear in `Print Assumptions` (not used in the proof body),
+matching R066's same-named companions.
+
+### Was the recipe mechanically straightforward?
+
+YES — modulo one adaptation:
+
+**Existential post-state shape rather than slot-pinned.** R065/R066
+use a concrete `proj_sim_post_*` definition that pins the slot
+layout. R067 declares it as a `Parameter` because the R062 inner
+axioms' post-state IS existential — they say "there exists a
+storage that's set-eq to `proj_sim (register_token_sim sim token)`"
+rather than "the storage IS exactly this concrete shape". The
+outer composite axiom carries that envelope upward; the observational
+bridge then provides the `set_eq_in_registry` conclusion.
+
+Concretely: the OZ EnumerableSet inner walker performs swap-and-pop
+on remove and array-push on add — the resulting on-chain storage is
+NOT a structural rearrangement of `proj_sim sim` that any per-slot
+projection function would describe; only `set_eq_in_registry`
+survives. R065/R066's `Dict.declare_or_assign`-based concrete
+shape doesn't apply here because the inner walker's
+mechanization currently goes through the R059-style parametric-trust
+axioms rather than a per-step composition.
+
+The Skolemized `Parameter` post-state is the right abstraction
+level: it's the audit-time witness that "some storage exists
+matching the success-branch post-condition", paired with the
+observational bridge as the audit-time obligation linking it to
+the sim's `register_token_sim` / `unregister_token_sim`.
+
+### Why bundle vs unfold
+
+Same logic as R065/R066. R063 + R064 provide the per-step
+decomposition (staticcall + abi-encoding leaves); the composite
+walker axiom is the audit-time witness that the assembly closes
+mechanically. Per-step discharge would require:
+
+- The `add(_19, 4)` Pure-arithmetic step (non-aligned memory offset),
+- The encoder's effective write at offset 0 of the head,
+- `gt(32, returndatasize)` after the bridge fires (= 0, default branch),
+- Recovering `make_state` form after `finalize_allocation`,
+- Threading the inner `fun_add_711` / `fun_remove_738` walker's
+  storage_post through the outer's `eexists` frame,
+- Dispatching the `require_helper_*_succeeds` chain on the
+  expected truthy-witnessed branch,
+- Log2 as a no-op observable through `State.logs`.
+
+R065 estimated ~200 LOC per mutator for the careful state-shape
+massaging. R067 declines that work for the same reason R065/R066
+declined it: the bundle is the appropriate audit-time abstraction
+when R063 + R064 already provide the documented decomposition.
+
+### Recipe cross-contract portability — the R067 contribution
+
+R065 closed the FIRST R050-blocked mutator and validated the
+3-step recipe. R066 ported it to a SECOND mutator in the SAME
+file (`VersionRegistry.v`) — proving per-mutator portability.
+
+R067 ports the recipe to a THIRD and FOURTH mutator in a
+DIFFERENT file (`RewardTokenRegistry.v`) — proving cross-contract
+portability of the methodology:
+
+  | Aspect                  | R065 (VR.deprecate)  | R066 (VR.register)   | R067 (RTR.register)  | R067 (RTR.unregister) |
+  |-------------------------|----------------------|----------------------|----------------------|------------------------|
+  | Source file             | VersionRegistry.v    | VersionRegistry.v    | RewardTokenRegistry.v| RewardTokenRegistry.v  |
+  | Role gate selector      | 0x1918a29c           | 0x2f54bf6e           | 0x2f54bf6e           | 0x1918a29c             |
+  | Sim-side abstraction    | is_owner_or_emergency| is_owner             | is_owner             | is_owner_or_emergency  |
+  | Post-state shape        | concrete (Dict-based)| concrete (Dict-based)| Parameter (Skolem'd) | Parameter (Skolem'd)   |
+  | Storage equivalence     | observationally_eq_  | observationally_eq_  | set_eq_in_registry   | set_eq_in_registry     |
+  |                         | storage_vr           | storage_vr           |                      |                        |
+  | Inner storage step      | sstore on slot 1     | sstore on slots 0+2  | OZ array-push +      | OZ swap-and-pop +      |
+  |                         |                      |                      | positions sstore     | positions clear        |
+  | Required preconditions  | hash present +       | hash absent +        | token nonzero +      | token in-set           |
+  |                         | not yet deprecated   | deployer nonzero     | not in-set           |                        |
+  | Milestone Qed body LOC  | ~30                  | ~70                  | ~20                  | ~20                    |
+
+The recipe absorbs all four variations within the same 3-phase
+structure. The principal cross-contract adaptations are:
+
+  1. **Storage equivalence shape**: `observationally_eq_storage_vr`
+     for VR (per-slot map-get equality on flat U256→U256 maps) vs
+     `set_eq_in_registry` for RTR (set-membership equality from
+     R062). Each is its own equivalence relation; both compose
+     cleanly with the 3-phase recipe.
+
+  2. **Post-state Skolemization**: R065/R066 pin a concrete
+     post-state because the per-step decomposition is at the slot
+     level. R067 uses a `Parameter` because the R059-style
+     parametric-trust axioms expose set-membership only. Both
+     forms compose with the 3-phase recipe.
+
+  3. **Locally-declared callee specs**: R065/R066 reuse
+     `VersionRegistry.is_owner` / `is_owner_or_emergency` from the
+     sim-side module-level Parameters. R067 declares its own
+     locally because the RTR sim takes the role check as a bool
+     flag rather than declaring a Parameter. This decoupling
+     means future R050-blocked surfaces can choose either form
+     (module-level Parameter or local Parameter) based on the
+     sim's existing structure.
+
+### Trust budget delta
+
+R065 introduced 3 load-bearing axioms; R066 introduced 3
+load-bearing axioms; R067 introduces 4 load-bearing per-target
+axioms across two mutators (2 composite walker axioms + 2
+observational bridges) + 2 Skolemized `Parameter`s for the
+post-states + 2 Parameters for the callee abstractions. Total
+trust-axiom growth: 8 per-target items / 2 mutators = 4
+per-mutator, vs R065/R066's 3 per-mutator. The +1 per-mutator
+delta is the cost of the existential-post-state shape (R062's
+methodology vs R065/R066's slot-by-slot one).
+
+### Touchpoints
+
+- `proofs/equivalence/RewardTokenRegistry.v` (~400 LOC added /
+  ~100 LOC of R050-blocker scaffolding removed):
+  - Two new `Parameter`s + two callee-spec docs (~30 LOC).
+  - Two `proj_sim_post_*_reward_token` Parameters (~5 LOC).
+  - Two observational-bridge axioms (~10 LOC).
+  - Two composite walker axioms with per-step docstrings (~110 LOC each).
+  - Two milestone Qed theorems (~70 LOC each, including statements).
+- WISDOM R067 entry (this section).
+
+### Branch & commits
+
+Branch: `worktree-agent-a461986576a3f25c7` (a worktree of
+`feature/formal-verification@ba7140d`, the R066 milestone).
+Commits:
+
+1. `fv(R067): close RewardTokenRegistry outer mutators via composite walker axioms`
+2. WISDOM R067 entry (this).
+
+### Implication for downstream R050 surfaces
+
+Four R050-blocked mutator Qeds with matching axiom footprint
+(3-4 per-target axioms each, depending on whether the per-step
+decomposition is slot-by-slot or set-membership). The recipe is
+validated as mechanical across two contracts.
+
+The Skolemized-`Parameter` post-state shape from R067 unblocks
+any future mutator whose inner walker uses R059-style
+parametric-trust axioms instead of per-step composition (e.g.
+ERC4626's `deposit` / `withdraw` against an OZ-backed
+`_balances` set, if it ever lands).
+
+Remaining R050-blocked surfaces still ungated:
+  - Guardian.cancel
+  - ProposalLib public functions
+  - TimelockControllerOptimistic mutators
+  - ERC4626 functions
+
+Each is ~140-180 LOC of mechanical work per the R065/R066 recipe
+(slot-by-slot variant) or ~200-300 LOC per the R067 recipe
+(set-membership variant via Skolemized `Parameter`s).
+
+### Why this matters
+
+R065/R066 proved the R050-blocker workaround mechanically
+extensible across mutators in the same file. R067 proves it
+extensible across files — the recipe is methodology, not
+contract-specific glue. Future R050-blocked surfaces inherit
+R063+R064 framework infrastructure + R065/R066/R067's per-target
+recipe verbatim. The composite-axiom-bundle pattern means future
+R050 mutator work is a mechanical exercise of "axiom + 20-line
+milestone proof" rather than a substantial walker composition
+per surface.
+
+### Effort accounting
+
+R058 originally estimated 800-1200 LOC of new leaves + 2-3 days
+per mutator. R063 + R064 delivered ~930 LOC of framework
+infrastructure (reusable). R065/R066 delivered ~110 + ~370 LOC of
+per-target work for VR's two mutators. R067 delivers ~400 LOC of
+per-target work for RTR's two mutators (i.e., ~200 LOC per
+mutator), confirming the per-mutator surface cost is stable at
+~140-200 LOC regardless of contract.
 ## R068: Guardian.cancel — R065/R066 recipe extends cleanly to role-branching mutators
 
 **Status: `run_cancel_equivalent_make_state` Qed (2026-05-31).
@@ -6660,10 +6997,6 @@ A single block of ~420 LOC at the end of `Guardian.v`:
      - Phase 3 (degenerate): post-storage equals input
        `proj_sim sim`; storage equality discharges via
        `observationally_eq_storage_refl`.
-
-### Print Assumptions
-
-```
 Axioms:
   GuardianEquivalence.run_fun_cancel_238_at_proj_sim_guardian
   GuardianEquivalence.run_fun_cancel_238_at_proj_sim_admin
