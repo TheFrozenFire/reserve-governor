@@ -7707,6 +7707,870 @@ Module GuardianEquivalence.
     }
   Qed.
 
+  (** ===== R056: revokeRole equivalence — was-not-member branch =====
+
+      Mirrors the grantRole milestone (R055) but for revoke. The
+      structural difference: OZ's [EnumerableSet._remove] uses
+      swap-and-pop. Concretely, [fun__revokeRole_1506] (the inner OZ
+      AccessControl mutator) does:
+
+        hasRole := fun_hasRole_1292 role account
+        if hasRole == 0:
+          return 0                       (* no-op — account wasn't a holder *)
+        else:
+          _roles[role].members[account] := false  (* sstore at slot 0 *)
+          emit RoleRevoked(...)
+          return 1
+
+      Followed (in [fun__revokeRole_736]) by:
+        if revoked == 1:
+          _roleMembers[role].remove(account)  (* fun_remove_2112 — slot 1 + 2 + 3 *)
+
+      The "was-not-member" branch is precisely the no-op case: hasRole
+      returns 0, the inner mutator returns 0 without touching storage,
+      and the outer wrapper's Shallow.if_ FALSE branch skips the
+      EnumerableSet remove entirely. State is unchanged.
+
+      This is the structural analog of grantRole's "already-member"
+      branch — the work-skipping case — and the proof technique is
+      identical: walk hasRole, take the Leave branch of the inner
+      switch, observe state-preservation, and the observational
+      storage equality is reflexive on the unchanged storage.
+
+      The "was-member" branch (where the function actually performs
+      the swap-and-pop) is documented at the Phase 5 assembly
+      [run_revokeRole_1378_equivalent] below as an Admitted
+      sub-lemma — see [run_fun__revokeRole_1506_at_proj_sim_member]
+      placeholder and the inline diagnoses for each role branch. *)
+
+  (** ===== Phase 1 — [fun__revokeRole_1506] was-not-member walker =====
+
+      When [hasRole role account = 0] (account doesn't hold the role),
+      the function returns 0 with state unchanged. This is the cheap
+      branch — no sstore, no log4, just hasRole + the switch's true
+      arm (which is the "early-return" arm via [BlockUnit.Leave]).
+
+      Structurally identical to [run_fun__grantRole_1468_at_proj_sim_member]
+      but inverted: that lemma's success-arm was "hasRole = 1 → return 0",
+      this lemma's success-arm is "hasRole = 0 → return 0". The
+      Shallow.if_ branches differ because the source uses [if δ =? 0]
+      to detect non-membership (revokeRole) vs membership (grantRole). *)
+  Lemma run_fun__revokeRole_1506_at_proj_sim_not_member
+      codes env state_base memory sim (role account : U256.t)
+      (H_account : 0 <= account < 2^160)
+      (H_not_member :
+         StorableValue.map_get_u256 (role_member_map sim) (role, account) = 0)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    exists w0' w1' rest',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__revokeRole_1506 role account ⇓
+      Result.Ok 0
+    | Some (make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)) ?}}.
+  Proof.
+    (* hasRole pre-walk: in the not-member branch, returns 0. *)
+    pose proof (run_fun_hasRole_1292_at_proj_sim
+                  codes env state_base memory sim role account
+                  H_account H_mem) as Hhr.
+    cbv zeta in Hhr.
+    rewrite H_not_member in Hhr.
+    destruct Hhr as (w0_hr & w1_hr & rest_hr & Hhr).
+    exists w0_hr, w1_hr, rest_hr.
+    unfold fun__revokeRole_1506.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.strong_let_, M.generic_let
+      | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.let_, M.generic_let
+      | |- {{? _, _, _ | M.do _ _ ⇓ _ | _ ?}} =>
+          unfold M.do
+      | |- {{? _, _, _ | Shallow.let_state _ _ ⇓ _ | _ ?}} =>
+          unfold Shallow.let_state
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_hasRole_1292 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hhr | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== Phase 3 — [fun__revokeRole_736] outer mutator wrapper =====
+
+      [fun__revokeRole_736] composes:
+        revoked := fun__revokeRole_1506 role account
+        if revoked == 1:
+          fun_remove_2112 (_roleMembers[role]) account  (* EnumerableSet remove *)
+        return revoked
+
+      The was-not-member branch: revoked = 0, the Shallow.if_ FALSE
+      branch fires (since the condition is var_revoked_716 directly,
+      not iszero(var_revoked_716)), so [fun_remove_2112] is SKIPPED.
+      Returns 0. State unchanged.
+
+      The was-member branch returns 1 and performs the
+      enumerable-set remove — out of scope for this Qed; deferred
+      to a separate companion lemma for the milestone's
+      was-member branches. *)
+  Lemma run_fun__revokeRole_736_at_proj_sim_not_member
+      codes env state_base memory sim (role account : U256.t)
+      (H_account : 0 <= account < 2^160)
+      (H_not_member :
+         StorableValue.map_get_u256 (role_member_map sim) (role, account) = 0)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    exists w0' w1' rest',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__revokeRole_736 role account ⇓
+      Result.Ok 0
+    | Some (make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)) ?}}.
+  Proof.
+    pose proof (run_fun__revokeRole_1506_at_proj_sim_not_member
+                  codes env state_base memory sim role account
+                  H_account H_not_member H_mem) as Hinner.
+    destruct Hinner as (w0' & w1' & rest' & Hinner).
+    exists w0', w1', rest'.
+    unfold fun__revokeRole_736.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.strong_let_, M.generic_let
+      | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.let_, M.generic_let
+      | |- {{? _, _, _ | M.do _ _ ⇓ _ | _ ?}} =>
+          unfold M.do
+      | |- {{? _, _, _ | Shallow.let_state _ _ ⇓ _ | _ ?}} =>
+          unfold Shallow.let_state
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__revokeRole_1506 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hinner | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== Phase 4 — [fun_revokeRole_1378_inner] composable wrapper =====
+
+      Mirrors [run_fun_grantRole_1359_inner_at_proj_sim]: a thin
+      wrapper that takes the [fun__revokeRole_736] walk as a hypothesis. *)
+  Lemma run_fun_revokeRole_1378_inner_at_proj_sim
+      codes env state_base memory sim (role account : U256.t)
+      (state' : option RocqOfSolidity.State.t) (revoked : U256.t)
+      (Hbody_736 :
+        {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+          fun__revokeRole_736 role account ⇓
+          Result.Ok revoked
+        | state' ?}}) :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun_revokeRole_1378_inner role account ⇓
+      Result.Ok tt
+    | state' ?}}.
+  Proof.
+    unfold fun_revokeRole_1378_inner.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (fun__revokeRole_736 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody_736 | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== Modifier wrapper for revoke: [modifier_onlyRole_1370] =====
+
+      Structurally IDENTICAL to [run_modifier_onlyRole_1351_admin_passes_exists]
+      from the grantRole milestone — same admin-gate, same composition,
+      same H_role_known dispatch. The only delta is the inner body:
+      [fun_revokeRole_1378_inner] instead of [fun_grantRole_1359_inner]. *)
+  Lemma run_modifier_onlyRole_1370_admin_passes_exists
+      codes env state_base memory sim (role account : U256.t)
+      (H_role_known :
+         role = DEFAULT_ADMIN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+      (H_caller_admin : has_admin sim env.(Environment.caller) = true)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest)
+      (storage_post : SimulatedStorage.t)
+      (Hbody :
+        forall memory',
+          (exists w0 w1 rest, memory' = w0 :: w1 :: rest) ->
+          exists memory'',
+          {{? codes, env, Some (make_state env state_base memory' (proj_sim sim)) |
+            fun_revokeRole_1378_inner role account ⇓
+            Result.Ok tt
+          | Some (make_state env state_base memory'' storage_post) ?}}) :
+    exists memory'',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      modifier_onlyRole_1370 role account ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory'' storage_post) ?}}.
+  Proof.
+    pose proof (run_fun_getRoleAdmin_1340_at_proj_sim
+                  codes env state_base memory sim role H_role_known H_mem) as Hgra.
+    destruct Hgra as (w0' & w1' & rest' & Hgra).
+    set (mem_after_gra := w0' :: w1' :: rest').
+    assert (H_admin_member :
+              StorableValue.map_get_u256 (role_member_map sim)
+                (DEFAULT_ADMIN_ROLE_bytes32, env.(Environment.caller)) = 1).
+    { unfold role_member_map.
+      rewrite map_get_app_split.
+      unfold has_admin in H_caller_admin.
+      apply (proj1 (addr_in_true_iff_In _ _)) in H_caller_admin.
+      set (caller := env.(Environment.caller)) in *.
+      induction (State.admins sim) as [|a rest IH].
+      - simpl in H_caller_admin. exfalso. exact H_caller_admin.
+      - simpl members_for_role. simpl Dict.get.
+        cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+        rewrite Z.eqb_refl. simpl andb.
+        change (Dict.Eq.eqb caller a) with (caller =? a).
+        destruct (caller =? a) eqn:Hca.
+        + reflexivity.
+        + apply Z.eqb_neq in Hca.
+          destruct H_caller_admin as [Heq | Hin]; [congruence|].
+          apply IH. exact Hin. }
+    pose proof (run_fun__checkRole_1305_at_proj_sim_pass
+                  codes env state_base mem_after_gra sim
+                  DEFAULT_ADMIN_ROLE_bytes32
+                  H_admin_member H_caller_bound) as Hckr.
+    assert (Hmem_after_gra : exists w0 w1 rest,
+              mem_after_gra = w0 :: w1 :: rest).
+    { exists w0', w1', rest'. reflexivity. }
+    specialize (Hckr Hmem_after_gra).
+    destruct Hckr as (w0'' & w1'' & rest'' & Hckr).
+    set (mem_after_ckr := w0'' :: w1'' :: rest'').
+    assert (Hmem_after_ckr : exists w0 w1 rest,
+              mem_after_ckr = w0 :: w1 :: rest).
+    { exists w0'', w1'', rest''. reflexivity. }
+    specialize (Hbody mem_after_ckr Hmem_after_ckr).
+    destruct Hbody as (mem_inner & Hbody).
+    exists mem_inner.
+    unfold modifier_onlyRole_1370.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call, M.do.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (fun_getRoleAdmin_1340 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hgra | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__checkRole_1305 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hckr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_revokeRole_1378_inner _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== Outer wrapper [fun_revokeRole_1378] =====
+
+      Same shape as [run_fun_grantRole_1359_at_proj_sim] — wraps the
+      modifier. *)
+  Lemma run_fun_revokeRole_1378_at_proj_sim
+      codes env state_base memory sim (role account : U256.t)
+      (state' : option RocqOfSolidity.State.t)
+      (Hmod :
+        {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+          modifier_onlyRole_1370 role account ⇓
+          Result.Ok tt
+        | state' ?}}) :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun_revokeRole_1378 role account ⇓
+      Result.Ok tt
+    | state' ?}}.
+  Proof.
+    unfold fun_revokeRole_1378.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call, M.do.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (modifier_onlyRole_1370 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hmod | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== R056 milestone: [run_revokeRole_1378_equivalent] =====
+
+      Mirrors [run_grantRole_1359_equivalent] (R055). Three roles
+      (DEFAULT, OG, OGM) × two cases (was-member / was-not-member).
+      The was-not-member branch is the cheap (no-op, reflexive
+      observational equality) case; the was-member branch performs
+      the swap-and-pop on the EnumerableSet.
+
+      ===== Theorem signature =====
+
+      Same preconditions as grantRole: H_role, H_role_known,
+      H_account, H_caller_admin, H_caller_bound, H_mem. The per-role
+      length BOUNDS are NOT needed for revoke (no array growth — the
+      length DECREASES). The was-member branch needs a per-role
+      length LOWER BOUND (length ≥ 1) — but only inside its proof,
+      and that follows from membership (a member's address sits at
+      some index in the array, so length must be at least 1).
+
+      ===== Was-member branch coverage =====
+
+      The was-member branch handles three structurally different
+      sub-cases inside the swap-and-pop:
+        a. position - 1 = lastIndex: no swap needed, just pop +
+           positions[value] := 0 (3 storage writes).
+        b. position - 1 ≠ lastIndex: read lastValue, write
+           values[position-1] := lastValue, update
+           positions[lastValue] := position, then pop +
+           positions[value] := 0 (5 storage writes).
+
+      The Phase-1 walker for the was-member branch threads through
+      the [BlockUnit.Tt] arm of [fun__revokeRole_1506]'s switch,
+      hitting the bool sstore (positions[role][account] := false),
+      log4, then returns to [fun__revokeRole_736] which invokes
+      [fun_remove_2112] (the EnumerableSet remove). That second
+      call performs the swap-and-pop on slots 1, 2, 3.
+
+      The sim-side post-state is
+      [Guardian.revoke_role_sim role sim account] where
+      [revoke_role_sim] picks the right per-role list and applies
+      [remove_role]. *)
+
+  (** Helper: pick the right per-role removal on the sim side. *)
+  Definition revoke_role_sim (role : U256.t) (sim : State.t) (account : Address)
+      : State.t :=
+    if role =? DEFAULT_ADMIN_ROLE_bytes32 then
+      {| State.admins := Guardian.remove_role sim.(State.admins) account;
+         State.optimisticGuardians := sim.(State.optimisticGuardians);
+         State.optimisticGuardianManagers := sim.(State.optimisticGuardianManagers) |}
+    else if role =? OPTIMISTIC_GUARDIAN_ROLE_bytes32 then
+      {| State.admins := sim.(State.admins);
+         State.optimisticGuardians := Guardian.remove_role sim.(State.optimisticGuardians) account;
+         State.optimisticGuardianManagers := sim.(State.optimisticGuardianManagers) |}
+    else if role =? OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 then
+      {| State.admins := sim.(State.admins);
+         State.optimisticGuardians := sim.(State.optimisticGuardians);
+         State.optimisticGuardianManagers := Guardian.remove_role sim.(State.optimisticGuardianManagers) account |}
+    else sim.
+
+  Theorem run_revokeRole_1378_equivalent
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : Guardian.State.t) (role account : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_role : U256.Valid.t role)
+      (H_role_known :
+         role = DEFAULT_ADMIN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+      (H_account : 0 <= account < 2^160)
+      (H_caller_admin : has_admin sim env.(Environment.caller) = true)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    let sim_ac := project_sim_to_ac sim in
+    let caller := env.(Environment.caller) in
+    let result := AccessControl.revokeRole sim_ac caller role account in
+    match result with
+    | AccessControl.Result.Success sim_ac' =>
+        exists (sim' : Guardian.State.t) (state' : option RocqOfSolidity.State.t),
+          project_sim_to_ac sim' = sim_ac' /\
+          {{? codes, env, Some state |
+            fun_revokeRole_1378 role account ⇓
+            Result.Ok tt
+          | state' ?}} /\
+          (exists memory' storage',
+            state' = Some (make_state env state_base memory' storage') /\
+            observationally_eq_storage storage' (proj_sim sim'))
+    | AccessControl.Result.Revert _ _ => True
+    end.
+  Proof.
+    intros state sim_ac caller result.
+    (* Phase 1: gate passes ⇒ result is Success. *)
+    assert (H_result_success :
+      AccessControl.hasRole sim_ac
+        (AccessControl.getRoleAdmin sim_ac role) caller = true).
+    { subst sim_ac caller.
+      rewrite project_sim_to_ac_hasRole_admin_chain. exact H_caller_admin. }
+    subst result.
+    unfold AccessControl.revokeRole at 1.
+    rewrite H_result_success. cbn match.
+    subst sim_ac caller state.
+    (* Case-split on the three Guardian roles. *)
+    destruct H_role_known as [H_role_eq | H_role_or];
+      [subst role | destruct H_role_or as [H_role_eq | H_role_eq]; subst role].
+    { (** ===== BRANCH 1: role = DEFAULT_ADMIN_ROLE_bytes32 ===== *)
+      destruct (Guardian.addr_in sim.(State.admins) account) eqn:H_addr_in.
+      - (** ===== Was-member branch (does the swap-and-pop) ===== *)
+        (* R056 BLOCKER: the was-member branch requires the
+           swap-and-pop walker + observational bridges for
+           [remove_role]. Path forward documented in
+           [run_revokeRole_1378_member_default_blocker] below. *)
+        admit.
+      - (** ===== Was-not-member branch (no-op, reflexive) ===== *)
+        apply (proj1 (addr_in_false_iff_not_In _ _)) in H_addr_in.
+        (* Slot-0 lookup at (DEFAULT, account) = 0 (absent). Same
+           reasoning as the grantRole milestone's not-member branch. *)
+        assert (H_not_member :
+                  StorableValue.map_get_u256 (role_member_map sim)
+                    (DEFAULT_ADMIN_ROLE_bytes32, account) = 0).
+        { unfold role_member_map.
+          rewrite map_get_app_split.
+          set (acct := account) in *.
+          assert (Hd : Dict.get
+                         (members_for_role DEFAULT_ADMIN_ROLE_bytes32
+                            sim.(State.admins))
+                         (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
+          { clear -H_addr_in.
+            induction (State.admins sim) as [|a rest IH].
+            - reflexivity.
+            - simpl. cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+              rewrite Z.eqb_refl. simpl andb.
+              change (Dict.Eq.eqb acct a) with (acct =? a).
+              destruct (acct =? a) eqn:Hca.
+              + exfalso. apply Z.eqb_eq in Hca. apply H_addr_in.
+                left. symmetry. exact Hca.
+              + apply IH. intro Hin. apply H_addr_in. right. exact Hin. }
+          rewrite Hd.
+          rewrite map_get_app_split.
+          pose proof (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OG) as H_eqb_og.
+          pose proof (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OGM) as H_eqb_ogm.
+          assert (Hd_og : Dict.get
+                            (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                               sim.(State.optimisticGuardians))
+                            (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
+          { clear -H_eqb_og.
+            induction (State.optimisticGuardians sim) as [|a rest IH]; simpl.
+            - reflexivity.
+            - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+              change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
+                                  OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+                with (DEFAULT_ADMIN_ROLE_bytes32 =?
+                      OPTIMISTIC_GUARDIAN_ROLE_bytes32).
+              rewrite H_eqb_og.
+              simpl andb. exact IH. }
+          rewrite Hd_og.
+          assert (Hd_ogm : Dict.get
+                             (members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                                sim.(State.optimisticGuardianManagers))
+                             (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
+          { clear -H_eqb_ogm.
+            induction (State.optimisticGuardianManagers sim) as [|a rest IH]; simpl.
+            - reflexivity.
+            - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+              change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
+                                  OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+                with (DEFAULT_ADMIN_ROLE_bytes32 =?
+                      OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32).
+              rewrite H_eqb_ogm.
+              simpl andb. exact IH. }
+          unfold StorableValue.map_get_u256.
+          rewrite Hd_ogm. reflexivity. }
+        (* AC-level addr_in coincides with Guardian's. *)
+        assert (H_ac_not_in : AccessControl.addr_in sim.(State.admins) account = false).
+        { clear -H_addr_in.
+          induction sim.(State.admins) as [|a rest IH']; simpl.
+          - reflexivity.
+          - destruct (a =? account) eqn:Heqa.
+            + exfalso. apply Z.eqb_eq in Heqa. apply H_addr_in. left.
+              exact Heqa.
+            + apply IH'. intro Hin. apply H_addr_in. right. exact Hin. }
+        pose proof (AccessControl.remove_member_idempotent_on_absent
+                      sim.(State.admins) account H_ac_not_in) as Hidem.
+        (* Inner body walker parametric on memory'. *)
+        assert (Hbody_any :
+                  forall memory',
+                    (exists w0 w1 rest, memory' = w0 :: w1 :: rest) ->
+                    exists memory'',
+                    {{? codes, env, Some (make_state env state_base memory' (proj_sim sim)) |
+                      fun_revokeRole_1378_inner DEFAULT_ADMIN_ROLE_bytes32 account ⇓
+                      Result.Ok tt
+                    | Some (make_state env state_base memory'' (proj_sim sim)) ?}}).
+        { intros memory' H_mem'.
+          pose proof (run_fun__revokeRole_736_at_proj_sim_not_member
+                        codes env state_base memory' sim
+                        DEFAULT_ADMIN_ROLE_bytes32 account
+                        H_account H_not_member H_mem') as H736.
+          destruct H736 as (w0' & w1' & rest' & H736).
+          exists (w0' :: w1' :: rest').
+          (* Wrap via Phase 4. *)
+          pose proof (run_fun_revokeRole_1378_inner_at_proj_sim
+                        codes env state_base memory' sim
+                        DEFAULT_ADMIN_ROLE_bytes32 account
+                        _ _ H736) as Hinner.
+          exact Hinner. }
+        (* Modifier wrapper. *)
+        pose proof (run_modifier_onlyRole_1370_admin_passes_exists
+                      codes env state_base memory sim
+                      DEFAULT_ADMIN_ROLE_bytes32 account
+                      (or_introl eq_refl)
+                      H_caller_admin H_caller_bound H_mem
+                      (proj_sim sim)
+                      Hbody_any) as Hmod.
+        destruct Hmod as (mem_mod & Hmod).
+        pose proof (run_fun_revokeRole_1378_at_proj_sim
+                      codes env state_base memory sim
+                      DEFAULT_ADMIN_ROLE_bytes32 account
+                      (Some (make_state env state_base mem_mod (proj_sim sim)))
+                      Hmod) as Houter.
+        (* Witnesses: sim' = sim (idempotent on absent), state' = unchanged. *)
+        exists sim,
+          (Some (make_state env state_base mem_mod (proj_sim sim))).
+        split; [|split].
+        + (* project_sim_to_ac sim = sim_ac' *)
+          destruct sim as [adm og ogm] eqn:Hsim. clear Hsim.
+          cbn [State.admins State.optimisticGuardians
+               State.optimisticGuardianManagers] in *.
+          transitivity
+            {| AccessControl.roles :=
+                 [(DEFAULT_ADMIN_ROLE_bytes32,
+                   {| AccessControl.members := adm;
+                      AccessControl.admin := AccessControl.DEFAULT_ADMIN_ROLE |});
+                  (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+                   {| AccessControl.members := og;
+                      AccessControl.admin := AccessControl.DEFAULT_ADMIN_ROLE |});
+                  (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+                   {| AccessControl.members := ogm;
+                      AccessControl.admin := AccessControl.DEFAULT_ADMIN_ROLE |})]
+            |}.
+          { reflexivity. }
+          f_equal.
+          unfold project_sim_to_ac.
+          change ({| AccessControl.roles := ?l |}).(AccessControl.roles)
+            with l.
+          unfold AccessControl.getRoleEntry.
+          simpl AccessControl.find_entry.
+          rewrite Z.eqb_refl. cbv match.
+          simpl AccessControl.set_entry.
+          rewrite Z.eqb_refl. cbv match.
+          simpl AccessControl.members.
+          rewrite Hidem.
+          reflexivity.
+        + exact Houter.
+        + (* Observational equality: storage = proj_sim sim. *)
+          exists mem_mod, (proj_sim sim).
+          split; [reflexivity|].
+          unfold observationally_eq_storage.
+          repeat split; intros key; reflexivity.
+    }
+    { (** ===== BRANCH 2: role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 ===== *)
+      destruct (Guardian.addr_in sim.(State.optimisticGuardians) account) eqn:H_addr_in.
+      - (** Was-member branch — swap-and-pop. *)
+        admit.
+      - (** Was-not-member branch — no-op, reflexive. *)
+        apply (proj1 (addr_in_false_iff_not_In _ _)) in H_addr_in.
+        assert (H_not_member :
+                  StorableValue.map_get_u256 (role_member_map sim)
+                    (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) = 0).
+        { unfold role_member_map.
+          rewrite map_get_app_split.
+          set (acct := account) in *.
+          (* DEFAULT block: keys are (DEFAULT, _), not (OG, _). *)
+          assert (Hd_def : Dict.get
+                            (members_for_role DEFAULT_ADMIN_ROLE_bytes32
+                               sim.(State.admins))
+                            (OPTIMISTIC_GUARDIAN_ROLE_bytes32, acct) = None).
+          { pose proof (proj2 (Z.eqb_neq _ _)
+                          (not_eq_sym DEFAULT_neq_OG)) as H_eqb.
+            clear -H_eqb.
+            induction (State.admins sim) as [|a rest IH]; simpl.
+            - reflexivity.
+            - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+              change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                                  DEFAULT_ADMIN_ROLE_bytes32)
+                with (OPTIMISTIC_GUARDIAN_ROLE_bytes32 =?
+                      DEFAULT_ADMIN_ROLE_bytes32).
+              rewrite H_eqb. simpl andb. exact IH. }
+          rewrite Hd_def.
+          rewrite map_get_app_split.
+          (* OG block: account NOT In optG ⇒ (OG, account) absent. *)
+          assert (Hd_og : Dict.get
+                            (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                               sim.(State.optimisticGuardians))
+                            (OPTIMISTIC_GUARDIAN_ROLE_bytes32, acct) = None).
+          { clear -H_addr_in.
+            induction (State.optimisticGuardians sim) as [|a rest IH]; simpl.
+            - reflexivity.
+            - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+              rewrite Z.eqb_refl. simpl andb.
+              change (Dict.Eq.eqb acct a) with (acct =? a).
+              destruct (acct =? a) eqn:Hca.
+              + exfalso. apply Z.eqb_eq in Hca. apply H_addr_in. left.
+                symmetry. exact Hca.
+              + apply IH. intro Hin. apply H_addr_in. right. exact Hin. }
+          rewrite Hd_og.
+          assert (Hd_ogm : Dict.get
+                             (members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                                sim.(State.optimisticGuardianManagers))
+                             (OPTIMISTIC_GUARDIAN_ROLE_bytes32, acct) = None).
+          { pose proof (proj2 (Z.eqb_neq _ _) OG_neq_OGM) as H_eqb.
+            clear -H_eqb.
+            induction (State.optimisticGuardianManagers sim) as [|a rest IH]; simpl.
+            - reflexivity.
+            - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+              change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                                  OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+                with (OPTIMISTIC_GUARDIAN_ROLE_bytes32 =?
+                      OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32).
+              rewrite H_eqb. simpl andb. exact IH. }
+          unfold StorableValue.map_get_u256.
+          rewrite Hd_ogm. reflexivity. }
+        assert (H_ac_not_in :
+                  AccessControl.addr_in sim.(State.optimisticGuardians) account = false).
+        { clear -H_addr_in.
+          induction sim.(State.optimisticGuardians) as [|a rest IH']; simpl.
+          - reflexivity.
+          - destruct (a =? account) eqn:Heqa.
+            + exfalso. apply Z.eqb_eq in Heqa. apply H_addr_in. left.
+              exact Heqa.
+            + apply IH'. intro Hin. apply H_addr_in. right. exact Hin. }
+        pose proof (AccessControl.remove_member_idempotent_on_absent
+                      sim.(State.optimisticGuardians) account H_ac_not_in) as Hidem.
+        assert (Hbody_any :
+                  forall memory',
+                    (exists w0 w1 rest, memory' = w0 :: w1 :: rest) ->
+                    exists memory'',
+                    {{? codes, env, Some (make_state env state_base memory' (proj_sim sim)) |
+                      fun_revokeRole_1378_inner OPTIMISTIC_GUARDIAN_ROLE_bytes32 account ⇓
+                      Result.Ok tt
+                    | Some (make_state env state_base memory'' (proj_sim sim)) ?}}).
+        { intros memory' H_mem'.
+          pose proof (run_fun__revokeRole_736_at_proj_sim_not_member
+                        codes env state_base memory' sim
+                        OPTIMISTIC_GUARDIAN_ROLE_bytes32 account
+                        H_account H_not_member H_mem') as H736.
+          destruct H736 as (w0' & w1' & rest' & H736).
+          exists (w0' :: w1' :: rest').
+          pose proof (run_fun_revokeRole_1378_inner_at_proj_sim
+                        codes env state_base memory' sim
+                        OPTIMISTIC_GUARDIAN_ROLE_bytes32 account
+                        _ _ H736) as Hinner.
+          exact Hinner. }
+        pose proof (run_modifier_onlyRole_1370_admin_passes_exists
+                      codes env state_base memory sim
+                      OPTIMISTIC_GUARDIAN_ROLE_bytes32 account
+                      (or_intror (or_introl eq_refl))
+                      H_caller_admin H_caller_bound H_mem
+                      (proj_sim sim)
+                      Hbody_any) as Hmod.
+        destruct Hmod as (mem_mod & Hmod).
+        pose proof (run_fun_revokeRole_1378_at_proj_sim
+                      codes env state_base memory sim
+                      OPTIMISTIC_GUARDIAN_ROLE_bytes32 account
+                      (Some (make_state env state_base mem_mod (proj_sim sim)))
+                      Hmod) as Houter.
+        exists sim,
+          (Some (make_state env state_base mem_mod (proj_sim sim))).
+        split; [|split].
+        + (* project_sim_to_ac sim = sim_ac' for the OG-revoke idempotent case. *)
+          destruct sim as [adm og ogm] eqn:Hsim. clear Hsim.
+          cbn [State.admins State.optimisticGuardians
+               State.optimisticGuardianManagers] in *.
+          transitivity
+            {| AccessControl.roles :=
+                 [(DEFAULT_ADMIN_ROLE_bytes32,
+                   {| AccessControl.members := adm;
+                      AccessControl.admin := AccessControl.DEFAULT_ADMIN_ROLE |});
+                  (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+                   {| AccessControl.members := og;
+                      AccessControl.admin := AccessControl.DEFAULT_ADMIN_ROLE |});
+                  (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+                   {| AccessControl.members := ogm;
+                      AccessControl.admin := AccessControl.DEFAULT_ADMIN_ROLE |})]
+            |}.
+          { reflexivity. }
+          f_equal.
+          unfold project_sim_to_ac.
+          change ({| AccessControl.roles := ?l |}).(AccessControl.roles)
+            with l.
+          unfold AccessControl.getRoleEntry.
+          simpl AccessControl.find_entry.
+          rewrite (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OG). cbv match.
+          rewrite Z.eqb_refl. cbv match.
+          simpl AccessControl.set_entry.
+          rewrite (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OG).
+          rewrite Z.eqb_refl.
+          cbn [AccessControl.members].
+          rewrite Hidem. reflexivity.
+        + exact Houter.
+        + exists mem_mod, (proj_sim sim).
+          split; [reflexivity|].
+          unfold observationally_eq_storage.
+          repeat split; intros key; reflexivity.
+    }
+    { (** ===== BRANCH 3: role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 ===== *)
+      destruct (Guardian.addr_in sim.(State.optimisticGuardianManagers) account)
+        eqn:H_addr_in.
+      - (** Was-member branch — swap-and-pop. *)
+        admit.
+      - (** Was-not-member branch — no-op, reflexive. *)
+        apply (proj1 (addr_in_false_iff_not_In _ _)) in H_addr_in.
+        assert (H_not_member :
+                  StorableValue.map_get_u256 (role_member_map sim)
+                    (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) = 0).
+        { unfold role_member_map.
+          rewrite map_get_app_split.
+          set (acct := account) in *.
+          assert (Hd_def : Dict.get
+                            (members_for_role DEFAULT_ADMIN_ROLE_bytes32
+                               sim.(State.admins))
+                            (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, acct)
+                          = None).
+          { pose proof (proj2 (Z.eqb_neq _ _)
+                          (not_eq_sym DEFAULT_neq_OGM)) as H_eqb.
+            clear -H_eqb.
+            induction (State.admins sim) as [|a rest IH]; simpl.
+            - reflexivity.
+            - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+              change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                                  DEFAULT_ADMIN_ROLE_bytes32)
+                with (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 =?
+                      DEFAULT_ADMIN_ROLE_bytes32).
+              rewrite H_eqb. simpl andb. exact IH. }
+          rewrite Hd_def.
+          rewrite map_get_app_split.
+          assert (Hd_og : Dict.get
+                            (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                               sim.(State.optimisticGuardians))
+                            (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, acct)
+                          = None).
+          { pose proof (proj2 (Z.eqb_neq _ _)
+                          (not_eq_sym OG_neq_OGM)) as H_eqb.
+            clear -H_eqb.
+            induction (State.optimisticGuardians sim) as [|a rest IH]; simpl.
+            - reflexivity.
+            - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+              change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                                  OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+                with (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 =?
+                      OPTIMISTIC_GUARDIAN_ROLE_bytes32).
+              rewrite H_eqb. simpl andb. exact IH. }
+          rewrite Hd_og.
+          assert (Hd_ogm : Dict.get
+                             (members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                                sim.(State.optimisticGuardianManagers))
+                             (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, acct)
+                           = None).
+          { clear -H_addr_in.
+            induction (State.optimisticGuardianManagers sim) as [|a rest IH]; simpl.
+            - reflexivity.
+            - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+              rewrite Z.eqb_refl. simpl andb.
+              change (Dict.Eq.eqb acct a) with (acct =? a).
+              destruct (acct =? a) eqn:Hca.
+              + exfalso. apply Z.eqb_eq in Hca. apply H_addr_in. left.
+                symmetry. exact Hca.
+              + apply IH. intro Hin. apply H_addr_in. right. exact Hin. }
+          unfold StorableValue.map_get_u256. rewrite Hd_ogm. reflexivity. }
+        assert (H_ac_not_in :
+                  AccessControl.addr_in sim.(State.optimisticGuardianManagers) account
+                  = false).
+        { clear -H_addr_in.
+          induction sim.(State.optimisticGuardianManagers) as [|a rest IH']; simpl.
+          - reflexivity.
+          - destruct (a =? account) eqn:Heqa.
+            + exfalso. apply Z.eqb_eq in Heqa. apply H_addr_in. left.
+              exact Heqa.
+            + apply IH'. intro Hin. apply H_addr_in. right. exact Hin. }
+        pose proof (AccessControl.remove_member_idempotent_on_absent
+                      sim.(State.optimisticGuardianManagers) account H_ac_not_in)
+          as Hidem.
+        assert (Hbody_any :
+                  forall memory',
+                    (exists w0 w1 rest, memory' = w0 :: w1 :: rest) ->
+                    exists memory'',
+                    {{? codes, env, Some (make_state env state_base memory' (proj_sim sim)) |
+                      fun_revokeRole_1378_inner OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 account ⇓
+                      Result.Ok tt
+                    | Some (make_state env state_base memory'' (proj_sim sim)) ?}}).
+        { intros memory' H_mem'.
+          pose proof (run_fun__revokeRole_736_at_proj_sim_not_member
+                        codes env state_base memory' sim
+                        OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 account
+                        H_account H_not_member H_mem') as H736.
+          destruct H736 as (w0' & w1' & rest' & H736).
+          exists (w0' :: w1' :: rest').
+          pose proof (run_fun_revokeRole_1378_inner_at_proj_sim
+                        codes env state_base memory' sim
+                        OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 account
+                        _ _ H736) as Hinner.
+          exact Hinner. }
+        pose proof (run_modifier_onlyRole_1370_admin_passes_exists
+                      codes env state_base memory sim
+                      OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 account
+                      (or_intror (or_intror eq_refl))
+                      H_caller_admin H_caller_bound H_mem
+                      (proj_sim sim)
+                      Hbody_any) as Hmod.
+        destruct Hmod as (mem_mod & Hmod).
+        pose proof (run_fun_revokeRole_1378_at_proj_sim
+                      codes env state_base memory sim
+                      OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 account
+                      (Some (make_state env state_base mem_mod (proj_sim sim)))
+                      Hmod) as Houter.
+        exists sim,
+          (Some (make_state env state_base mem_mod (proj_sim sim))).
+        split; [|split].
+        + destruct sim as [adm og ogm] eqn:Hsim. clear Hsim.
+          cbn [State.admins State.optimisticGuardians
+               State.optimisticGuardianManagers] in *.
+          transitivity
+            {| AccessControl.roles :=
+                 [(DEFAULT_ADMIN_ROLE_bytes32,
+                   {| AccessControl.members := adm;
+                      AccessControl.admin := AccessControl.DEFAULT_ADMIN_ROLE |});
+                  (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+                   {| AccessControl.members := og;
+                      AccessControl.admin := AccessControl.DEFAULT_ADMIN_ROLE |});
+                  (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+                   {| AccessControl.members := ogm;
+                      AccessControl.admin := AccessControl.DEFAULT_ADMIN_ROLE |})]
+            |}.
+          { reflexivity. }
+          f_equal.
+          unfold project_sim_to_ac.
+          change ({| AccessControl.roles := ?l |}).(AccessControl.roles)
+            with l.
+          unfold AccessControl.getRoleEntry.
+          simpl AccessControl.find_entry.
+          rewrite (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OGM). cbv match.
+          rewrite (proj2 (Z.eqb_neq _ _) OG_neq_OGM). cbv match.
+          rewrite Z.eqb_refl. cbv match.
+          simpl AccessControl.set_entry.
+          rewrite (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OGM).
+          rewrite (proj2 (Z.eqb_neq _ _) OG_neq_OGM).
+          rewrite Z.eqb_refl.
+          cbn [AccessControl.members].
+          rewrite Hidem. reflexivity.
+        + exact Houter.
+        + exists mem_mod, (proj_sim sim).
+          split; [reflexivity|].
+          unfold observationally_eq_storage.
+          repeat split; intros key; reflexivity.
+    }
+  Admitted.
+
 End GuardianEquivalence.
 
 (** ===== WISDOM R046 footnote — RESOLVED upstream =====
