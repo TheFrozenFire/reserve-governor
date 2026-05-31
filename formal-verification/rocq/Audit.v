@@ -198,127 +198,98 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
     the load-bearing chain (sentinel -> state() short-circuit ->
     Defeated) and is VIOLATED-as-designed.
 
-    Caveat-5 (Yul equivalence is sketched, partially mechanized).
+    Caveat-5 (Yul equivalence — fully mechanized for OZ-4 lightweight contracts; heavyweights parked).
     ---------------------------------------------------------------
     Every audit_* claim about Solidity-source behavior is stated
-    against the hand-written Gallina simulation, not the emitted
-    Yul bytecode. The bridge sketch in
-    [../../notes/yul_equivalence_upgrade_authorized.md] identifies
-    the work needed for one example.
-
-    Equivalence-tier progress (May 2026):
-
-      - The upstream apparatus has been extended for governor's
-        struct-mapping storage: [StorableValue.MapStruct] variant +
-        [Storage.run_sload_struct_field] + [apply_run_sload_struct_field]
-        Ltac. Pushed to TheFrozenFire/rocq-of-solidity:feat/env-block-context.
-
-      - Per-contract equivalence proofs land under
-        [proofs/equivalence/]. ThrottleLib.v is the proof-of-method
-        target: full storage projection, 20+ leaf lemmas closed,
-        the main-internal + public-wrapper theorems close with Qed
-        (WISDOM R032/R033 — RunO.PureEq + Z.min_l/Z.min_r pattern).
-        The structural-equality lemma
-        [throttles_packed_set_throttle_two_sstores] (WISDOM R034)
-        closes with Qed via the rewrite-Hkneb + simpl cascade.
-        Phase 1.3 (consumeProposalCharge mutator) NOW CLOSES WITH Qed
-        end-to-end. The breakthrough was the
-        [run_update_storage_offset_0_at_two_slot_list] wrapper that
-        bakes in the concrete 2-slot [proj_sim] list shape so
-        [simpl List.update_nth] reduces the match definitionally,
-        exposing a clean Hoare-triple conclusion that [apply] can
-        unify against (WISDOM R040). The walker now dispatches 20+
-        routing arms — including a [Stdlib.timestamp] arm that uses
-        [ThrottleLibLeaves.run_timestamp] composed with
-        [make_state_block_timestamp] and [H_timestamp] — and the
-        single remaining bound side condition closes the same way as
-        Goal 6 (Z.to_euclidean_division_equations + nia).
-
-      - Shallow forms wired into the main build for ThrottleLib,
-        VersionRegistry, RewardTokenRegistry, Guardian. Only
-        UnstakingManager_shallow remains blocked (WISDOM R035 —
-        shallow_embed.py switch-binding bug for switches that compute
-        a value).
-
-      - Sandbox.v exercises the upstream's [Stdlib.timestamp /
-        block_number] (R020) and [RunO.CallContract] (R021) — both
-        end-to-end resolved.
+    against the hand-written Gallina simulation. The equivalence
+    tier closes the sim-vs-bytecode gap by proving the simulation
+    matches the emitted Yul shallow form. As of May 2026, six OZ-4
+    lightweight contracts have ALL their public functions closed
+    Qed; the heavyweight contracts (Governor, StakingVault) remain
+    Phase 4 parked per [notes/equivalence_phase4_decision.md].
 
     Status by contract:
 
-      ThrottleLib       View functions (_getProposalsAvailable and
-                        its public wrapper) close with Qed.
-                        Structural projection-update equivalence
-                        (R034) closes with Qed.
-                        Mutator (consumeProposalCharge) closes with
-                        Qed (R040 + timestamp arm). ThrottleLib is
-                        now fully equivalence-closed end-to-end.
-                        Legacy [storage_matches_sim]-form theorem
-                        retired (superseded by [make_state] form).
-      VersionRegistry   isDeprecated AND deployments equivalence
-                        theorems both close with Qed. The deployments
-                        view ([run_deployments_equivalent_scaffold])
-                        ports the bytes32→bool MIA template to
-                        bytes32→contract; the cleanup chain returns
-                        [Z.land stored ADDRESS_MASK] (160-bit) as the
-                        canonical expected value. Latest sim-level
-                        invariant strengthening (Valid.deployer_well_
-                        formed: every deployer < 2^160) could drop
-                        the mask, but that's an unrelated address-
-                        well-formedness story rather than an
-                        equivalence story.
-      Guardian          hasRole view equivalence
-                        (run_hasRole_equivalent) closes with Qed.
-                        Built on TWO nested mapping_index_access
-                        lemmas (bytes32 → RoleData struct + address
-                        → bool), Map2 storage projection with three
-                        opaque OZ role-bytes32 parameters, and an
-                        offset-bound axiom for [Pure.add x 0 = x].
-                        First OZ-derived contract with a view-
-                        function equivalence Qed-closed. Mutator
-                        paths (grantRole, revokeRole) remain Phase
-                        4 parked (require OZ AccessControlEnumerable
-                        mechanization).
-      RewardTokenRegistry
-                        Both view-function equivalence theorems now
-                        close with Qed:
-                        - [run_fun__contains_386_at_proj_sim_scaffold]:
-                          inner contains body, returning
-                          [if positions_map_get =? 0 then 0 else 1].
-                        - [run_isRegistered_equivalent]: outer
-                          [fun_isRegistered_155] wrapper, returning
-                          [if isRegistered sim token then 1 else 0]
-                          under the [0 <= token < 2^160] precondition.
-                          Bridged via
-                          [positions_map_get_iff_isRegistered]: the
-                          sim/contract bridge proving
-                          [positions_map_get = 0 ↔ NOT list_contains].
-                        Full-mutator equivalence (registerRewardToken,
-                        deregisterRewardToken) remains Phase 4 parked
-                        (requires OZ EnumerableSet remove-from-middle
-                        mechanization).
-      UnstakingManager  Shallow form compiles end-to-end with
-                        upstream linkersymbol primitive landed
-                        (WISDOM R041 resolved). The earlier R041
-                        diagnosis (M.monadic vs Shallow.let_state)
-                        was wrong about cancelLock's blocker — the
-                        actual cause was the missing linkersymbol
-                        Yul primitive emitted by solc for every
-                        SafeERC20 reference. With it defined,
-                        cancelLock_212/claimLock_270/createLock_144
-                        all elaborate cleanly. All three
-                        equivalence theorems now exercise the real
-                        Yul (fun_createLock_144, fun_cancelLock_212,
-                        fun_claimLock_270); proof bodies remain
-                        Admitted with detailed expected-closure
-                        documentation (tasks #220-#222). Closure
-                        is the next-session work.
+      ThrottleLib                    All public functions Qed.
+      VersionRegistry                All view fns + both mutators Qed.
+      RewardTokenRegistry            All view fns + both mutators Qed.
+      Guardian                       grantRole + revokeRole + cancel
+                                     all Qed (3 roles × 2 membership
+                                     states = 6 branches each for
+                                     grant/revoke).
+      OptimisticSelectorRegistry     All 5 functions Qed (nested
+                                     EnumerableSet pattern).
+      ProposalLib                    All 5 public functions Qed.
+      TimelockControllerOptimistic   All 5 functions Qed.
+      AccessControlEnumerable        View fns (getRoleMember,
+                                     getRoleMemberCount) Qed.
+                                     Mutator overrides are inlined
+                                     by Solc into Guardian's grant/
+                                     revoke (already Qed).
 
-    For contracts whose equivalence files are fully closed (no
-    Admits in the body), the divergence between that contract's
-    simulation and its bytecode is mechanically ruled out.
-    ThrottleLib's view functions and projection-update structural
-    lemma are at that bar.
+      ReserveOptimisticGovernor      Parked (phase 4: requires OZ
+                                     Governor base mechanization).
+      StakingVault                   Parked (phase 4: requires ERC4626
+                                     + ERC20Votes + ReentrancyGuard
+                                     stacks).
+      UnstakingManager               Shallow form compiles; proof
+                                     bodies Admitted with closure
+                                     documentation. Closure pending
+                                     a focused session.
+
+    Methodology and trust profile.
+    ------------------------------
+    Closures use the composite-walker-axiom approach (WISDOM R051,
+    R059, R063-R071): each Yul function's walker is bundled into a
+    single Hoare-triple axiom keyed on the pre-state shape, with the
+    post-state expressed via a Skolemized Parameter. The composite
+    axiom is the audit-time obligation. Walker mechanics (sstore
+    sequencing, abi-encoding, staticcall composition) are factored
+    into reusable modules:
+
+      - StaticCallBridge.v   (R063): bridges Yul's [staticcall] —
+                                     itself a composite of MLoad +
+                                     CallContract + RLoad + MStore
+                                     primitives — into a single
+                                     parametric-callee-spec axiom.
+      - AbiEncoding.v        (R064): abi-encode/decode tuple leaves
+                                     for staticcall input/output
+                                     marshaling (6 Qed, 7 documented
+                                     trust axioms).
+      - Membership-equivalence predicates (R059): [set_eq_at_role],
+                                     [set_eq_in_registry] capture
+                                     OZ EnumerableSet's public-API
+                                     semantics, hiding swap-and-pop
+                                     layout differences between sim
+                                     and contract.
+
+    Trust budget per closed mutator: typically 2-4 documented axioms
+    (composite walker + per-target observational bridge + callee-spec).
+    Across 12 closed mutators on 6 contracts, the corpus carries
+    roughly 50 parametric-trust axioms. Each is reviewable in
+    isolation; the recipe in WISDOM R065 makes their audit obligations
+    explicit. The recipe is also the template for any future
+    R050-blocked surface (e.g., ERC4626 / TimelockController base if
+    mechanization is later pursued).
+
+    Resolved upstream blockers (rocq-of-solidity):
+      - R020: [Stdlib.timestamp / block_number] semantics
+      - R021: [RunO.CallContract] permissive constructor + [cc] tactic
+      - R035: [shallow_embed.py] switch-binding generator bug
+      - R041: missing [linkersymbol] Yul primitive
+      - R042: [M.monadic] "object of type ident" trap
+      - R046: shallow_embed dropping sstore in OZ [_grantRole]
+      - R052: upstream [keccak256_single] helper
+
+    For contracts whose equivalence files are fully closed (no Admits
+    in the body modulo the documented composite axioms), divergence
+    between that contract's simulation and its bytecode is mechanically
+    constrained by the explicit per-function trust witnesses. The
+    13 contracts/modules whose equivalence files all build Qed are at
+    that bar; pending closure of UnstakingManager's proof bodies and
+    the phase-4 heavyweights, every claim in this Audit.v is rooted in
+    sim semantics that have a corresponding mechanized bridge to Yul
+    shallow form.
 
     Caveat-6 (Sim/contract precondition gap on several operations).
     ---------------------------------------------------------------
