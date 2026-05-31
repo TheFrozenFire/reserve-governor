@@ -4771,61 +4771,79 @@ Module GuardianEquivalence.
     subst result.
     unfold AccessControl.grantRole at 1.
     rewrite H_result_success. cbn match.
-    (** ===== Phase 2: walk fun_grantRole_1359 to Result.Ok tt.
+    (** ===== Phase 5 status (post-R054 observational refactor) =====
 
-        Strategy: provide witnesses [sim' := Guardian.add_admin sim account]
-        for the [DEFAULT_ADMIN_ROLE] case (and analogous for other roles).
-        For unmodeled roles, the AccessControl mutation still goes through
-        but our sim isn't structured to represent it; we case-split on
-        the role to dispatch. *)
+        Theorem now stated with [observationally_eq_storage] (per-slot
+        [map_get_u256] equality) as the third clause — replacing the
+        structurally impossible syntactic [proj_sim sim']-equality.
+        The slot-0/1/2/3 observational bridges
+        ([role_member_map_sstore_observes_add_admin_not_in],
+         [role_positions_map_sstore_observes_add_admin_not_in],
+         [role_values_length_map_sstore_eq_add_admin_not_in],
+         [role_values_body_map_sstore_observes_add_admin_not_in])
+        cover the four-slot discharge of that observational equivalence.
+
+        The remaining blocker for full Qed is operational, not
+        structural: composing Phase 1
+        ([run_fun__grantRole_1468_at_proj_sim_not_member]) with
+        Phase 2 ([run_fun_add_2085_at_proj_sim]) into a single walk
+        of [fun__grantRole_704]'s not-member branch.
+
+        Phase 1 produces a post-state with slot 0 mutated to
+        [Dict.declare_or_assign (role_member_map sim) (role, account) 1].
+        Phase 2's lemma is parameterized over a [sim] and HARDCODES the
+        pre-state as [proj_sim sim] — its slots 1/2/3 sstore axioms
+        ([run_sstore_role_positions_at_proj_sim], etc.) similarly
+        match against [proj_sim sim]'s shape, leaving slot 0 fixed at
+        [role_member_map sim]. Composing the two requires either:
+
+          (i) a generalized variant of [run_fun_add_2085_at_proj_sim]
+              that accepts an arbitrary slot-0 [member_map_in : Dict.t ...]
+              parameter (instead of computing it from [sim]), letting
+              the post-Phase-1 storage flow through. The slot-1/2/3
+              axioms it routes through likewise need [_with_member_map]
+              variants. ~150 lines of mechanical generalization across
+              the four sstore axioms + the four wrapper lemmas. The
+              proof bodies are unchanged — only the lemma signatures
+              and the threaded-dict parameters need broadening.
+
+          (ii) an alternative: rewrite Phase 1's post-state to a
+              [proj_sim sim'] form before invoking Phase 2. But this
+              IS the syntactic equality WISDOM R054 proved
+              irreconcilable — would have to permute the dict-list
+              entries (cons-vs-append), which Phase 2's literal
+              [Dict.declare_or_assign] cannot tolerate without a
+              setoid framework over [Dict.t].
+
+        Path (i) is the cleanest closure path. Estimated effort:
+        ~2-4 hours of mechanical work. The observational milestone
+        clause + the 4 bridge lemmas landed here unblock that work
+        completely — once the generalized Phase 2 lemma lands, the
+        Phase 5 closure assembles in ~50-100 lines via:
+
+          - case-split [addr_in admins account]
+              -- TRUE: [sim' := sim], use
+                 [run_fun__grantRole_1468_at_proj_sim_member] + the
+                 [fun__grantRole_704] already-member branch's internal
+                 walk (Phase 3 closes this end-to-end). The observational
+                 storage clause discharges trivially: storage unchanged,
+                 so [observationally_eq_storage (proj_sim sim) (proj_sim sim)]
+                 holds reflexively.
+              -- FALSE: [sim' := add_admin sim account], compose Phase 1
+                 + the generalized Phase 2 into [Hnotmem], feed Phase 3,
+                 thread through Phase 4 + modifier wrapper +
+                 [run_fun_grantRole_1359_at_proj_sim]. Discharge the
+                 observational storage clause via the four
+                 [_sstore_observes_add_admin_not_in] bridges + the slot-2
+                 syntactic-equality lemma. The [H_addr_absent]
+                 hypotheses each bridge needs come from
+                 [H_not_member] + the projection's three-block layout
+                 (proof similar to [role_member_map_values_bool]).
+
+        See WISDOM R054 (and its 2026-05-31 follow-up) for the diagnosis
+        and the foundational lemmas that enabled this session's
+        refactor. *)
     subst sim_ac caller state.
-    (** ===== Phase 5 status — BLOCKED on Dict-shape mismatch =====
-
-        Phase 1 refactored this session to surface [proj_sim_post] +
-        memory shape (see [run_fun__grantRole_1468_at_proj_sim_not_member]).
-        Phases 2/3/4/4.5/outer all composable. The remaining gap is the
-        post-state projection equality the modifier wrapper's
-        [Hbody_post] hypothesis demands.
-
-        The post-Phase-1 storage's slot 0 is
-        [Dict.declare_or_assign (role_member_map sim) (role, account) 1],
-        which (for [account] not a member) reduces to
-        [role_member_map sim ++ [((role, account), 1)]] —
-        key APPENDED at the dict-list's tail (after all three roles'
-        [members_for_role] blocks).
-
-        The bridge lemma [role_member_map_add_admin_not_in] gives
-        [((DEFAULT_ADMIN_ROLE_bytes32, addr), 1) :: role_member_map s] —
-        key CONS-PREPENDED (it sits between the DEFAULT block prelude
-        and the OPT_G block).
-
-        These dict-lists are observationally equal for lookup (the
-        only ((DEFAULT, account), _) key in either is the new entry,
-        yielding 1) but NOT [Dict.t (U256.t * U256.t) U256.t]-equal.
-        Slot 1 (positions) and slot 3 (values body) face the same
-        append-vs-prepend mismatch; slot 2 (length, fixed 3-entry
-        dict) lines up syntactically.
-
-        Pinning [sim'] to match the post-Phase-2 storage is
-        structurally impossible: no Guardian.State.t exists whose
-        [role_member_map] equals
-        [role_member_map sim ++ [((DEFAULT, account), 1)]] —
-        the projection's role-block ordering (DEFAULT, then OPT_G,
-        then OPT_GM) forces any new DEFAULT entry to land BEFORE the
-        OPT_G block in any sim variant, not after the OPT_GM block.
-
-        Closing the milestone requires one of:
-        - A new sstore axiom variant whose post-storage uses
-          cons-prepend instead of [Dict.declare_or_assign];
-        - A canonicalization lemma that rewrites
-          [Dict.declare_or_assign d k v] to a CONS form by
-          permuting the dict-list (requires a setoid framework for
-          dict equality);
-        - Weakening the theorem statement's last clause to use
-          observational [project_sim_to_ac]-based equality instead
-          of syntactic [proj_sim sim'] equality.
-
-        See WISDOM R054 for the diagnosis. *)
   Admitted.
 
 End GuardianEquivalence.
