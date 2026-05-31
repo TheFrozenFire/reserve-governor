@@ -2710,12 +2710,12 @@ metavar conflict disappears.
 ### When to combine with R033
 
 R033's `RunO.PureEq` bridge fixes the *value* divergence (one arm
-emits `1e18` while the other emits `Z.min 1e18 raw`). R046 fixes
+emits `1e18` while the other emits `Z.min 1e18 raw`). R047 fixes
 the *control-mode* divergence (one arm `Leave`s while the other
 `Tt`s). The two are independent.
 
 If a switch's body has BOTH kinds of divergence (different modes
-AND different value shapes that need PureEq to bridge), apply R046
+AND different value shapes that need PureEq to bridge), apply R047
 first (case-split before eexists), then R033 inside each branch.
 
 ### Why the case-split-after-eexists trap exists
@@ -2739,7 +2739,7 @@ own scope, so witnesses commit per-arm and don't conflict.
   closes with Qed using this pattern (commit landing this WISDOM).
 - Future use: any OZ AccessControl mutator equivalence with the
   same switch shape, once the upstream `shallow_embed.py` sstore
-  bug is fixed (see R045). The case-split-first pattern remains
+  bug is fixed (see R046). The case-split-first pattern remains
   the right move for any post-`shallow_embed.py`-fix mutator
   whose two arms still emit different modes (the granted vs
   already-member case).
