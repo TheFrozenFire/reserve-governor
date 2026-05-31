@@ -2745,3 +2745,87 @@ own scope, so witnesses commit per-arm and don't conflict.
   already-member case).
 - Generalized: any Yul `for`-loop with conditional `break` /
   `continue` / `leave` exit — same divergent-mode shape.
+
+## R048: R045 variant for pure-function libraries (no [with_X] wrapper)
+
+R045 captured two shapes for OZ helpers — modifier-shape (bracketing
+[with_X body], e.g. [nonReentrant]) and precondition-shape (sequenced
+check-then-body, e.g. [_useCheckedNonce]). A third shape arises for
+pure-function libraries (`library` keyword in Solidity, all entries
+operate over an explicit `Set storage` / equivalent reference passed
+in by the caller — OZ's `EnumerableSet`, `EnumerableMap`,
+`Checkpoints`, etc.).
+
+### Why [with_X] doesn't fit
+
+The Yul-side call shape at a consumer is:
+
+```
+let prev = sload(...)
+let res  = library_op(prev, args)
+sstore(...)
+```
+
+There is no surrounding body to bracket: the library call is a single
+sub-expression in the caller's straight-line code, not a wrapper that
+runs before/after user code. A [with_X body] wrapper is a category
+mismatch — there's no [body] argument to thread through.
+
+### The right shape: standalone consistency theorems
+
+The R045 sanity check for this class is the mock's standalone
+internal-consistency lemmas, expressed at the equivalence-file level
+as their domain-flavored composition theorems:
+
+- `contains_after_add_is_true` — set-add post-condition
+- `length_grows_strictly_with_add_of_new` — length is a faithful
+  counter for distinct elements
+- `length_after_successful_remove` — symmetric to add
+- `at_index_some_iff_in_bounds` — bounded read is total on `[0, len)`
+- `position_of_nonzero_iff_contains` — the redundant index agrees
+  with the membership test (OZ's [_contains] vs the [_values] scan)
+- composition lemmas (e.g. `add_remove_inverts_when_absent`) — the
+  operations interact correctly, not just in isolation
+
+This is more like a unit-test sufficiency proof than a
+modifier-expansion bridge: the mock's semantics are demonstrated
+consistent, and downstream equivalence binds to those semantics
+once the shallow form lands.
+
+### When this applies
+
+The library shape — every operation takes the state-by-reference and
+returns either a new state or a primitive value, no per-call
+storage-side-effect bracket — is the test. If the consumer expands
+the library call as `sload; op; sstore` rather than as a wrapping
+modifier, use the standalone-consistency shape.
+
+### Catalog members
+
+- `EnumerableSet` (Bytes32Set / AddressSet / UintSet) — closed by
+  [proofs/equivalence/EnumerableSet.v] (task #232).
+- `EnumerableMap` (future) — same shape.
+- `Checkpoints.Trace*` — already shape-matched by
+  [mocks/Trace208.v] + ad-hoc theorems; the consistency style is
+  in place but not standardized.
+- `Address` / `SafeCast` / `Math` (pure stateless) — same shape
+  but no state argument, so the theorems collapse to "value-level
+  algebraic identities".
+
+### Touchpoints
+
+- [proofs/equivalence/EnumerableSet.v] — the prototype. Seven Qed'd
+  consistency theorems against [mocks/EnumerableSet.v].
+- Future EnumerableMap / Checkpoints work should adopt this shape
+  unless a wrapping-call or precondition-call story emerges in the
+  consumer (in which case fall back to R045 modifier-shape or
+  precondition-shape).
+
+### Cross-references
+
+- R045 — the modifier-shape and precondition-shape variants for
+  state-mutating helpers.
+- R046 — generator gap that makes full-mutator equivalence against
+  the shallow form unreachable for OZ AccessControl mutators;
+  blocks the natural EnumerableSet binding via
+  AccessControlEnumerable.
