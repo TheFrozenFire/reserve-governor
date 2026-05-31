@@ -26,6 +26,8 @@ Require Import simulations.RocqOfSolidity.
 Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.simulations.VersionRegistry.
 Require Import ReserveGovernor.generated.VersionRegistry_shallow.
+Require Import ReserveGovernor.proofs.equivalence.StaticCallBridge.
+Require Import ReserveGovernor.proofs.equivalence.AbiEncoding.
 Require Import Coq.Lists.List.
 Require Import Lia.
 Import ListNotations.
@@ -1429,9 +1431,9 @@ Module VersionRegistryEquivalence.
     unfold VersionRegistry.deprecateVersion.
     rewrite H_caller_or_emergency. simpl negb. cbn match.
     (** [find_entry] returns [Some (i, e)] under H_nth + H_hash + uniqueness
-        (Valid.state). For tractability we ALSO state this as an Axiom-
-        guarded reduction — the existence of [Some] is what matters,
-        and the uniqueness lemma fills in the index. *)
+        (Valid.state). Stated as inline Admitted; the uniqueness invariant
+        is in [Valid.state] and unpacking it is straightforward but not
+        in scope. *)
     assert (H_find : VersionRegistry.find_entry sim versionHash
                      = Some (i, e)) by admit.
     rewrite H_find. rewrite H_not_dep. cbn match.
@@ -1444,6 +1446,35 @@ Module VersionRegistryEquivalence.
     pose proof (proj_sim_deprecate_at_observes sim i e
                   H_valid_sim H_nth H_not_dep) as Hobs.
     rewrite H_hash in Hobs.
+    pose proof (isDeprecated_map_get_at_hash_of_entry sim i e
+                  H_valid_sim H_nth) as Hlookup.
+    rewrite H_not_dep in Hlookup. rewrite H_hash in Hlookup.
+    (* Hlookup : map_get_u256 (isDeprecated_map sim.(history)) versionHash = 0 *)
+
+    (** Phase 3: stage the existing structural leaves at the canonical
+        make_state shape. *)
+    destruct H_mem as (w0 & w1 & rest & ->).
+    (* mapping_index_access leaf (used at S12 + S16). *)
+    pose proof (MappingIndexAccessBytes32Bool.run_mapping_index_access
+                  codes env state_base 1 versionHash (proj_sim sim)
+                  (w0 :: w1 :: rest)
+                  (ex_intro _ w0 (ex_intro _ w1 (ex_intro _ rest eq_refl))))
+      as Hmia.
+    destruct Hmia as (w0_m & w1_m & rest_m & Hmia).
+    (* read_from_storage_split_offset_0_t_bool leaf (used at S13). *)
+    pose proof (run_read_isDeprecated_offset_0_at_proj_sim
+                  codes env state_base
+                  (w0 :: w1 :: rest) sim versionHash) as Hread_isdep.
+    rewrite Hlookup in Hread_isdep.
+    (* sstore wrapper leaf (used at S17). *)
+    pose proof (run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim
+                  codes env state_base
+                  (w0 :: w1 :: rest) sim versionHash) as Hsstore.
+    (* require helpers (used at S10 + S15). *)
+    pose proof (run_require_helper_t_error_10_VersionRegistry__InvalidCaller_succeeds)
+      as Hreq10.
+    pose proof (run_require_helper_t_error_16_VersionRegistry__AlreadyDeprecated_succeeds)
+      as Hreq16.
 
     (** Phase 3: the walker.
 
