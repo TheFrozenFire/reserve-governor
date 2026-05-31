@@ -1103,7 +1103,7 @@ Module RewardTokenRegistryEquivalence.
         (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
         exists memory',
           {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
-            fun__remove_324 1 value ⇓
+            fun__remove_324 0 value ⇓
             Result.Ok 1
           | Some (make_state env state_base memory' storage_post) ?}}.
 
@@ -1121,8 +1121,243 @@ Module RewardTokenRegistryEquivalence.
       (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
       exists memory',
         {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
-          fun__remove_324 1 value ⇓
+          fun__remove_324 0 value ⇓
           Result.Ok 0
         | Some (make_state env state_base memory' (proj_sim sim)) ?}}.
+
+  (** ====================================================================
+      Outer-wrapper Qeds: [fun_add_711] / [fun_remove_738]
+      ====================================================================
+
+      These wrap the inner OZ EnumerableSet helpers
+      ([fun__add_240] / [fun__remove_324]) with:
+        - A conversion chain on the value (address → uint160 → uint256
+          → bytes32 — all identity under [0 <= value < 2^160]).
+        - A struct-ptr no-op cast on the storage slot.
+        - The [add(slot, 0) = slot] field-offset arithmetic (since the
+          AddressSet's [_values] array is at offset 0 of the set base).
+
+      The composition is mechanical: dispatch the conversions via the
+      already-Qed'd leaves, then thread the inner walker's witness
+      through. *)
+
+  (** [fun_add_711(0, value)] in the not-in-set branch. *)
+  Lemma run_fun_add_711_at_proj_sim_not_in
+      codes env state_base sim (value : U256.t)
+      (H_value : 0 <= value < 2^160)
+      (H_value_nz : value <> 0)
+      (H_not_in :
+         StorableValue.map_get_u256 (positions_map sim) value = 0) :
+    exists storage_post,
+      set_eq_in_registry storage_post
+        (proj_sim (register_token_sim sim value)) /\
+      forall memory,
+        (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+        exists memory',
+          {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+            fun_add_711 0 value ⇓
+            Result.Ok 1
+          | Some (make_state env state_base memory' storage_post) ?}}.
+  Proof.
+    pose proof (run_fun__add_240_at_proj_sim_not_in
+                  codes env state_base sim value
+                  H_value H_value_nz H_not_in) as Hax.
+    destruct Hax as (storage_post & Hseq & Hbody).
+    exists storage_post.
+    split; [exact Hseq|].
+    intros memory H_mem.
+    specialize (Hbody memory H_mem).
+    destruct Hbody as (memory' & Hbody).
+    exists memory'.
+    unfold fun_add_711.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ apply run_zero_value_for_split_t_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_address_to_t_uint160 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_address_to_t_uint160; exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint160_to_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint160_to_t_uint256; exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint256_to_t_bytes32 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint256_to_t_bytes32;
+               split; [exact (proj1 H_value) | lia] | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_structₓ_Set_ₓ198_storage_to_t_structₓ_Set_ₓ198_storage_ptr _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_struct_Set_storage_to_ptr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (fun__add_240 _ _) _ ⇓ _ | _ ?}} =>
+          replace (Pure.add 0 0) with 0 by reflexivity;
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          tryif (apply RunO.Pure) then idtac else fail
+      | |- _ => s
+      end).
+  Qed.
+
+  (** [fun_add_711(0, value)] in the in-set branch (no-op). *)
+  Lemma run_fun_add_711_at_proj_sim_in
+      codes env state_base sim (value : U256.t)
+      (H_value : 0 <= value < 2^160)
+      (H_in :
+         StorableValue.map_get_u256 (positions_map sim) value <> 0) :
+    forall memory,
+      (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+      exists memory',
+        {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+          fun_add_711 0 value ⇓
+          Result.Ok 0
+        | Some (make_state env state_base memory' (proj_sim sim)) ?}}.
+  Proof.
+    intros memory H_mem.
+    pose proof (run_fun__add_240_at_proj_sim_in
+                  codes env state_base sim value
+                  H_value H_in memory H_mem) as Hax.
+    destruct Hax as (memory' & Hbody).
+    exists memory'.
+    unfold fun_add_711.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ apply run_zero_value_for_split_t_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_address_to_t_uint160 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_address_to_t_uint160; exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint160_to_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint160_to_t_uint256; exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint256_to_t_bytes32 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint256_to_t_bytes32;
+               split; [exact (proj1 H_value) | lia] | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_structₓ_Set_ₓ198_storage_to_t_structₓ_Set_ₓ198_storage_ptr _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_struct_Set_storage_to_ptr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (fun__add_240 _ _) _ ⇓ _ | _ ?}} =>
+          replace (Pure.add 0 0) with 0 by reflexivity;
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          tryif (apply RunO.Pure) then idtac else fail
+      | |- _ => s
+      end).
+  Qed.
+
+  (** [fun_remove_738(0, value)] in the in-set branch. *)
+  Lemma run_fun_remove_738_at_proj_sim_in
+      codes env state_base sim (value : U256.t)
+      (H_value : 0 <= value < 2^160)
+      (H_in :
+         StorableValue.map_get_u256 (positions_map sim) value <> 0) :
+    exists storage_post,
+      set_eq_in_registry storage_post
+        (proj_sim (unregister_token_sim sim value)) /\
+      forall memory,
+        (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+        exists memory',
+          {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+            fun_remove_738 0 value ⇓
+            Result.Ok 1
+          | Some (make_state env state_base memory' storage_post) ?}}.
+  Proof.
+    pose proof (run_fun__remove_324_at_proj_sim_in
+                  codes env state_base sim value
+                  H_value H_in) as Hax.
+    destruct Hax as (storage_post & Hseq & Hbody).
+    exists storage_post.
+    split; [exact Hseq|].
+    intros memory H_mem.
+    specialize (Hbody memory H_mem).
+    destruct Hbody as (memory' & Hbody).
+    exists memory'.
+    unfold fun_remove_738.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ apply run_zero_value_for_split_t_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_address_to_t_uint160 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_address_to_t_uint160; exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint160_to_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint160_to_t_uint256; exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint256_to_t_bytes32 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint256_to_t_bytes32;
+               split; [exact (proj1 H_value) | lia] | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_structₓ_Set_ₓ198_storage_to_t_structₓ_Set_ₓ198_storage_ptr _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_struct_Set_storage_to_ptr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (fun__remove_324 _ _) _ ⇓ _ | _ ?}} =>
+          replace (Pure.add 0 0) with 0 by reflexivity;
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          tryif (apply RunO.Pure) then idtac else fail
+      | |- _ => s
+      end).
+  Qed.
+
+  (** [fun_remove_738(0, value)] in the not-in-set branch (no-op). *)
+  Lemma run_fun_remove_738_at_proj_sim_not_in
+      codes env state_base sim (value : U256.t)
+      (H_value : 0 <= value < 2^160)
+      (H_not_in :
+         StorableValue.map_get_u256 (positions_map sim) value = 0) :
+    forall memory,
+      (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+      exists memory',
+        {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+          fun_remove_738 0 value ⇓
+          Result.Ok 0
+        | Some (make_state env state_base memory' (proj_sim sim)) ?}}.
+  Proof.
+    intros memory H_mem.
+    pose proof (run_fun__remove_324_at_proj_sim_not_in
+                  codes env state_base sim value
+                  H_value H_not_in memory H_mem) as Hax.
+    destruct Hax as (memory' & Hbody).
+    exists memory'.
+    unfold fun_remove_738.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ apply run_zero_value_for_split_t_bool | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_address_to_t_uint160 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_address_to_t_uint160; exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint160_to_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint160_to_t_uint256; exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint256_to_t_bytes32 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint256_to_t_bytes32;
+               split; [exact (proj1 H_value) | lia] | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_structₓ_Set_ₓ198_storage_to_t_structₓ_Set_ₓ198_storage_ptr _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_struct_Set_storage_to_ptr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (fun__remove_324 _ _) _ ⇓ _ | _ ?}} =>
+          replace (Pure.add 0 0) with 0 by reflexivity;
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          tryif (apply RunO.Pure) then idtac else fail
+      | |- _ => s
+      end).
+  Qed.
 
 End RewardTokenRegistryEquivalence.
