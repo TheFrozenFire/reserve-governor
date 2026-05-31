@@ -46,15 +46,23 @@
 
     What is NOT modeled:
 
-      - The EnumerableSet enumerable-index methods
-        (`getRoleMember(role, idx)`, `getRoleMemberCount(role)`).
-        Set-membership semantics are sufficient for every audit-
-        narrative claim that consumes this mock.
-
       - Per-role event emission. The Guardian and other domains
         emit role events but no proof currently depends on the
         emission semantics; events can be added if/when a
         downstream proof needs them.
+
+    R061 (2026-05-31): AccessControlEnumerable view-function
+    surface added — see [getRoleMember], [getRoleMemberCount],
+    [getRoleMembers] below. These mirror OZ's
+    [AccessControlEnumerable] [_roleMembers] enumerator. The
+    [members] list serves double-duty: it is BOTH the membership
+    set (consumed by [hasRole]) AND the enumeration order (consumed
+    by [getRoleMember]). Under OZ's swap-and-pop revoke the
+    enumeration order differs from the sim's order-preserving
+    [remove_member], so any *equivalence* claim that fixes a
+    particular index post-revoke must thread through the
+    membership-equivalence predicate from R059 (Guardian.v's
+    [set_eq_at_role]) — see WISDOM R061.
 *)
 
 Require Import RocqOfSolidity.RocqOfSolidity.
@@ -131,6 +139,42 @@ Definition hasRole (s : State) (role : Role) (account : Address) : bool :=
 
 Definition getRoleAdmin (s : State) (role : Role) : Role :=
   (getRoleEntry s role).(admin).
+
+(** ===== AccessControlEnumerable views =====
+
+    The OZ extension [AccessControlEnumerable] backs each role by an
+    [EnumerableSet.AddressSet]. The mock's per-role [members] list IS
+    the set's enumeration order — the [add] adds to the tail, the
+    [remove] uses swap-and-pop. We approximate the order via the sim's
+    list directly, accepting the caveat that the enumeration order
+    after a revoke may differ from OZ's swap-and-pop order; downstream
+    proofs that bind the OZ array body to this list use the
+    membership-equivalence predicate [set_eq_at_role] (R059) rather
+    than pointwise positional equality.
+
+    [getRoleMemberCount] returns the cardinality of the set — a fully
+    order-independent quantity. [getRoleMember(role, i)] reads the
+    [i]-th enumeration slot; [getRoleMembers(role)] returns the full
+    enumeration. *)
+
+Definition getRoleMemberCount (s : State) (role : Role) : Z :=
+  Z.of_nat (List.length (getRoleEntry s role).(members)).
+
+(** OZ's `getRoleMember(role, idx)` reverts on out-of-bounds index
+    via the EnumerableSet's `at(idx)` (a Solidity Panic(0x32)). We
+    model the success-path return; the bounds check is implicit in the
+    walker's panic guard. Callers that need to reason about the revert
+    arm should case-split on [0 <= idx < getRoleMemberCount s role]
+    explicitly. *)
+Definition getRoleMember (s : State) (role : Role) (idx : Z) : option Address :=
+  let members := (getRoleEntry s role).(members) in
+  if (0 <=? idx) && (idx <? Z.of_nat (List.length members))
+  then List.nth_error members (Z.to_nat idx)
+  else None.
+
+(** `getRoleMembers(role)` is the full enumeration. *)
+Definition getRoleMembers (s : State) (role : Role) : list Address :=
+  (getRoleEntry s role).(members).
 
 (** ===== Updates ===== *)
 
