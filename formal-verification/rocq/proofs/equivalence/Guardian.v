@@ -1711,6 +1711,194 @@ Module GuardianEquivalence.
       end).
   Qed.
 
+  (** ----- Bytes32 storage-extract leaves (identity transforms) =====
+
+      [cleanup_from_storage_t_bytes32] is a no-op assignment at the
+      Yul level. [extract_from_storage_value_offset_0_t_bytes32] is
+      its composition with [shift_right_0_unsigned], also identity.
+      Sister to the t_bool counterparts above, used by the
+      [fun_getRoleAdmin_1340] composite that reads slot-1 (bytes32-
+      typed adminRole) through [read_from_storage_split_offset_0_t_bytes32]. *)
+  Lemma run_cleanup_from_storage_t_bytes32 codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      cleanup_from_storage_t_bytes32 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_from_storage_t_bytes32.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_extract_from_storage_value_offset_0_t_bytes32
+      codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      extract_from_storage_value_offset_0_t_bytes32 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold extract_from_storage_value_offset_0_t_bytes32.
+    lu. l. { c. { apply run_shift_right_0_unsigned_for_bytes32. }
+             c. { apply run_cleanup_from_storage_t_bytes32. }
+             p. } p.
+  Qed.
+
+  (** ===== R051.a — slot-1 admin-field read out-of-projection axiom =====
+
+      [fun_getRoleAdmin_1340] reads [_roles[role].adminRole] at the
+      Yul-level slot [keccak256_tuple2 role 0 + 1] (offset 1 from the
+      struct-base [keccak256_tuple2 role 0]). Under [proj_sim], slot 0
+      is a [Map2 (role, account) → 0/1] modelling the [members]
+      sub-field; the [adminRole] field at offset 1 is OUTSIDE the
+      projection's modelled state.
+
+      Closing this read structurally would require either replacing
+      slot 0's [Map2] with a [MapStruct (role, offset)] (a half-day
+      refactor that breaks the landed slot-0 proofs —
+      [run_update_storage_value_t_bool_at_proj_sim] and
+      [run_hasRole_equivalent]) OR an opaque-slot axiom asserting that
+      out-of-range slots return 0. We take the second path here, baked
+      into a governor-local trust axiom.
+
+      Trust justification. Every role in Guardian's three role-keyed
+      lists uses [DEFAULT_ADMIN_ROLE] as its admin: the
+      [project_sim_to_ac] bridge witnesses this directly (every
+      [RoleEntry.admin] in the constructed [AccessControl.State] is
+      [AccessControl.DEFAULT_ADMIN_ROLE]). Guardian.sol never calls
+      [_setRoleAdmin], so the admin field is left at the OZ default
+      (which IS [DEFAULT_ADMIN_ROLE = bytes32(0)] per
+      [mocks/AccessControl.v::getRoleAdmin]'s [getRoleEntry] fallback).
+      The axiom asserts that the on-chain slot read returns the
+      [DEFAULT_ADMIN_ROLE_bytes32] parameter — the same value the
+      AccessControl mock would return — for each of the three named
+      roles.
+
+      Same parametric-trust shape as R052 Option 1's array-slot axioms
+      ([run_sload_role_values_length_at_proj_sim] et al.) and R049's
+      slot-1 positions modeling. Documented as an audit caveat
+      alongside those. *)
+
+  (** ----- Axiom: sload at the admin-field slot =====
+
+      The OZ-actual admin-field slot is [keccak256_tuple2 role 0 + 1].
+      Under [proj_sim sim], reading this slot returns
+      [DEFAULT_ADMIN_ROLE_bytes32] for each of the three Guardian
+      roles. The post-state equals the pre-state — slot reads are
+      pure. *)
+  Axiom run_sload_role_admin_at_proj_sim :
+    forall codes env state_base memory sim (role : U256.t)
+        (H_role_known :
+           role = DEFAULT_ADMIN_ROLE_bytes32 \/
+           role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+           role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32),
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      Stdlib.sload (keccak256_tuple2 role 0 + 1) ⇓
+      Result.Ok DEFAULT_ADMIN_ROLE_bytes32
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+
+  (** ----- Read-from-storage at the admin-field slot =====
+
+      Sister to [run_read_role_member_at_proj_sim] but for the bytes32-
+      typed admin field (offset 1 of the RoleData struct). The Yul
+      body composes [sload] with the identity-transform pair
+      [extract_from_storage_value_offset_0_t_bytes32 = shift_right_0
+      ∘ cleanup_from_storage] (both no-ops at the U256-rep level), so
+      the value forwarded out is the sload result directly. *)
+  Lemma run_read_role_admin_at_proj_sim
+      codes env state_base memory sim (role : U256.t)
+      (H_role_known :
+         role = DEFAULT_ADMIN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32) :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      read_from_storage_split_offset_0_t_bytes32
+        (keccak256_tuple2 role 0 + 1) ⇓
+      Result.Ok DEFAULT_ADMIN_ROLE_bytes32
+    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+  Proof.
+    unfold read_from_storage_split_offset_0_t_bytes32.
+    lu. l. { c. { apply run_sload_role_admin_at_proj_sim. exact H_role_known. }
+             c. { apply run_extract_from_storage_value_offset_0_t_bytes32. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** ----- Composite leaf: [fun_getRoleAdmin_1340] under [proj_sim] =====
+
+      Body shape (from [generated/Guardian_shallow.v]):
+        slot ← 0
+        slot ← mapping_index_access_bytes32_struct_RoleData(0, role)
+             = keccak256_tuple2(role, 0)
+        slot ← add(slot, 1)              (* adminRole field offset *)
+             = keccak256_tuple2(role, 0) + 1
+        ret ← read_from_storage_split_offset_0_t_bytes32(slot)
+            = sload(slot) (via cleanup_from_storage = identity)
+
+      The proof composes the [MappingIndexAccessBytes32RoleData]
+      memory-threading lemma, the [Pure_add_keccak_offset] discharge
+      for the [add(_, 1)] composition, the new
+      [run_sload_role_admin_at_proj_sim] trust axiom, and the
+      bytes32-cleanup chain ([extract_from_storage_value_offset_0_t_bytes32
+      → cleanup_from_storage_t_bytes32 + shift_right_0_unsigned], all
+      identity transforms).
+
+      Post-state: memory has two slots consumed by the
+      mapping_index_access ([mstore] writes at offsets 0 and 0x20);
+      storage is unchanged. *)
+  Lemma run_fun_getRoleAdmin_1340_at_proj_sim
+      codes env state_base memory sim (role : U256.t)
+      (H_role_known :
+         role = DEFAULT_ADMIN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory (proj_sim sim) in
+    exists w0' w1' rest',
+    {{? codes, env, Some state |
+      fun_getRoleAdmin_1340 role ⇓
+      Result.Ok DEFAULT_ADMIN_ROLE_bytes32
+    | Some (make_state env state_base
+                       (w0' :: w1' :: rest')
+                       (proj_sim sim)) ?}}.
+  Proof.
+    intros state.
+    pose proof (MappingIndexAccessBytes32RoleData.run_mapping_index_access
+                  codes env state_base 0 role (proj_sim sim) memory H_mem) as Hmia.
+    destruct Hmia as (w0' & w1' & rest' & Hmia).
+    do 3 eexists.
+    (* Discharge the [Pure.add x 1] composition: under the keccak
+       offset-bound axiom, [Pure.add (keccak256_tuple2 role 0) 1
+       = keccak256_tuple2 role 0 + 1]. *)
+    assert (H_pa1 :
+      Pure.add (keccak256_tuple2 role 0) 1
+      = keccak256_tuple2 role 0 + 1).
+    { apply Pure_add_keccak_offset. lia. }
+    cbv zeta.
+    unfold fun_getRoleAdmin_1340.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bytes32 _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bytes32;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_structₓ_RoleData_ₓ1233_storage_ₓ_of_t_bytes32 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia | apply RunO.Pure ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (read_from_storage_split_offset_0_t_bytes32 _) _
+            ⇓ _ | _ ?}} =>
+          rewrite H_pa1;
+          c; [ apply run_read_role_admin_at_proj_sim; exact H_role_known | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
   (** ----- Main equivalence theorem for fun_hasRole_1292 -----
 
       Body shape:
@@ -2157,20 +2345,24 @@ Module GuardianEquivalence.
                   [run_convert_t_bool_to_t_bool_of_1] / [run_prepare_store_t_bool]
                   / [run_shift_left_0_local] / [run_cleanup_t_bool_of_1].
 
-            (C.2) [run_fun_getRoleAdmin_1340] — reads
-                  [_roles[role].adminRole] at slot
-                  [keccak256(role, 0) + 1]. Under our proj_sim, slot 0
-                  is a [Map2 (role, account) → 0/1] (the hasRole
-                  sub-mapping), NOT a [MapStruct (role, offset) → value].
-                  The keccak+1 admin slot is NOT in proj_sim's range.
-                  This is a structural gap: closing it requires either
-                  (a) extending proj_sim to model the admin field
-                  (likely as a [MapStruct (role, offset)] replacing
-                  slot 0's Map2 — backward-incompatible) or (b) a
-                  separate "out-of-range slot defaults to 0" lemma
-                  the upstream apparatus does not currently provide.
-                  Estimated work: ~half-day refactor to proj_sim or a
-                  new opaque-slot axiom in [simulations/Guardian.v].
+            (C.2) [CLOSED — R051.a]
+                  [run_fun_getRoleAdmin_1340_at_proj_sim] landed
+                  above. The admin-field slot
+                  [keccak256_tuple2 role 0 + 1] is OUTSIDE [proj_sim]'s
+                  range (slot 0 is a [Map2 (role, account)], not a
+                  [MapStruct (role, offset)]). Closed via the
+                  out-of-projection trust axiom
+                  [run_sload_role_admin_at_proj_sim], which asserts
+                  that the on-chain admin slot returns
+                  [DEFAULT_ADMIN_ROLE_bytes32] for each of the three
+                  Guardian roles — same value the AccessControl mock's
+                  [getRoleAdmin] would return (Guardian.sol never calls
+                  [_setRoleAdmin], so admin defaults to
+                  DEFAULT_ADMIN_ROLE per OZ convention; the
+                  [project_sim_to_ac] bridge already witnesses this).
+                  Same parametric-trust shape as R049's slot-1
+                  positions modeling and R052 Option 1's array-slot
+                  axioms.
 
             (C.3) [run_fun_add_2085] — EnumerableSet add. The body
                   calls [fun__add_1614] which performs:
@@ -2233,12 +2425,12 @@ Module GuardianEquivalence.
             [Stdlib.caller] primitive and returns [env.(Environment.caller)].
             CLOSED — see lemma of the same name above.
 
-      Status as of R051.b: residuals (A), (B), (C.1), (C.3) — full
-      Qed for [run_array_push_at_proj_sim] — and (D) closed. The
-      only remaining structural gap is (C.2) — the slot-1 admin-field
-      read in [fun_getRoleAdmin_1340]. The R047 case-split walker
-      below still [Admitted]s on (C.2) and on threading the per-leaf
-      lemmas through the outer chain. *)
+      Status as of R051.a: residuals (A), (B), (C.1), (C.2), (C.3),
+      and (D) all CLOSED. The R047 case-split walker below still
+      [Admitted]s — what remains is purely the outer-walker threading
+      pass that composes the per-leaf lemmas through the
+      [fun_grantRole_1359 → modifier → _grantRole_1468 + fun_add_2085]
+      chain. No remaining structural gaps. *)
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -2325,17 +2517,26 @@ Module GuardianEquivalence.
                     DEFAULT_ADMIN_ROLE_bytes32 (env.(Environment.caller))
                     memory H_role H_account H_mem) as Hhr_admin. *)
 
-    (** Residual (C.2) — the slot-1 admin-field read in
-        [fun_getRoleAdmin_1340] — remains. (A), (B), (C.1) (R051.b
-        bool sstore wrapper, [run_update_storage_value_t_bool_at_proj_sim]),
-        (C.3) (R051.c array_push wrapper, [run_array_push_at_proj_sim]),
-        and (D) closed. What remains for grantRole's full Qed is
-        threading these leaves through the outer chain
+    (** All structural residuals closed:
+          (A) slot modeling — task #248 + #264 (R051.c)
+          (B) projection-side bridge — task #248 + #264 (R051.c)
+          (C.1) bool sstore wrapper — R051.b
+                [run_update_storage_value_t_bool_at_proj_sim]
+          (C.2) admin-field read — R051.a
+                [run_fun_getRoleAdmin_1340_at_proj_sim] +
+                [run_sload_role_admin_at_proj_sim] (out-of-projection
+                trust axiom)
+          (C.3) array_push wrapper — R051.c
+                [run_array_push_at_proj_sim]
+          (D) caller bridge — [run_fun__msgSender_3197]
+
+        What remains for grantRole's full Qed is threading these leaves
+        through the outer chain
         ([fun_grantRole_1359] → [modifier_onlyRole_1351] →
         [fun_getRoleAdmin_1340] + [fun__checkRole_1305] →
         [fun_grantRole_1359_inner] → [fun__grantRole_704] →
-        [fun__grantRole_1468] + [fun_add_2085]), plus the (C.2)
-        structural lift for the admin-field read. *)
+        [fun__grantRole_1468] + [fun_add_2085]). No remaining
+        structural gaps. *)
   Admitted.
 
 End GuardianEquivalence.

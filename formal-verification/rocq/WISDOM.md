@@ -3098,24 +3098,39 @@ under-specified:
 
 ### R051.a — slot-1 admin-field read (`fun_getRoleAdmin_1340`)
 
-`fun_getRoleAdmin_1340` reads `_roles[role].adminRole` at slot
-`keccak256(role, 0) + 1`. Under the current `proj_sim`:
-  - slot 0 is `Map2 (role, account) → 0/1` (hasRole sub-mapping)
-  - slot 1 is `Map2 (role, account) → position` (EnumerableSet positions)
+**Status: CLOSED (2026-05-31).**
+`run_fun_getRoleAdmin_1340_at_proj_sim` landed at
+`proofs/equivalence/Guardian.v`. The admin-field slot
+`keccak256(role, 0) + 1` is OUTSIDE `proj_sim`'s range (slot 0 is
+a `Map2 (role, account)`, not a `MapStruct (role, offset)`).
+Closed via Option A from the gap analysis — the
+**out-of-projection trust axiom** path, NOT a structural refactor
+of slot 0 (which would break R051.b's
+`run_update_storage_value_t_bool_at_proj_sim` and `run_hasRole_equivalent`).
 
-The keccak+1 admin slot is NOT in proj_sim's range — slot 0 is a
-`Map2`, not a `MapStruct`. The framework's `run_sload_map2_u256`
-hits the slot `keccak256(account, keccak256(role, 0))` (nested
-keccak), not `keccak256(role, 0) + 1` (offset-from-base). To close
-this read, proj_sim's slot 0 must be a `MapStruct (role, offset) →
-value` (offset 0 = hasRole — but that's a sub-mapping, not a U256,
-so the encoding breaks down) OR the proof must add an opaque-slot
-axiom asserting that "out-of-projection" slots return 0.
+What landed:
+- `run_sload_role_admin_at_proj_sim` (Axiom): asserts that
+  `sload(keccak256_tuple2 role 0 + 1)` returns
+  `DEFAULT_ADMIN_ROLE_bytes32` under `proj_sim sim` for any of the
+  three Guardian roles (`H_role_known` disjunction hypothesis).
+- `run_read_role_admin_at_proj_sim` (Qed): wraps the axiom with
+  the `extract_from_storage_value_offset_0_t_bytes32` identity
+  chain (`shift_right_0_unsigned + cleanup_from_storage_t_bytes32`,
+  both no-ops at U256 rep level). Two new helper lemmas
+  (`run_cleanup_from_storage_t_bytes32`,
+  `run_extract_from_storage_value_offset_0_t_bytes32`) added.
+- `run_fun_getRoleAdmin_1340_at_proj_sim` (Qed): composite leaf
+  for the full `fun_getRoleAdmin_1340` body — chains the
+  `MappingIndexAccessBytes32RoleData` memory-threading lemma, the
+  `Pure_add_keccak_offset` discharge for the `add(_, 1)`, and the
+  read helper above.
 
-The cleanest model: replace slot 0's Map2 with a MapStruct keyed by
-`(role, account_or_admin_offset)`, where `(role, 0)` is interpreted
-as the admin field (returning DEFAULT_ADMIN_ROLE = 0 by default).
-This breaks the existing slot-0 read path; it's a half-day refactor.
+Trust justification: every Guardian role uses DEFAULT_ADMIN_ROLE
+as its admin (`project_sim_to_ac` already encodes this); Guardian.sol
+never calls `_setRoleAdmin` so the OZ default applies. Same
+parametric-trust shape as R049's slot-1 positions modeling and
+R052 Option 1's array-slot axioms. Documented as an audit caveat
+inline in the lemma's docstring.
 
 ### R051.b — bool sstore wrapper (`update_storage_value_offset_0_t_bool_to_t_bool`)
 
@@ -3183,24 +3198,25 @@ walker needs leaves to discharge them. This is multi-day work:
 The "first OZ mutator equivalence Qed" milestone target (originally
 nominated for `run_grantRole_1359_equivalent` after R050 retargeted
 away from VersionRegistry.deprecateVersion) requires R051.a, .b,
-and .c. Of the three, .b and .c (both walker leaves) have now
-LANDED with Qed; .a (the slot-1 admin-field read, a structural
-proj_sim refactor) is the only remaining gap for
-`Guardian.grantRole`.
+and .c. **All three closed (2026-05-31).** The remaining work for
+`Guardian.grantRole`'s full Qed is purely the outer-walker
+threading pass — no remaining structural gaps.
 
 Re-evaluating the corpus's OZ mutator targets:
-  - `Guardian.grantRole` — needs R051.a only (.b and .c CLOSED).
-  - `Guardian.revokeRole` — needs R051.a + a swap-and-pop variant
-    of .c (harder than .c because the positions invariant needs a
-    tail-rewrite per R049's deferred-revoke note).
+  - `Guardian.grantRole` — all three R051 leaves CLOSED. Only
+    outer-walker threading remains before Qed.
+  - `Guardian.revokeRole` — R051.a CLOSED; still needs a
+    swap-and-pop variant of .c (harder than .c because the
+    positions invariant needs a tail-rewrite per R049's
+    deferred-revoke note).
   - `VersionRegistry.deprecateVersion` — needs R050.full.
   - `Guardian.renounceRole` — same shape as revoke.
 
-`Guardian.grantRole` is now within reach of a single ~half-day
-session on the R051.a structural lift, plus a few-hour outer-walker
-threading pass that composes the per-leaf lemmas through the
+`Guardian.grantRole` is now within reach of a few-hour
+outer-walker threading pass that composes the per-leaf lemmas
+through the
 [fun_grantRole_1359 → modifier → _grantRole_1468 + fun_add_2085]
-chain.
+chain. No structural blockers remain.
 
 ### What this session landed
 
