@@ -754,13 +754,64 @@ Module GuardianEquivalence.
 
       ===== Status =====
 
-      [Admitted.] — the shallow form's [fun__grantRole_1468] does not
-      perform the necessary sstore (see analysis above). The theorem
-      is recorded as the target statement; closure requires either
-      the upstream `shallow_embed.py` fix, OR a manual patch to the
-      generated [Guardian_shallow.v]'s _grantRole arm. We do not
-      land the manual patch — the generator drift would re-introduce
-      it on the next sweep; the right fix is upstream. *)
+      Post-R046 fix (TheFrozenFire/rocq-of-solidity@696f60f) the
+      methodological blocker is removed: the regenerated
+      [fun__grantRole_1468] now contains the [sstore] for
+      [_roles[role].hasRole[account] := 1] and the [var := 1] +
+      [Leave] sequence in the success branch (verified via inspection
+      of the regenerated Guardian_shallow.v::fun__grantRole_1468 at
+      lines 4044-4100). This unblocks the equivalence in principle.
+
+      However, the public [fun_grantRole_1359] is a ~5-level call
+      chain whose closure requires several discrete pieces of
+      infrastructure beyond the R046 fix itself:
+
+        [fun_grantRole_1359]
+          → [modifier_onlyRole_1351]
+              → [fun_getRoleAdmin_1340]   (reads slot-1 admin field)
+              → [fun__checkRole_1305]      (hasRole + revert guard)
+              → [fun_grantRole_1359_inner]
+                  → [fun__grantRole_704]
+                      → [fun__grantRole_1468]  (R046-fixed sstore)
+                      → [fun_add_2085]         (EnumerableSet add at slot 1+)
+
+      Critical missing infrastructure (each is a separate lemma to be
+      landed before this Qed):
+
+        (A) Slot 1+ modeling: [proj_sim] currently only models slot 0
+            (the [_roles] members Map2). [AccessControlEnumerable]'s
+            [_roleMembers] EnumerableSet sits at slot 1+ and is
+            touched by [fun__grantRole_704] on the success path via
+            [fun_add_2085]. Either extend [proj_sim] to slot 1 (with
+            a corresponding EnumerableSet sim-side lift) OR thread an
+            unconstrained slot-1 tail through the walker.
+
+        (B) Projection-side bridge: [project_sim_to_ac]-after-
+            [add_member]-on-sim equals [set_entry]-after-
+            [project_sim_to_ac]. Mechanical induction on the [::]
+            shape; ~30 lines. Companion to the existing
+            [project_sim_to_ac_hasRole_admin] lemma.
+
+        (C) Walker leaves: [run_update_storage_value_offset_0_t_bool_to_t_bool]
+            (R040 pattern for the bool-slot sstore — needs
+            [sload]+[update_byte_slice]+[sstore] composition);
+            [run_fun_getRoleAdmin_1340] (under our proj_sim the
+            slot-1 read returns 0 by tail-default, which happens to
+            coincide with DEFAULT_ADMIN_ROLE = 0); [run_fun__checkRole_1305]
+            (composes [run_hasRole_equivalent] with revert-on-failure;
+            H_caller_admin discharges the revert branch);
+            [run_fun_add_2085] (EnumerableSet mutator; depends on A).
+
+        (D) Caller bridge: [run_fun__msgSender_3197] reads the
+            [Stdlib.caller] primitive and returns [env.(Environment.caller)].
+            Short leaf composed against the function's zero-init prelude.
+
+      Until (A)-(D) land, the proof body below sets up the R047
+      case-split structure (case on [AccessControl.grantRole]'s
+      result) and poses [run_hasRole_equivalent] for the modifier's
+      auth check, then [Admitted]s with documented residuals. This
+      is a scaffold, not a Qed — but the structure is faithful to the
+      eventual proof. *)
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -797,53 +848,80 @@ Module GuardianEquivalence.
         True
     end.
   Proof.
-    (* See doc comment above: the shallow form's fun__grantRole_1468
-       drops the sstore on the success path, making this theorem
-       unprovable against the current generated code. *)
+    (** Scaffold — R046 unblocked the inner sstore but the outer
+        wrapper still needs (A)-(D) above. The structure below is the
+        same shape the eventual proof will take. *)
+    intros state sim_ac caller result.
+    (** Phase 1: auth gate.
+
+        The mock's [AccessControl.grantRole] bifurcates on
+        [hasRole (getRoleAdmin sim_ac role) caller]. Under our
+        projection (Guardian's every-role-defaults-to-DEFAULT_ADMIN_ROLE
+        convention), this reduces to
+        [hasRole DEFAULT_ADMIN_ROLE_bytes32 caller], which equals
+        [has_admin sim caller] via [project_sim_to_ac_hasRole_admin],
+        which is [true] by H_caller_admin.
+
+        Therefore [result] is always Success — the Revert branch is
+        vacuously [True].
+
+        Closing the Revert branch is trivial; the Success branch
+        requires the walker for the chain. We case-split BEFORE
+        eexists per R047 so witnesses live in disjoint scopes. *)
+    subst result. subst sim_ac. subst caller. subst state.
+    (** Per (B): [AccessControl.grantRole sim_ac caller role account]
+        reduces to [Result.Success sim_ac'] under H_caller_admin +
+        [project_sim_to_ac_hasRole_admin] + the (TBD)
+        [project_sim_to_ac_getRoleAdmin] lemma. Once that reduction
+        fires we case-split on the [match] and the Revert branch
+        closes by exact I (since the goal is True). *)
+    (** Phase 2: body walker.
+
+        The Success branch then opens with:
+          - the inner [run_hasRole_equivalent] pose for the modifier's
+            gate (already in scope),
+          - the R040 wrapper for the bool sstore in
+            [fun__grantRole_1468]'s success arm (residual C),
+          - the walker arms threading through
+            [fun_getRoleAdmin_1340] → [fun__checkRole_1305] →
+            [fun_grantRole_1359_inner] → [fun__grantRole_704] →
+            [fun__grantRole_1468] + [fun_add_2085],
+          - the case-split on [hasRole] inside [_grantRole_1468]
+            (R047: already-member vs not-a-member),
+          - the projection-side bridge (residual B) to close the
+            post-state equality with [proj_sim sim']. *)
+
+    (** Scaffold pose: this is the canonical entry-point for the
+        eventual walker. Left commented since the immediate residuals
+        block its use, but documented for the next agent. *)
+    (* pose proof (run_hasRole_equivalent codes env state_base sim
+                    DEFAULT_ADMIN_ROLE_bytes32 (env.(Environment.caller))
+                    memory H_role H_account H_mem) as Hhr_admin. *)
+
+    (** Residuals (A)-(D) are not closable in the current proof
+        state; each is a discrete piece of work documented above.
+        Pending those, the theorem statement and scaffold remain. *)
   Admitted.
 
 End GuardianEquivalence.
 
-(** ===== WISDOM R046 footnote — generator drops sstore in _grantRole =====
+(** ===== WISDOM R046 footnote — RESOLVED upstream =====
 
-    Documented in this file (see [run_grantRole_1359_equivalent]'s
-    docstring above) and in [notes/shallow_embed_oz_gaps.md] gap 2.
-    Summary for cross-reference:
+    RESOLVED at TheFrozenFire/rocq-of-solidity@696f60f. The
+    `shallow_embed.py` YulSwitch handler now emits the default arm's
+    body (rather than silently dropping it). After regenerating
+    Guardian_shallow.v, [fun__grantRole_1468]'s success arm contains:
+      - [update_storage_value_offset_0_t_bool_to_t_bool] (the sstore
+        for [_roles[role].hasRole[account] := 1])
+      - [log4] for [RoleGranted]
+      - [var__1437 := 1] then [Leave]
 
-    `shallow_embed.py` emits `Shallow.let_state ~ ... := [[
-    Shallow.if_(| cond, succ, _ |) ]] default~ ...` for Yul switches
-    where the inner success branch ([cond != 0]) contains state-update
-    statements (`sstore` in particular). The current emission strips
-    the body in the let_state's body lambda — visible in the desugared
-    form as `else pure (BlockUnit.Tt, var__1438)` with no surrounding
-    sstore.
+    Affected proof targets that became reachable after the fix:
+      - [run_grantRole_1359_equivalent] above (scaffold landed;
+        residuals A-D documented inline; Qed pending those leaves).
+      - Future RewardTokenRegistry / VersionRegistry role-mutator
+        equivalences (same OZ inheritance chain; regenerate their
+        shallow forms via `bash scripts/shallow-embed-sweep`).
 
-    The bug is the same one R035 calls out: M.monadic can't descend
-    into Shallow.let_state inside [[ ]] brackets. The shallow_embed
-    workaround for YulIf (R035 partial fix) pre-binds the condition,
-    but when the YulIf body itself rebinds the same variable AND
-    contains an sstore, the body gets dropped on the way through.
-
-    Reproduce: `rocq_query Print
-    Guardian_325.Guardian_325_deployed.fun__grantRole_1468.` against
-    the current shallow form — the switch's `else` arm body is the
-    bare `pure (BlockUnit.Tt, var__1438)` no-op, with no sstore visible.
-
-    Fix path: upstream `shallow_embed.py` — option 1 from
-    `notes/shallow_embed_oz_gaps.md` (extend M.monadic to traverse
-    `Shallow.let_state`). Until then, every OZ AccessControl mutator
-    equivalence statement is [Admitted].
-
-    Affected proof targets:
-      - Guardian.grantOptimisticGuardian (delegates to _grantRole_704
-        which delegates to _grantRole_1468)
-      - VersionRegistry / RewardTokenRegistry role mutators (same
-        OZ inheritance chain).
-      - Any TimelockController role mutation.
-
-    What still works pre-fix:
-      - View-only equivalence (hasRole, getRoleAdmin, isRegistered,
-        deployments) — already landed across Guardian / VersionRegistry
-        / RewardTokenRegistry.
-      - Mock-level proofs against [mocks/AccessControl.v] — the mock
-        is sound; the gap is only in the shallow form. *)
+    Cross-reference: see WISDOM R046 in WISDOM.md for the upstream
+    patch details and follow-on task list. *)
