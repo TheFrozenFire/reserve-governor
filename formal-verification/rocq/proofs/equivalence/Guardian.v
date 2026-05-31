@@ -5671,6 +5671,466 @@ Module GuardianEquivalence.
        | _, _ => True
        end).
 
+  (** ===== R059: Membership-equivalence predicate for OZ EnumerableSet projections =====
+
+      Motivation (R056 recap). OZ's [EnumerableSet._remove] uses
+      swap-and-pop: removing the element at position [p] in an array of
+      length [n] copies [values[n-1]] into [values[p-1]] and pops the
+      tail. The sim-side [Guardian.remove_role] is order-preserving
+      filter. After revoke:
+
+        Sim's slot-3 body for role R, remove "d" from [a; b; c; d; e]:
+          OZ produces [a; b; c; e]  (if "d" is at the last position;
+                                     no swap, just pop)
+          OZ produces [a; e; c]     (if "d" is at position 2; "e" moves)
+          Sim produces [a; b; c; e] (filter preserves order regardless
+                                     of "d"'s original position)
+
+      The pointwise [observationally_eq_storage] predicate cannot
+      bridge the swap case: at body-index 1 OZ has "e", sim has "b"
+      (or, in the post-revoke projection's slot-3 view, the OZ side
+      reads "e" at body index 1, sim reads "b"). They are NOT
+      pointwise equal under any cell-by-cell observational predicate.
+
+      ===== The design (Option B from the task brief) =====
+
+      Define [contains_at_role role account storage] as a lookup
+      against slot 1 (the [_positions] map): an account is "in the
+      role" iff [positions[role][account] > 0] (OZ's 1-indexed
+      convention). Then [set_eq_at_role] compares the two storages on
+      this set-membership predicate at every role/account.
+
+      Why slot 1 (positions) and not slot 3 (values)?
+      - Slot 1's lookup is by KEY ((role, account)) not by INDEX. The
+        swap-and-pop in OZ rearranges INDICES but leaves KEY lookups
+        invariant for keys that are still present (removed keys go to
+        0; the swapped survivor's position is updated, but its entry
+        remains present, just at a different position number).
+      - Slot 1 ALSO matches the OZ semantics of "is a member" — the
+        contract uses [positions[role][account] != 0] as the
+        membership check inside [_contains].
+      - Slot 3 (values) is the layout slot that's volatile under
+        swap-and-pop; comparing slot 3 pointwise is exactly what
+        breaks.
+
+      ===== Alternatives considered =====
+
+      Option B' (canonicalize): sort both slot-3 lists and compare.
+        Heavy; needs a canonical address ordering and a rebuild-the-
+        array witness. Punted.
+
+      Option B'' (Permutation): assert the slot-3 lists are a
+        permutation. Permutation is the correct mathematical
+        relationship between the two value arrays, but lookup-by-
+        index breaks under it (Permutation does not preserve
+        nth_error); we would still need a separate proof that for
+        every key, some index points to the value. That collapses
+        to the same iff form below.
+
+      The iff form chosen here is the simplest, composes cleanly with
+      AccessControl's projection (which only cares about
+      [In account members]), and dovetails with OZ's own membership
+      test.
+
+      ===== Composing with [observationally_eq_storage] =====
+
+      For [grantRole] (R055), [observationally_eq_storage] is the
+      right predicate: cons-prepend (sim) and append-at-tail
+      ([Dict.declare_or_assign]) are lookup-equivalent at every slot.
+      The grantRole walker writes a CONSECUTIVE-index element, so
+      slot 3 is also lookup-equivalent under the bridge.
+
+      For [revokeRole], we use [set_eq_at_role] only — slot 3 in
+      particular cannot be compared pointwise after the swap.
+
+      A post-state that is [observationally_eq_storage]-equal is
+      ALSO [set_eq_at_role]-equal — observational strictly
+      strengthens membership.  So grantRole's old theorem continues
+      to imply the new methodology's predicate; no downstream
+      breakage. *)
+
+  Definition contains_at_role
+      (role : U256.t) (account : U256.t) (s : SimulatedStorage.t) : bool :=
+    match List.nth_error s 1 with
+    | Some (StorableValue.Map2 d) =>
+        negb (StorableValue.map_get_u256 d (role, account) =? 0)
+    | _ => false
+    end.
+
+  Definition set_eq_at_role (s1 s2 : SimulatedStorage.t) : Prop :=
+    forall (role account : U256.t),
+      contains_at_role role account s1
+      = contains_at_role role account s2.
+
+  (** [set_eq_at_role] is an equivalence relation. *)
+  Lemma set_eq_at_role_refl (s : SimulatedStorage.t) :
+    set_eq_at_role s s.
+  Proof. intros r a. reflexivity. Qed.
+
+  Lemma set_eq_at_role_sym (s1 s2 : SimulatedStorage.t) :
+    set_eq_at_role s1 s2 -> set_eq_at_role s2 s1.
+  Proof. intros H r a. symmetry. apply H. Qed.
+
+  Lemma set_eq_at_role_trans (s1 s2 s3 : SimulatedStorage.t) :
+    set_eq_at_role s1 s2 -> set_eq_at_role s2 s3 ->
+    set_eq_at_role s1 s3.
+  Proof. intros H1 H2 r a. rewrite H1. apply H2. Qed.
+
+  (** [observationally_eq_storage] strictly strengthens
+      [set_eq_at_role]: slot-1 lookups agree pointwise under the
+      observational predicate, so [contains_at_role] (which is a
+      single boolean derived from slot 1's lookup at one key) agrees
+      too. *)
+  (** When BOTH storages have a [Map2] at slot 1, observational
+      slot-1 equality implies set-equivalence. The hypothesis on
+      slot-1 shape is automatic for any [proj_sim sim]-shaped
+      storage. *)
+  Lemma observationally_eq_implies_set_eq_at_role
+      (s1 s2 : SimulatedStorage.t)
+      (d1 d2 : Dict.t (U256.t * U256.t) U256.t)
+      (Hs1_1 : List.nth_error s1 1 = Some (StorableValue.Map2 d1))
+      (Hs2_1 : List.nth_error s2 1 = Some (StorableValue.Map2 d2)) :
+    observationally_eq_storage s1 s2 -> set_eq_at_role s1 s2.
+  Proof.
+    intros (_ & H1 & _ & _).
+    intros role account.
+    unfold contains_at_role.
+    rewrite Hs1_1, Hs2_1.
+    specialize (H1 (role, account)).
+    rewrite Hs1_1, Hs2_1 in H1.
+    rewrite H1. reflexivity.
+  Qed.
+
+  (** ===== addr_in is invariant under remove_role for unrelated keys ==
+
+      [Guardian.remove_role lst a]'s effect on [addr_in lst b]:
+        - if b = a:   addr_in result b = false (a is removed)
+        - if b ≠ a:   addr_in result b = addr_in lst b (unchanged)
+
+      These are pure Boolean-level lemmas; they don't depend on
+      Valid.state's NoDup invariant. *)
+  Lemma addr_in_remove_role_self :
+    forall (lst : list Address) (a : Address),
+      Guardian.addr_in (Guardian.remove_role lst a) a = false.
+  Proof.
+    intros lst a. induction lst as [|h t IH]; simpl.
+    - reflexivity.
+    - destruct (h =? a) eqn:Hha.
+      + exact IH.
+      + simpl. rewrite Hha. exact IH.
+  Qed.
+
+  Lemma addr_in_remove_role_other :
+    forall (lst : list Address) (a b : Address),
+      a <> b ->
+      Guardian.addr_in (Guardian.remove_role lst a) b
+      = Guardian.addr_in lst b.
+  Proof.
+    intros lst a b Hab. induction lst as [|h t IH]; simpl.
+    - reflexivity.
+    - destruct (h =? a) eqn:Hha.
+      + apply Z.eqb_eq in Hha. subst h.
+        destruct (a =? b) eqn:Hab2.
+        * apply Z.eqb_eq in Hab2. contradiction.
+        * exact IH.
+      + simpl. destruct (h =? b) eqn:Hhb; [reflexivity|exact IH].
+  Qed.
+
+  (** ===== [contains_at_role] on [proj_sim sim] reduces to addr_in =====
+
+      The bridge from the storage-level predicate to the sim-level
+      [Guardian.addr_in].  Three role-specialized companions
+      (DEFAULT / OG / OGM) cover every Guardian role.  These are
+      reused by both grantRole (already-member dispatch) and
+      revokeRole (was-member / was-not-member dispatch). *)
+  (** Helper: positions_for_role only stores values ≥ 1. *)
+  Lemma positions_for_role_get_ge_1 :
+    forall (role : U256.t) (lst : list Address)
+           (k : U256.t * U256.t) (v : U256.t),
+      Dict.get (positions_for_role role lst) k = Some v -> v >= 1.
+  Proof.
+    intros role lst.
+    induction lst as [|a rest IH]; intros k v Hg; simpl in Hg.
+    - discriminate.
+    - destruct (Dict.Eq.eqb _ _) eqn:Heqb.
+      + injection Hg as <-. lia.
+      + exact (IH _ _ Hg).
+  Qed.
+
+  (** Helper: at the [positions_for_role role lst] dict, looking up
+      (role, account) is non-zero iff [account] appears in [lst]. *)
+  Lemma positions_for_role_map_get_iff_addr_in :
+    forall (role : U256.t) (lst : list Address) (account : Address),
+      negb (StorableValue.map_get_u256 (positions_for_role role lst)
+              (role, account) =? 0)
+      = Guardian.addr_in lst account.
+  Proof.
+    intros role lst account.
+    induction lst as [|a rest IH]; simpl.
+    - reflexivity.
+    - unfold StorableValue.map_get_u256. simpl.
+      cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+      rewrite Z.eqb_refl. simpl andb.
+      change (Dict.Eq.eqb account a) with (account =? a).
+      destruct (a =? account) eqn:Hac.
+      + apply Z.eqb_eq in Hac. subst a.
+        rewrite Z.eqb_refl. simpl.
+        destruct (Z.of_nat (length rest) + 1 =? 0) eqn:Hp.
+        * apply Z.eqb_eq in Hp. lia.
+        * reflexivity.
+      + apply Z.eqb_neq in Hac.
+        destruct (account =? a) eqn:Hac2.
+        * apply Z.eqb_eq in Hac2. exfalso. apply Hac. symmetry. exact Hac2.
+        * exact IH.
+  Qed.
+
+  (** Helper: at the [positions_for_role role1 lst] dict, looking up
+      (role2, _) returns 0 (None) when role1 ≠ role2 — the keys in
+      this block all have role1 as their first component. *)
+  Lemma positions_for_role_map_get_unrelated :
+    forall (role1 role2 : U256.t) (lst : list Address) (account : Address),
+      role1 <> role2 ->
+      StorableValue.map_get_u256 (positions_for_role role1 lst)
+        (role2, account) = 0.
+  Proof.
+    intros role1 role2 lst account Hne.
+    induction lst as [|a rest IH]; unfold StorableValue.map_get_u256;
+      simpl.
+    - reflexivity.
+    - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+      change (Dict.Eq.eqb role2 role1) with (role2 =? role1).
+      destruct (role2 =? role1) eqn:Hr.
+      + apply Z.eqb_eq in Hr. exfalso. apply Hne. symmetry. exact Hr.
+      + simpl andb. exact IH.
+  Qed.
+
+  (** Helper: when [m1] and [m2] both miss at key [k], the concat misses too. *)
+  Lemma map_get_u256_app_None_None
+      (m1 m2 : Dict.t (U256.t * U256.t) U256.t) (k : U256.t * U256.t) :
+    Dict.get m1 k = None ->
+    StorableValue.map_get_u256 m2 k = 0 ->
+    StorableValue.map_get_u256 (m1 ++ m2) k = 0.
+  Proof.
+    intros H1 H2.
+    rewrite map_get_app_split.
+    rewrite H1. exact H2.
+  Qed.
+
+  (** Helper: when [m1] hits at key [k] with value [v], the concat
+      yields [v] (regardless of [m2]). *)
+  Lemma map_get_u256_app_Some
+      (m1 m2 : Dict.t (U256.t * U256.t) U256.t) (k : U256.t * U256.t)
+      (v : U256.t) :
+    Dict.get m1 k = Some v ->
+    StorableValue.map_get_u256 (m1 ++ m2) k = v.
+  Proof.
+    intros H1.
+    rewrite map_get_app_split.
+    rewrite H1. reflexivity.
+  Qed.
+
+  (** Generalized helper: when [m1] hits at [k] with [v], the
+      concatenation's [map_get_u256] yields [v]; otherwise, it
+      defers to the suffix. Stated to avoid match-substitution
+      issues in callers. *)
+  Lemma map_get_u256_app_split_case
+      (m1 m2 : Dict.t (U256.t * U256.t) U256.t) (k : U256.t * U256.t) :
+    (exists v, Dict.get m1 k = Some v /\
+       StorableValue.map_get_u256 (m1 ++ m2) k = v) \/
+    (Dict.get m1 k = None /\
+     StorableValue.map_get_u256 (m1 ++ m2) k
+     = StorableValue.map_get_u256 m2 k).
+  Proof.
+    rewrite map_get_app_split.
+    destruct (Dict.get m1 k) as [v|] eqn:Hg.
+    - left. exists v. split; [reflexivity|reflexivity].
+    - right. split; reflexivity.
+  Qed.
+
+  (** Direct lemma: the slot-1 map for [proj_sim sim] reads
+      addr_in on the right per-role list, since the
+      [(DEFAULT, account)] key is only present in the DEFAULT block,
+      [(OG, account)] in the OG block, and [(OGM, account)] in the
+      OGM block. *)
+  (** When [Dict.get m1 k = None], [map_get_u256 (m1 ++ m2) k =
+      map_get_u256 m2 k] directly. *)
+  Lemma map_get_u256_app_when_first_none
+      (m1 m2 : Dict.t (U256.t * U256.t) U256.t) (k : U256.t * U256.t)
+      (H : Dict.get m1 k = None) :
+    StorableValue.map_get_u256 (m1 ++ m2) k
+    = StorableValue.map_get_u256 m2 k.
+  Proof. rewrite map_get_app_split. rewrite H. reflexivity. Qed.
+
+  Lemma map_get_u256_role_positions_map_admin
+      (sim : State.t) (account : Address) :
+    StorableValue.map_get_u256 (role_positions_map sim)
+      (DEFAULT_ADMIN_ROLE_bytes32, account) =
+    StorableValue.map_get_u256
+      (positions_for_role DEFAULT_ADMIN_ROLE_bytes32 sim.(State.admins))
+      (DEFAULT_ADMIN_ROLE_bytes32, account).
+  Proof.
+    unfold role_positions_map.
+    rewrite map_get_app_split.
+    destruct (Dict.get (positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                          sim.(State.admins))
+                (DEFAULT_ADMIN_ROLE_bytes32, account)) as [v|] eqn:Hg.
+    - unfold StorableValue.map_get_u256. rewrite Hg. reflexivity.
+    - assert (Hog_none : Dict.get
+                           (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                              sim.(State.optimisticGuardians))
+                           (DEFAULT_ADMIN_ROLE_bytes32, account) = None).
+      { pose proof (positions_for_role_map_get_unrelated
+                      OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                      DEFAULT_ADMIN_ROLE_bytes32
+                      sim.(State.optimisticGuardians) account
+                      (not_eq_sym DEFAULT_neq_OG)) as Hog.
+        unfold StorableValue.map_get_u256 in Hog.
+        destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32 _) _) as [u|] eqn:HgOG.
+        + pose proof (positions_for_role_get_ge_1 _ _ _ _ HgOG). lia.
+        + reflexivity. }
+      pose proof (positions_for_role_map_get_unrelated
+                    OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                    DEFAULT_ADMIN_ROLE_bytes32
+                    sim.(State.optimisticGuardianManagers) account
+                    (not_eq_sym DEFAULT_neq_OGM)) as Hogm.
+      rewrite (map_get_u256_app_when_first_none _ _ _ Hog_none).
+      rewrite Hogm.
+      unfold StorableValue.map_get_u256. rewrite Hg. reflexivity.
+  Qed.
+
+  Lemma map_get_u256_role_positions_map_og
+      (sim : State.t) (account : Address) :
+    StorableValue.map_get_u256 (role_positions_map sim)
+      (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) =
+    StorableValue.map_get_u256
+      (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+         sim.(State.optimisticGuardians))
+      (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account).
+  Proof.
+    unfold role_positions_map.
+    assert (Hdef_none : Dict.get
+                          (positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                             sim.(State.admins))
+                          (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) = None).
+    { pose proof (positions_for_role_map_get_unrelated
+                    DEFAULT_ADMIN_ROLE_bytes32
+                    OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                    sim.(State.admins) account
+                    DEFAULT_neq_OG) as Hdef.
+      unfold StorableValue.map_get_u256 in Hdef.
+      destruct (Dict.get (positions_for_role DEFAULT_ADMIN_ROLE_bytes32 _) _) as [u|] eqn:HgDef.
+      + pose proof (positions_for_role_get_ge_1 _ _ _ _ HgDef). lia.
+      + reflexivity. }
+    rewrite (map_get_u256_app_when_first_none _ _ _ Hdef_none).
+    rewrite map_get_app_split.
+    destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                          sim.(State.optimisticGuardians))
+                (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account)) as [v|] eqn:HgOG.
+    - unfold StorableValue.map_get_u256. rewrite HgOG. reflexivity.
+    - pose proof (positions_for_role_map_get_unrelated
+                    OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                    OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                    sim.(State.optimisticGuardianManagers) account
+                    (not_eq_sym OG_neq_OGM)) as Hogm.
+      rewrite Hogm. unfold StorableValue.map_get_u256. rewrite HgOG.
+      reflexivity.
+  Qed.
+
+  Lemma map_get_u256_role_positions_map_ogm
+      (sim : State.t) (account : Address) :
+    StorableValue.map_get_u256 (role_positions_map sim)
+      (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) =
+    StorableValue.map_get_u256
+      (positions_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+         sim.(State.optimisticGuardianManagers))
+      (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account).
+  Proof.
+    unfold role_positions_map.
+    assert (Hdef_none : Dict.get
+                          (positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                             sim.(State.admins))
+                          (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) = None).
+    { pose proof (positions_for_role_map_get_unrelated
+                    DEFAULT_ADMIN_ROLE_bytes32
+                    OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                    sim.(State.admins) account
+                    DEFAULT_neq_OGM) as Hdef.
+      unfold StorableValue.map_get_u256 in Hdef.
+      destruct (Dict.get (positions_for_role DEFAULT_ADMIN_ROLE_bytes32 _) _) as [u|] eqn:HgDef.
+      + pose proof (positions_for_role_get_ge_1 _ _ _ _ HgDef). lia.
+      + reflexivity. }
+    rewrite (map_get_u256_app_when_first_none _ _ _ Hdef_none).
+    assert (Hog_none : Dict.get
+                         (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                            sim.(State.optimisticGuardians))
+                         (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) = None).
+    { pose proof (positions_for_role_map_get_unrelated
+                    OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                    OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                    sim.(State.optimisticGuardians) account
+                    OG_neq_OGM) as Hog.
+      unfold StorableValue.map_get_u256 in Hog.
+      destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32 _) _) as [u|] eqn:HgOG.
+      + pose proof (positions_for_role_get_ge_1 _ _ _ _ HgOG). lia.
+      + reflexivity. }
+    rewrite (map_get_u256_app_when_first_none _ _ _ Hog_none).
+    reflexivity.
+  Qed.
+
+  Lemma contains_at_role_proj_sim_admin :
+    forall (sim : State.t) (account : Address),
+      contains_at_role DEFAULT_ADMIN_ROLE_bytes32 account (proj_sim sim)
+      = Guardian.addr_in sim.(State.admins) account.
+  Proof.
+    intros sim account.
+    unfold contains_at_role, proj_sim. cbn [List.nth_error].
+    rewrite map_get_u256_role_positions_map_admin.
+    apply positions_for_role_map_get_iff_addr_in.
+  Qed.
+
+  Lemma contains_at_role_proj_sim_og :
+    forall (sim : State.t) (account : Address),
+      contains_at_role OPTIMISTIC_GUARDIAN_ROLE_bytes32 account (proj_sim sim)
+      = Guardian.addr_in sim.(State.optimisticGuardians) account.
+  Proof.
+    intros sim account.
+    unfold contains_at_role, proj_sim. cbn [List.nth_error].
+    rewrite map_get_u256_role_positions_map_og.
+    apply positions_for_role_map_get_iff_addr_in.
+  Qed.
+
+  Lemma contains_at_role_proj_sim_ogm :
+    forall (sim : State.t) (account : Address),
+      contains_at_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 account
+        (proj_sim sim)
+      = Guardian.addr_in sim.(State.optimisticGuardianManagers) account.
+  Proof.
+    intros sim account.
+    unfold contains_at_role, proj_sim. cbn [List.nth_error].
+    rewrite map_get_u256_role_positions_map_ogm.
+    apply positions_for_role_map_get_iff_addr_in.
+  Qed.
+
+  (** ===== contains_at_role on a 4-slot post-storage =====
+
+      Helper for the revokeRole was-member walker post-state.  When
+      the walker produces a 4-slot storage [post] whose slot 1 is
+      [StorableValue.Map2 d] for some dict [d], [contains_at_role
+      role account post] reduces to the [map_get_u256 d (role,
+      account) =? 0] negation. *)
+  Lemma contains_at_role_at_4slot
+      (s0 d : Dict.t (U256.t * U256.t) U256.t)
+      (s2 : Dict.t U256.t U256.t)
+      (s3 : Dict.t (U256.t * U256.t) U256.t)
+      (role account : U256.t) :
+    contains_at_role role account
+      [ StorableValue.Map2 s0;
+        StorableValue.Map2 d;
+        StorableValue.Map s2;
+        StorableValue.Map2 s3 ]
+    = negb (StorableValue.map_get_u256 d (role, account) =? 0).
+  Proof. reflexivity. Qed.
+
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
