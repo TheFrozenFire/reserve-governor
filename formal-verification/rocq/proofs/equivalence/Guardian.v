@@ -2257,6 +2257,58 @@ Module GuardianEquivalence.
        fun_hasRole_1292 chainable) are all landed. *)
   Admitted.
 
+  (** ===== R053 Phase 4 — [grantRole_1359_inner] composable wrapper =====
+
+      The inner body is a one-liner wrapper around [_grantRole_704]:
+        let expr_1354 := role
+        let expr_1355 := account
+        let expr_1356 := fun__grantRole_704 (expr_1354, expr_1355)
+        pure (BlockUnit.Tt, tt)
+
+      So the post-state is exactly whatever [_grantRole_704] produces,
+      and the wrapper discards the boolean return ([tt]).
+
+      ===== Composable shape =====
+
+      Rather than instantiating against a specific
+      [_grantRole_704] behavior (the not-member branch, the
+      already-member branch, etc.), this lemma takes the
+      [_grantRole_704] walk as a hypothesis [Hbody_704]. Callers
+      (Phase 5 — the top theorem) supply the walk witness with
+      whatever post-state shape their case demands.
+
+      This is the SAME composable pattern as
+      [run_modifier_onlyRole_1351_admin_passes] (which takes the
+      [Hbody] of [fun_grantRole_1359_inner] as a parameter). Composing
+      Phase 4 + the modifier lemma lets a caller chain the inner-body
+      walk through both wrappers in one shot. *)
+  Lemma run_fun_grantRole_1359_inner_at_proj_sim
+      codes env state_base memory sim (role account : U256.t)
+      (state' : option RocqOfSolidity.State.t) (granted : U256.t)
+      (Hbody_704 :
+        {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+          fun__grantRole_704 role account ⇓
+          Result.Ok granted
+        | state' ?}}) :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun_grantRole_1359_inner role account ⇓
+      Result.Ok tt
+    | state' ?}}.
+  Proof.
+    unfold fun_grantRole_1359_inner.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (fun__grantRole_704 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody_704 | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
   (** ===== Modifier wrapper: [modifier_onlyRole_1351] (admin-passes branch) =====
 
       The modifier body:
@@ -2357,6 +2409,44 @@ Module GuardianEquivalence.
       | |- {{? _, _, _ |
             LowM.Call (fun_grantRole_1359_inner _ _) _ ⇓ _ | _ ?}} =>
           c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== R053 Phase 5 prelude — [fun_grantRole_1359] outer wrapper =====
+
+      The public entry [fun_grantRole_1359] is a thin wrapper around
+      [modifier_onlyRole_1351]:
+        do~ modifier_onlyRole_1351 role account
+        M.pure tt
+
+      Composable form — takes the modifier walk as a hypothesis. The
+      top theorem (run_grantRole_1359_equivalent) instantiates the
+      modifier with the inner-body walk (Phase 4 composable wrapper
+      above), then composes here to lift to the public entry. *)
+  Lemma run_fun_grantRole_1359_at_proj_sim
+      codes env state_base memory sim (role account : U256.t)
+      (state' : option RocqOfSolidity.State.t)
+      (Hmod :
+        {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+          modifier_onlyRole_1351 role account ⇓
+          Result.Ok tt
+        | state' ?}}) :
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun_grantRole_1359 role account ⇓
+      Result.Ok tt
+    | state' ?}}.
+  Proof.
+    unfold fun_grantRole_1359.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call, M.do.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (modifier_onlyRole_1351 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hmod | ]
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
       | |- _ => s
       end).
@@ -2839,9 +2929,22 @@ Module GuardianEquivalence.
            false, state unchanged. If not-member: compose _grantRole_1468
            + fun_add_2085, post-state = proj_sim (add_admin sim account).
         4. [run_fun_grantRole_1359_inner_at_proj_sim] — trivial wrapper
-           around fun__grantRole_704.
+           around fun__grantRole_704.  COMPOSABLE LEMMA LANDED — Qed.
         5. Glue: instantiate modifier wrapper with body = grantRole_1359_inner
-           and post-state via [proj_sim_add_admin_not_in] (already landed). *)
+           and post-state via [proj_sim_add_admin_not_in] (already landed).
+
+      R053 Phase 4 + Phase 5 prelude landed (composable wrappers, both
+      Qed, no new axioms):
+        - [run_fun_grantRole_1359_inner_at_proj_sim] — parameterized over
+          the [fun__grantRole_704] walk. Closes the inner-wrapper layer.
+        - [run_fun_grantRole_1359_at_proj_sim] — parameterized over the
+          [modifier_onlyRole_1351] walk. Closes the outer-wrapper layer
+          (public entry → modifier).
+      Together with [run_modifier_onlyRole_1351_admin_passes] (landed in
+      R053 Phase 0) these chain three of the five wrapper layers as
+      composable Qed lemmas. A future agent can assemble the Phase 5
+      Qed by supplying a [fun__grantRole_704] walk witness and threading
+      it through the three wrappers and the role/post-state case-split. *)
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
