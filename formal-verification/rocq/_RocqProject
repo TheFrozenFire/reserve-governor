@@ -256,3 +256,4 @@ proofs/equivalence/ReentrancyGuard.v
 proofs/equivalence/Nonces.v
 proofs/equivalence/EnumerableSet.v
 proofs/equivalence/Checkpoints.v
+proofs/equivalence/ECDSA.v
