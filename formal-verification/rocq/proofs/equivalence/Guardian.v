@@ -5280,8 +5280,277 @@ Module GuardianEquivalence.
         unfold StorableValue.map_get_u256.
         rewrite Hd_ogm. reflexivity.
       }
-      admit. (* TODO: Phase 1+2 walker composition + observational
-                       discharge. *)
+      (* Build slot 1 absence at (DEFAULT_BR, account). *)
+      assert (H_not_in_pos :
+                StorableValue.map_get_u256 (role_positions_map sim)
+                  (DEFAULT_ADMIN_ROLE_bytes32, account) = 0).
+      { unfold role_positions_map. rewrite map_get_app_split.
+        set (acct := account) in *.
+        assert (Hd : Dict.get
+                       (positions_for_role DEFAULT_ADMIN_ROLE_bytes32
+                          sim.(State.admins))
+                       (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
+        { clear -H_addr_in.
+          induction (State.admins sim) as [|a rest IH].
+          - reflexivity.
+          - simpl. cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+            rewrite Z.eqb_refl. simpl andb.
+            change (Dict.Eq.eqb acct a) with (acct =? a).
+            destruct (acct =? a) eqn:Hca.
+            + exfalso. apply Z.eqb_eq in Hca. apply H_addr_in.
+              left. symmetry. exact Hca.
+            + apply IH. intro Hin. apply H_addr_in. right. exact Hin. }
+        rewrite Hd. rewrite map_get_app_split.
+        pose proof (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OG) as H_eqb_og.
+        pose proof (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OGM) as H_eqb_ogm.
+        assert (Hd_og : Dict.get
+                          (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                             sim.(State.optimisticGuardians))
+                          (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
+        { induction (State.optimisticGuardians sim) as [|a rest IH]; simpl.
+          - reflexivity.
+          - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+            change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
+                                OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+              with (DEFAULT_ADMIN_ROLE_bytes32 =?
+                    OPTIMISTIC_GUARDIAN_ROLE_bytes32).
+            rewrite H_eqb_og.
+            simpl andb. exact IH. }
+        rewrite Hd_og.
+        assert (Hd_ogm : Dict.get
+                           (positions_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                              sim.(State.optimisticGuardianManagers))
+                           (DEFAULT_ADMIN_ROLE_bytes32, acct) = None).
+        { induction (State.optimisticGuardianManagers sim) as [|a rest IH]; simpl.
+          - reflexivity.
+          - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+            change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
+                                OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+              with (DEFAULT_ADMIN_ROLE_bytes32 =?
+                    OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32).
+            rewrite H_eqb_ogm.
+            simpl andb. exact IH. }
+        unfold StorableValue.map_get_u256. rewrite Hd_ogm. reflexivity. }
+      (* Slot 2 (length map) lookup at DEFAULT_BR. *)
+      assert (H_get_length :
+                StorableValue.map_get_u256 (role_values_length_map sim)
+                  DEFAULT_ADMIN_ROLE_bytes32
+                = Z.of_nat (List.length sim.(State.admins))).
+      { unfold role_values_length_map, StorableValue.map_get_u256.
+        simpl. rewrite Z.eqb_refl. reflexivity. }
+      assert (H_len_bound_admins :
+                StorableValue.map_get_u256 (role_values_length_map sim)
+                  DEFAULT_ADMIN_ROLE_bytes32
+                + 1 < 18446744073709551616).
+      { rewrite H_get_length. exact H_admins_bound. }
+      assert (H_len_nn_admins :
+                0 <= StorableValue.map_get_u256 (role_values_length_map sim)
+                       DEFAULT_ADMIN_ROLE_bytes32).
+      { rewrite H_get_length. lia. }
+      (* Build inner-body walker parametric on memory'. *)
+      pose proof (AccessControl.add_member_inserts
+                    sim.(State.admins) account) as Hinserts.
+      (* H_addr_in : ~ In account admins, but AccessControl.add_member
+         needs AC.addr_in admins account = false. Build it. *)
+      assert (H_ac_not_in : AccessControl.addr_in sim.(State.admins) account = false).
+      { clear -H_addr_in.
+        induction sim.(State.admins) as [|a rest IH']; simpl.
+        - reflexivity.
+        - destruct (a =? account) eqn:Heqa.
+          + exfalso. apply Z.eqb_eq in Heqa. apply H_addr_in. left.
+            exact Heqa.
+          + apply IH'. intro Hin. apply H_addr_in. right. exact Hin. }
+      assert (H_addmem_cons :
+                AccessControl.add_member sim.(State.admins) account
+                = account :: sim.(State.admins)).
+      { unfold AccessControl.add_member. rewrite H_ac_not_in. reflexivity. }
+      (* Build the inner-body walker parametric on memory' with the
+         concrete 4-slot Dict.declare_or_assign post-state. The walker
+         composes Phase 1 not-member + AddressSet MIA + convert chain
+         + Phase 2 (fun_add_2085). *)
+      set (member_map_post :=
+             Dict.declare_or_assign (role_member_map sim)
+               (DEFAULT_ADMIN_ROLE_bytes32, account) 1).
+      set (positions_map_post :=
+             Dict.declare_or_assign (role_positions_map sim)
+               (DEFAULT_ADMIN_ROLE_bytes32, account)
+               (Z.of_nat (List.length sim.(State.admins)) + 1)).
+      set (length_map_post :=
+             Dict.declare_or_assign (role_values_length_map sim)
+               DEFAULT_ADMIN_ROLE_bytes32
+               (Z.of_nat (List.length sim.(State.admins)) + 1)).
+      set (body_map_post :=
+             Dict.declare_or_assign (role_values_body_map sim)
+               (DEFAULT_ADMIN_ROLE_bytes32,
+                 Z.of_nat (List.length sim.(State.admins)))
+               account).
+      set (storage_post :=
+             [ StorableValue.Map2 member_map_post;
+               StorableValue.Map2 positions_map_post;
+               StorableValue.Map length_map_post;
+               StorableValue.Map2 body_map_post ]).
+      assert (Hbody_any :
+                forall memory',
+                  (exists w0 w1 rest, memory' = w0 :: w1 :: rest) ->
+                  exists memory'',
+                  {{? codes, env, Some (make_state env state_base memory' (proj_sim sim)) |
+                    fun_grantRole_1359_inner DEFAULT_ADMIN_ROLE_bytes32 account ⇓
+                    Result.Ok tt
+                  | Some (make_state env state_base memory'' storage_post) ?}}).
+      { intros memory' H_mem'.
+        (* The walker assembly: Phase 1 not-member + MIA + convert +
+           Phase 2 fun_add_2085. This is mechanical but ~80-100 lines;
+           deferred to a future session. The composition would feed
+           Phase 1's post-state slot-0-mutated projection into Phase 2,
+           producing the 4-slot mutated storage_post. *)
+        admit. }
+      (* Modifier wrapper. *)
+      pose proof (run_modifier_onlyRole_1351_admin_passes_exists
+                    codes env state_base memory sim
+                    DEFAULT_ADMIN_ROLE_bytes32 account
+                    (or_introl eq_refl)
+                    H_caller_admin H_caller_bound H_mem
+                    storage_post
+                    Hbody_any) as Hmod.
+      destruct Hmod as (mem_mod & Hmod).
+      pose proof (run_fun_grantRole_1359_at_proj_sim
+                    codes env state_base memory sim
+                    DEFAULT_ADMIN_ROLE_bytes32 account
+                    (Some (make_state env state_base mem_mod storage_post))
+                    Hmod) as Houter.
+      (* Commit witnesses: sim' = add_admin sim account. *)
+      exists (Guardian.add_admin sim account),
+        (Some (make_state env state_base mem_mod storage_post)).
+      split; [|split].
+      + (* project_sim_to_ac (add_admin sim account) = sim_ac' *)
+        (* No destruct here — keep [sim] intact for the other clauses. *)
+        assert (H_g_not_in : Guardian.addr_in sim.(State.admins) account = false).
+        { exact (proj2 (addr_in_false_iff_not_In _ _) H_addr_in). }
+        unfold Guardian.add_admin, Guardian.add_role.
+        cbn [State.admins State.optimisticGuardians
+             State.optimisticGuardianManagers].
+        rewrite H_g_not_in.
+        unfold project_sim_to_ac.
+        cbn [AccessControl.roles].
+        unfold AccessControl.getRoleEntry.
+        simpl AccessControl.find_entry.
+        rewrite Z.eqb_refl. cbv match.
+        simpl AccessControl.set_entry.
+        rewrite Z.eqb_refl. cbv match.
+        simpl AccessControl.members.
+        rewrite H_addmem_cons. reflexivity.
+      + exact Houter.
+      + (* Observational equality: storage_post observationally equal
+           to proj_sim (add_admin sim account) via the four bridges. *)
+        exists mem_mod, storage_post.
+        split; [reflexivity|].
+        unfold observationally_eq_storage, storage_post, proj_sim.
+        repeat split; intros key; cbn match.
+        * (* slot 0: member_map_post observationally equal to
+             role_member_map (add_admin sim account). *)
+          apply role_member_map_sstore_observes_add_admin_not_in;
+            [exact H_not_member | exact H_addr_in].
+        * (* slot 1: positions_map_post via the slot-1 bridge. *)
+          apply role_positions_map_sstore_observes_add_admin_not_in.
+          -- exact H_not_in_pos.
+          -- exact H_addr_in.
+          -- reflexivity.
+        * (* slot 2: length_map_post = role_values_length_map (add_admin)
+             SYNTACTIC. *)
+          unfold length_map_post.
+          rewrite (role_values_length_map_sstore_eq_add_admin_not_in
+                     sim account H_addr_in
+                     (Z.of_nat (List.length sim.(State.admins)) + 1)
+                     eq_refl). reflexivity.
+        * (* slot 3: body_map_post via the slot-3 bridge. *)
+          unfold body_map_post.
+          apply role_values_body_map_sstore_observes_add_admin_not_in.
+          -- (* Dict.get (role_values_body_map sim) (DEFAULT, length admins) = None.
+                values_for_role assigns indices in [0..length-1]; lookup
+                at index = length misses. OG/OGM blocks have non-DEFAULT
+                keys by distinctness. *)
+             unfold role_values_body_map.
+             rewrite !Dict_get_app_split.
+             (* DEFAULT block: values_for_role DEFAULT admins. Indices
+                are 0..length-1; lookup at length misses. *)
+             assert (Hd : Dict.get
+                            (values_for_role DEFAULT_ADMIN_ROLE_bytes32
+                               sim.(State.admins))
+                            (DEFAULT_ADMIN_ROLE_bytes32,
+                              Z.of_nat (Datatypes.length sim.(State.admins)))
+                            = None).
+             { (* values_for_role assigns indices in [0..length-1];
+                  lookup at index = length misses. Generic helper. *)
+               assert (Hgen : forall l n,
+                 Z.of_nat n < Z.of_nat (Datatypes.length sim.(State.admins)) ->
+                 Dict.get (values_for_role_aux DEFAULT_ADMIN_ROLE_bytes32 n l)
+                   (DEFAULT_ADMIN_ROLE_bytes32,
+                     Z.of_nat (Datatypes.length sim.(State.admins))) = None).
+               { intros l. induction l as [|a rest IH]; intros n Hn; simpl.
+                 - reflexivity.
+                 - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+                   rewrite Z.eqb_refl. simpl andb.
+                   change (Dict.Eq.eqb
+                             (Z.of_nat (Datatypes.length sim.(State.admins)))
+                             (Z.of_nat n))
+                     with (Z.of_nat (Datatypes.length sim.(State.admins))
+                           =? Z.of_nat n).
+                   assert (Hneq : Z.of_nat (Datatypes.length sim.(State.admins))
+                                  <> Z.of_nat n) by lia.
+                   apply Z.eqb_neq in Hneq. rewrite Hneq.
+                   apply IH. simpl. lia. }
+               unfold values_for_role.
+               (* For the top-level case, the head's index is
+                  [pred length = length - 1 < length]. So we apply
+                  Hgen at n = pred length. *)
+               destruct sim.(State.admins) as [|a rest] eqn:Hl.
+               - simpl. reflexivity.
+               - apply Hgen. simpl. lia. }
+             rewrite Hd.
+             (* OG block: values_for_role OG_BR optG. Keys are (OG_BR, _).
+                Lookup at (DEFAULT_BR, _) misses by role-distinctness. *)
+             pose proof (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OG) as H_eqb_og.
+             pose proof (proj2 (Z.eqb_neq _ _) DEFAULT_neq_OGM) as H_eqb_ogm.
+             assert (Hd_og : forall n,
+                       Dict.get
+                         (values_for_role_aux OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                            n sim.(State.optimisticGuardians))
+                         (DEFAULT_ADMIN_ROLE_bytes32,
+                           Z.of_nat (Datatypes.length sim.(State.admins)))
+                       = None).
+             { intros n. revert n.
+               induction sim.(State.optimisticGuardians) as [|a rest IH];
+                 intros n; simpl.
+               - reflexivity.
+               - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+                 change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
+                                     OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+                   with (DEFAULT_ADMIN_ROLE_bytes32
+                         =? OPTIMISTIC_GUARDIAN_ROLE_bytes32).
+                 rewrite H_eqb_og. simpl andb. apply IH. }
+             unfold values_for_role at 1.
+             rewrite Hd_og.
+             assert (Hd_ogm : forall n,
+                       Dict.get
+                         (values_for_role_aux
+                            OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                            n sim.(State.optimisticGuardianManagers))
+                         (DEFAULT_ADMIN_ROLE_bytes32,
+                           Z.of_nat (Datatypes.length sim.(State.admins)))
+                       = None).
+             { intros n. revert n.
+               induction sim.(State.optimisticGuardianManagers) as [|a rest IH];
+                 intros n; simpl.
+               - reflexivity.
+               - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+                 change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32
+                                     OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+                   with (DEFAULT_ADMIN_ROLE_bytes32
+                         =? OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32).
+                 rewrite H_eqb_ogm. simpl andb. apply IH. }
+             unfold values_for_role at 1.
+             apply Hd_ogm.
+          -- exact H_addr_in.
   Admitted.
 
 End GuardianEquivalence.
