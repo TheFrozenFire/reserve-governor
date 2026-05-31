@@ -245,6 +245,7 @@ generated/VersionRegistry_shallow.v
 generated/RewardTokenRegistry_shallow.v
 generated/Guardian_shallow.v
 generated/UnstakingManager_shallow.v
+generated/ProposalLib_shallow.v
 proofs/equivalence/Common.v
 proofs/equivalence/Sandbox.v
 proofs/equivalence/ThrottleLib_Leaves.v
@@ -258,3 +259,4 @@ proofs/equivalence/Nonces.v
 proofs/equivalence/EnumerableSet.v
 proofs/equivalence/Checkpoints.v
 proofs/equivalence/ECDSA.v
+proofs/equivalence/ProposalLib.v
