@@ -252,3 +252,4 @@ proofs/equivalence/VersionRegistry.v
 proofs/equivalence/RewardTokenRegistry.v
 proofs/equivalence/Guardian.v
 proofs/equivalence/ReentrancyGuard.v
+proofs/equivalence/Nonces.v
