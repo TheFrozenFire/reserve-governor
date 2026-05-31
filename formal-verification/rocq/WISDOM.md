@@ -2348,3 +2348,64 @@ emission for a non-standard / object-level construct
 (`verbatim_*`, inline-assembly bytes blocks), or (b) a typo in
 hand-written proof code, or (c) a missing Require Import.  The
 M.monadic error message covers all three.
+
+## R044: two patterns for outer-wrapper equivalence proofs
+
+Two patterns surfaced together while closing the RewardTokenRegistry
+[fun_isRegistered_155] outer wrapper. Both are reusable for any
+contract whose entry point delegates through a helper chain.
+
+### Pattern A: generic `cu` arm for nested-function bodies
+
+When an outer function calls a helper whose body is `unfold`ed in the
+prelude, the call site becomes `LowM.Call (LowM.Let ...) LowM.Pure`.
+The walker can't recognize this via its specific-function arms — those
+match function names, not the inlined body shape.
+
+Add a generic arm:
+
+```coq
+| |- {{? _, _, _ | LowM.Call (LowM.Let _ _) _ ⇓ _ | _ ?}} => cu
+```
+
+This unfolds the call to `LowM.let_ body continuation`, letting the
+walker traverse the inlined body normally. Use after the
+specific-function arms so they get first crack; the generic arm is
+the fallback for "any call whose body has already been unfolded."
+
+The alternative — proving a separate theorem about the helper and
+delegating via `c; [apply HelperTheorem | ]` — is the right move when
+the helper appears in many places. For one-shot inlining, the generic
+`cu` arm is shorter.
+
+### Pattern B: subst the intro-introduced lets before destruct
+
+When a theorem uses `let state := ... in let expected := ... in
+exists state', ...`, an `intros state expected` brings them in as
+*local definitions* (with `:=`). `destruct` doesn't see through these
+— it case-splits the syntactic expression in the goal, leaving
+`expected` symbolic on the LHS while substituting only on the RHS.
+
+Fix: `subst expected. subst positions_value.` (or whichever locals
+appear in the case-split). After `subst`, the let-bindings are gone
+and `destruct (positions_value =? 0)` correctly case-splits both
+sides.
+
+Smell test for this pattern: after `destruct ... eqn:H`, the goal
+has `expected = if true then X else Y` on the LHS (where `expected`
+is a local let) but the RHS computed normally. The fix is upstream
+in the proof — `subst` before the walker.
+
+### When to combine
+
+Outer-wrapper proofs that bridge contract output → sim invariant
+typically need BOTH patterns:
+
+  1. `subst` the let-introduced expected/state/positions_value.
+  2. Pose the inner theorem upfront with all its witnesses.
+  3. Walker with generic `cu` arm for unfolded-helper calls.
+  4. Closure via `RunO.PureEq + f_equal + bridge lemma`.
+
+RewardTokenRegistry.run_isRegistered_equivalent is the canonical
+example. Same shape generalizes to any
+`view_function token → helper_chain → leaf_view` composition.
