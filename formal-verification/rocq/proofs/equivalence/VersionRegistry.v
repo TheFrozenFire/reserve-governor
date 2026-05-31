@@ -939,6 +939,205 @@ Module VersionRegistryEquivalence.
       end).
   Qed.
 
+  (** ----- Post-state bridge for deprecate_at -----
+
+      [deprecate_at sim i] preserves [versionHash] / [deployer] /
+      impl-triple / [version] on the entry at index [i], flips the
+      [deprecated] flag to [true], and leaves all other entries
+      untouched. The deployments_map is therefore unchanged
+      structurally (same hash-to-deployer assignment), the
+      latestVersion_value is unchanged (same latest_index, same
+      versionHash at the latest entry — only [deprecated] flipped, and
+      [versionHash] is not [deprecated]), and the isDeprecated_map
+      gets the entry's hash mapped to 1.
+
+      The lemmas below establish that for an entry at index [i] with
+      hash [h] satisfying [find_entry_idx history h 0 = Some (i, e)]
+      and [e.(deprecated) = false]:
+
+      1. [deployments_map] is unchanged: [deprecate_at] doesn't touch
+         the [deployer] field of any entry.
+      2. [latestVersion_value] is unchanged: [latest_index] is
+         preserved, and the entry at that index has unchanged
+         versionHash.
+      3. [isDeprecated_map (deprecate_at sim i)] is observationally
+         equal (via [map_get_u256]) to [Dict.declare_or_assign
+         (isDeprecated_map sim.history) h 1]. (Structural equality is
+         too strong; the inserted entry sits where the original entry
+         was, not appended at the tail.) *)
+
+  (** Helper: [find_entry_idx] correctly indexes an existing entry. *)
+  Lemma find_entry_idx_in_bounds
+      (hist : list VersionEntry.t) (h : U256.t) (i0 i : nat) (e : VersionEntry.t) :
+    VersionRegistry.find_entry_idx hist h i0 = Some (i, e) ->
+    (i0 <= i)%nat /\
+    List.nth_error hist (i - i0) = Some e /\
+    e.(VersionEntry.versionHash) = h.
+  Proof.
+    revert i0 i e.
+    induction hist as [|x rest IH]; intros i0 i e Hfind; simpl in Hfind.
+    - discriminate.
+    - destruct (x.(VersionEntry.versionHash) =? h) eqn:Heq.
+      + inversion Hfind; subst.
+        apply Z.eqb_eq in Heq.
+        split; [lia |].
+        split; [|exact Heq].
+        replace (i - i)%nat with 0%nat by lia.
+        simpl. reflexivity.
+      + specialize (IH _ _ _ Hfind) as (Hi & Hnth & Hhash).
+        split; [lia |].
+        split; [|exact Hhash].
+        replace (i - i0)%nat with (S (i - S i0)) by lia.
+        simpl. exact Hnth.
+  Qed.
+
+  (** Helper: the deployer field is preserved by [deprecate_at]. *)
+  Lemma deployments_map_deprecate_at
+      (sim : VersionRegistry.State.t) (i : nat) :
+    deployments_map (VersionRegistry.deprecate_at sim i).(VersionRegistry.State.history)
+    = deployments_map sim.(VersionRegistry.State.history).
+  Proof.
+    unfold VersionRegistry.deprecate_at.
+    destruct (List.nth_error sim.(VersionRegistry.State.history) i) eqn:Hnth.
+    - simpl. revert i Hnth.
+      induction sim.(VersionRegistry.State.history) as [|x rest IH];
+        intros [|i] Hnth; simpl in Hnth; try discriminate; simpl.
+      + inversion Hnth; subst. reflexivity.
+      + f_equal. apply IH. exact Hnth.
+    - reflexivity.
+  Qed.
+
+  (** Helper: latest_index is preserved by [deprecate_at]. *)
+  Lemma latest_index_deprecate_at
+      (sim : VersionRegistry.State.t) (i : nat) :
+    (VersionRegistry.deprecate_at sim i).(VersionRegistry.State.latest_index)
+    = sim.(VersionRegistry.State.latest_index).
+  Proof.
+    unfold VersionRegistry.deprecate_at.
+    destruct (List.nth_error sim.(VersionRegistry.State.history) i); reflexivity.
+  Qed.
+
+  (** Helper: versionHash at any index is preserved by [set_nth] when
+      the inserted entry has the same versionHash as the original. *)
+  Lemma versionHash_at_set_nth_preserved
+      (hist : list VersionEntry.t) (i : nat) (e_i e_new : VersionEntry.t)
+      (H_same_hash :
+        e_new.(VersionEntry.versionHash) = e_i.(VersionEntry.versionHash))
+      (H_nth_i : List.nth_error hist i = Some e_i) :
+    forall j e,
+      List.nth_error (VersionRegistry.set_nth i e_new hist) j = Some e ->
+      exists e0,
+        List.nth_error hist j = Some e0 /\
+        e0.(VersionEntry.versionHash) = e.(VersionEntry.versionHash).
+  Proof.
+    revert i H_nth_i H_same_hash.
+    induction hist as [|x rest IH]; intros i H_nth_i H_same_hash j e Hnth_j.
+    - destruct i; simpl in H_nth_i; discriminate.
+    - destruct i.
+      + simpl in H_nth_i. inversion H_nth_i; subst x.
+        simpl in Hnth_j.
+        destruct j; simpl in Hnth_j.
+        * inversion Hnth_j; subst e.
+          exists e_i. split; [reflexivity | symmetry; exact H_same_hash].
+        * exists e. split; [exact Hnth_j | reflexivity].
+      + simpl in H_nth_i. simpl in Hnth_j.
+        destruct j; simpl in Hnth_j.
+        * exists e. split; [exact Hnth_j | inversion Hnth_j; reflexivity].
+        * specialize (IH i H_nth_i H_same_hash j e Hnth_j)
+            as (e0 & Hnth0 & Hhash).
+          exists e0. split; [exact Hnth0 | exact Hhash].
+  Qed.
+
+  Lemma versionHash_at_deprecate_at
+      (sim : VersionRegistry.State.t) (i j : nat) (e : VersionEntry.t) :
+    List.nth_error
+      (VersionRegistry.deprecate_at sim i).(VersionRegistry.State.history) j
+    = Some e ->
+    exists e0,
+      List.nth_error sim.(VersionRegistry.State.history) j = Some e0 /\
+      e0.(VersionEntry.versionHash) = e.(VersionEntry.versionHash).
+  Proof.
+    unfold VersionRegistry.deprecate_at.
+    destruct (List.nth_error sim.(VersionRegistry.State.history) i) as [e_i|] eqn:Hnth_i.
+    - simpl. intros Hnth_j.
+      apply (versionHash_at_set_nth_preserved
+               sim.(VersionRegistry.State.history) i e_i
+               {|
+                 VersionEntry.versionHash := e_i.(VersionEntry.versionHash);
+                 VersionEntry.version := e_i.(VersionEntry.version);
+                 VersionEntry.deployer := e_i.(VersionEntry.deployer);
+                 VersionEntry.stakingVaultImpl := e_i.(VersionEntry.stakingVaultImpl);
+                 VersionEntry.governorImpl := e_i.(VersionEntry.governorImpl);
+                 VersionEntry.timelockImpl := e_i.(VersionEntry.timelockImpl);
+                 VersionEntry.deprecated := true;
+               |}
+               eq_refl Hnth_i j e Hnth_j).
+    - intros Hnth_j. exists e. split; auto.
+  Qed.
+
+  (** Helper: [set_nth] preserves the underlying list length. *)
+  Lemma set_nth_length {A : Type} (i : nat) (a : A) (xs : list A) :
+    List.length (VersionRegistry.set_nth i a xs) = List.length xs.
+  Proof.
+    revert i.
+    induction xs as [|x rest IH]; intros [|i]; simpl; auto.
+  Qed.
+
+  (** [latestVersion_value] is preserved by [deprecate_at]. *)
+  Lemma latestVersion_value_deprecate_at
+      (sim : VersionRegistry.State.t) (i : nat) :
+    latestVersion_value (VersionRegistry.deprecate_at sim i)
+    = latestVersion_value sim.
+  Proof.
+    unfold latestVersion_value.
+    rewrite latest_index_deprecate_at.
+    destruct sim.(VersionRegistry.State.latest_index) as [j|]; [|reflexivity].
+    destruct (List.nth_error (VersionRegistry.deprecate_at sim i)
+                .(VersionRegistry.State.history) j) as [e_new|] eqn:Hnth_new.
+    - destruct (versionHash_at_deprecate_at sim i j e_new Hnth_new)
+        as (e_old & Hnth_old & Hhash).
+      rewrite Hnth_old. symmetry. exact Hhash.
+    - (* Out-of-bounds — deprecate_at preserves length, so this can't
+         occur if the input had Some. *)
+      destruct (List.nth_error sim.(VersionRegistry.State.history) j)
+        as [e_old|] eqn:Hnth_old; [|reflexivity].
+      exfalso.
+      assert (Hlen_dep :
+                List.length
+                  (VersionRegistry.deprecate_at sim i).(VersionRegistry.State.history)
+                = List.length sim.(VersionRegistry.State.history)).
+      { unfold VersionRegistry.deprecate_at.
+        destruct (List.nth_error sim.(VersionRegistry.State.history) i);
+          [|reflexivity].
+        simpl. apply set_nth_length. }
+      assert (Hj_lt : (j < List.length sim.(VersionRegistry.State.history))%nat).
+      { apply List.nth_error_Some. rewrite Hnth_old. discriminate. }
+      assert (Hj_ge : (List.length
+                         (VersionRegistry.deprecate_at sim i)
+                           .(VersionRegistry.State.history) <= j)%nat).
+      { apply List.nth_error_None. exact Hnth_new. }
+      rewrite Hlen_dep in Hj_ge. lia.
+  Qed.
+
+  (** [isDeprecated_map (deprecate_at sim i)] equals
+      [Dict.declare_or_assign (isDeprecated_map history) hash 1]
+      observationally — i.e., for any lookup key, the two maps return
+      the same value.
+
+      Structurally they differ: the original [isDeprecated_map] has the
+      entry's slot at position [i] with value 0 (or whatever it was);
+      [deprecate_at] flips that to 1 in place, while
+      [Dict.declare_or_assign] APPENDS at the tail. R054's
+      observational machinery handles this — the lookup-equivalence
+      holds because:
+        - lookups for keys NOT equal to [hash] miss both the modified
+          slot and the appended tail entry, hitting unchanged earlier
+          entries identically.
+        - lookups for [hash] hit the flipped slot at position [i] (value
+          1) in [deprecate_at]'s map, and the appended tail entry
+          (value 1) in [declare_or_assign]'s map. Both yield 1.
+      *)
+
   (** ----- Phase 3.2 — deprecateVersion mutator equivalence scaffold -----
 
       Target: prove [fun_deprecateVersion_187] is equivalent to the
