@@ -3079,3 +3079,127 @@ target but needs the R050 infrastructure landed first.
   in the success arm (without R046, even the R050 leaves wouldn't
   have an sstore to dispatch on).
 - R049 — the multi-slot proj_sim pattern that R-postbridge mirrors.
+
+## R051: Guardian.grantRole closure — deeper residuals than R046 anticipated
+
+**Status: open. msgSender leaf landed; three structural residuals
+remain. Closes the prompt's "first OZ mutator Qed" milestone target
+back to in-progress.**
+
+Post-R046, the inner `_grantRole_1468` sstore was supposed to be the
+only big blocker for `Guardian.grantRole`'s equivalence. Closing the
+full chain (`fun_grantRole_1359` → `modifier_onlyRole_1351` →
+`fun_getRoleAdmin_1340` + `fun__checkRole_1305` →
+`fun_grantRole_1359_inner` → `fun__grantRole_704` →
+`fun__grantRole_1468` + `fun_add_2085`) uncovered three structural
+gaps the original residual catalogue (in
+`run_grantRole_1359_equivalent`'s pre-task-#248 docstring)
+under-specified:
+
+### R051.a — slot-1 admin-field read (`fun_getRoleAdmin_1340`)
+
+`fun_getRoleAdmin_1340` reads `_roles[role].adminRole` at slot
+`keccak256(role, 0) + 1`. Under the current `proj_sim`:
+  - slot 0 is `Map2 (role, account) → 0/1` (hasRole sub-mapping)
+  - slot 1 is `Map2 (role, account) → position` (EnumerableSet positions)
+
+The keccak+1 admin slot is NOT in proj_sim's range — slot 0 is a
+`Map2`, not a `MapStruct`. The framework's `run_sload_map2_u256`
+hits the slot `keccak256(account, keccak256(role, 0))` (nested
+keccak), not `keccak256(role, 0) + 1` (offset-from-base). To close
+this read, proj_sim's slot 0 must be a `MapStruct (role, offset) →
+value` (offset 0 = hasRole — but that's a sub-mapping, not a U256,
+so the encoding breaks down) OR the proof must add an opaque-slot
+axiom asserting that "out-of-projection" slots return 0.
+
+The cleanest model: replace slot 0's Map2 with a MapStruct keyed by
+`(role, account_or_admin_offset)`, where `(role, 0)` is interpreted
+as the admin field (returning DEFAULT_ADMIN_ROLE = 0 by default).
+This breaks the existing slot-0 read path; it's a half-day refactor.
+
+### R051.b — bool sstore wrapper (`update_storage_value_offset_0_t_bool_to_t_bool`)
+
+The R046-restored sstore in `_grantRole_1468`'s success arm goes
+through `sload + update_byte_slice_1_shift_0 + prepare_store_t_bool
++ sstore` (the bool flavor of the R040 chain). An R040-style
+wrapper baked against `proj_sim sim`'s slot-0 Map2 must close to
+the cons-prefixed shape from `proj_sim_add_admin_not_in`. The
+inner-walker math is identical to ThrottleLib's uint256 wrapper but
+the prepare/extract leaves are bool-flavored. ~80 lines once
+attempted.
+
+### R051.c — EnumerableSet `_values` array (`fun_add_2085`)
+
+The deepest blocker. `fun_add_2085` → `fun__add_1614` performs:
+  - `array_push_from_t_bytes32_to_t_array...dyn_storage_ptr`: writes
+    to the `_values` array length cell (slot
+    `keccak256(role, 1) + 0`) AND the body element at
+    `keccak256(keccak256(role, 1)) + length`.
+  - `update_storage_value_offset_0_t_uint256_to_t_uint256` at the
+    positions sub-mapping (slot 1's offset 1; this matches
+    `role_positions_map`).
+
+The `_values` length cell and array body slots are NOT in proj_sim.
+R049 explicitly defers them ("If a future equivalence touches
+`getRoleMember(role, idx)` or `getRoleMemberCount(role)`, extend
+proj_sim with additional slots"). For grantRole, NO downstream
+observer reads these — but the SSTOREs fire regardless, and the
+walker needs leaves to discharge them. This is multi-day work:
+  - extend proj_sim with a third slot for the EnumerableSet `_values`
+    array (length + body, encoded so the bridge lemma stays
+    inductive on the role list)
+  - build `run_array_push_at_proj_sim` as an R040-style wrapper
+  - extend `proj_sim_add_admin_not_in` (or build a companion) to
+    cover the new slot's post-state shape.
+
+### What this means for the milestone
+
+The "first OZ mutator equivalence Qed" milestone target (originally
+nominated for `run_grantRole_1359_equivalent` after R050 retargeted
+away from VersionRegistry.deprecateVersion) requires R051.a, .b,
+and .c. Of the three, only .b is bounded-effort once the other two
+land. .c is the long pole.
+
+Re-evaluating the corpus's OZ mutator targets:
+  - `Guardian.grantRole` — needs R051.a + .b + .c.
+  - `Guardian.revokeRole` — needs R051.a + .b + a swap-and-pop
+    variant of .c (harder than .c because the positions invariant
+    needs a tail-rewrite per R049's deferred-revoke note).
+  - `VersionRegistry.deprecateVersion` — needs R050.full.
+  - `Guardian.renounceRole` — same shape as revoke.
+
+There is no OZ mutator equivalence currently within ~1-day reach.
+The next session should pick ONE of the three structural lifts
+(R051.a, R051.c, or R050.full) as a standalone landing.
+
+### What this session landed
+
+- `run_fun__msgSender_3197` caller leaf — closes residual (D) from
+  the original Guardian.grantRole catalogue. The R046-resolved
+  `_grantRole_1468` calls this leaf for the event-log msg.sender
+  argument.
+- Updated `run_grantRole_1359_equivalent`'s inline residual catalogue
+  to reflect R051.a/b/c and the (D)-closed status.
+
+### Touchpoints
+
+- `proofs/equivalence/Guardian.v::run_fun__msgSender_3197` — the
+  landed leaf.
+- `proofs/equivalence/Guardian.v::run_grantRole_1359_equivalent`
+  — the still-Admitted theorem, with R051 residuals enumerated
+  inline.
+- `simulations/RocqOfSolidity.v::StorableValue.{Map2, MapStruct}`
+  — the encoding choice that R051.a refactor would touch.
+- R046 (resolved) — the upstream fix that exposed the deeper
+  structural gaps R051 catalogues.
+
+### Cross-references
+
+- R040 — wrapper-shape sstore (uint256 flavor); R051.b is the bool
+  flavor.
+- R046 — the upstream generator fix; pre-R046 the success-arm
+  sstore was missing, so R051.b's gap was masked.
+- R049 — the multi-slot proj_sim landing that R051.a/c would extend.
+- R050 — VersionRegistry.deprecateVersion's external-staticcall
+  infrastructure gap; the sister blocker that retargeted this
+  milestone to Guardian in the first place.

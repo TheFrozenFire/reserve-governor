@@ -1033,29 +1033,67 @@ Module GuardianEquivalence.
             [addr_in_false_iff_not_In] as the bridge between the
             sim's Boolean membership and the Coq [In] predicate.
 
-        (C) Walker leaves: [run_update_storage_value_offset_0_t_bool_to_t_bool]
-            (R040 pattern for the bool-slot sstore — needs
-            [sload]+[update_byte_slice]+[sstore] composition);
-            [run_fun_getRoleAdmin_1340] (under our proj_sim the
-            slot-1 read returns 0 by tail-default, which happens to
-            coincide with DEFAULT_ADMIN_ROLE = 0); [run_fun__checkRole_1305]
-            (composes [run_hasRole_equivalent] with revert-on-failure;
-            H_caller_admin discharges the revert branch);
-            [run_fun_add_2085] (EnumerableSet mutator; depends on A).
+        (C) Walker leaves — three distinct gaps remain:
+
+            (C.1) [run_update_storage_value_offset_0_t_bool_to_t_bool]
+                  — R040 pattern for the bool-slot sstore. The Yul
+                  body is [convert + sstore (slot, update_byte_slice_1_shift_0
+                  (sload slot) (prepare_store_t_bool convertedValue))].
+                  Needs a wrapper that bakes in the proj_sim slot-0
+                  Map2 layout: pre-sstore the slot reads 0 (not yet
+                  a member), update_byte_slice merges 1 into the
+                  low byte yielding 1, sstore writes 1 to slot 0's
+                  Map2 entry. ~80 lines once attempted; analogous to
+                  ThrottleLib's [run_update_storage_offset_0_at_two_slot_list]
+                  but for the bool flavor and Map2 (not MapStruct).
+
+            (C.2) [run_fun_getRoleAdmin_1340] — reads
+                  [_roles[role].adminRole] at slot
+                  [keccak256(role, 0) + 1]. Under our proj_sim, slot 0
+                  is a [Map2 (role, account) → 0/1] (the hasRole
+                  sub-mapping), NOT a [MapStruct (role, offset) → value].
+                  The keccak+1 admin slot is NOT in proj_sim's range.
+                  This is a structural gap: closing it requires either
+                  (a) extending proj_sim to model the admin field
+                  (likely as a [MapStruct (role, offset)] replacing
+                  slot 0's Map2 — backward-incompatible) or (b) a
+                  separate "out-of-range slot defaults to 0" lemma
+                  the upstream apparatus does not currently provide.
+                  Estimated work: ~half-day refactor to proj_sim or a
+                  new opaque-slot axiom in [simulations/Guardian.v].
+
+            (C.3) [run_fun_add_2085] — EnumerableSet add. The body
+                  calls [fun__add_1614] which performs:
+                    - [array_push_from_t_bytes32_to_t_array...dyn_storage]
+                      (writes to slot 1's _values length cell AND the
+                      array body element at slot 1's keccak base + length)
+                    - [update_storage_value_offset_0_t_uint256_to_t_uint256]
+                      at the positions sub-mapping (slot 1's offset 1).
+                  The _values length cell and array body slots are NOT
+                  modelled in proj_sim. R049 explicitly defers these
+                  ("If a future equivalence touches [getRoleMember] or
+                  [getRoleMemberCount], extend proj_sim with additional
+                  slots"). For grantRole, NO downstream observer reads
+                  these — but the SSTOREs fire anyway, and the walker
+                  needs leaves to discharge them. This is a multi-day
+                  workstream: extend proj_sim with a third slot for the
+                  EnumerableSet _values array (length + body), build
+                  [run_array_push_at_proj_sim] as an R040-style wrapper,
+                  build a per-role bridge lemma analogous to
+                  [proj_sim_add_admin_not_in] but for the _values array.
 
         (D) Caller bridge: [run_fun__msgSender_3197] reads the
             [Stdlib.caller] primitive and returns [env.(Environment.caller)].
-            Short leaf composed against the function's zero-init prelude.
+            CLOSED — see lemma of the same name above.
 
-      Status as of task #248: residuals (A) and (B) closed. (C)
-      and (D) remain. The proof body below sets up the R047
-      case-split structure (case on [AccessControl.grantRole]'s
-      result) and poses [run_hasRole_equivalent] for the modifier's
-      auth check, then [Admitted]s on residuals (C)+(D). The
-      multiplicative unblocker has fired: the projection now has a
-      slot-1 entry the walker can talk about, and the bridge lemma
-      [proj_sim_add_admin_not_in] gives the post-state equality
-      shape that the success branch will need to discharge. *)
+      Status as of task #250: residuals (A), (B), and (D) closed.
+      Residuals (C.1), (C.2), and (C.3) remain. The proof body below
+      sets up the R047 case-split structure (case on
+      [AccessControl.grantRole]'s result) and poses
+      [run_hasRole_equivalent] for the modifier's auth check, then
+      [Admitted]s on the residuals. C.3 is the deepest blocker; until
+      proj_sim grows the _values array slots, the walker for
+      [fun_add_2085] has nowhere to land the array_push sstore. *)
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -1142,12 +1180,13 @@ Module GuardianEquivalence.
                     DEFAULT_ADMIN_ROLE_bytes32 (env.(Environment.caller))
                     memory H_role H_account H_mem) as Hhr_admin. *)
 
-    (** Residuals (C) and (D) remain; (A) and (B) closed in task
-        #248. (C) is the EnumerableSet-mutator walker (fun_add_2085
-        + fun__add_1614) and the R040-shape bool-slot sstore
-        wrapper. (D) is the [run_fun__msgSender_3197] caller leaf.
-        Once (C)+(D) land, the scaffold above composes into a Qed via
-        [proj_sim_add_admin_not_in] for the post-state equality. *)
+    (** Residuals (C.1) (bool sstore wrapper), (C.2) (getRoleAdmin
+        slot+1 read — structural proj_sim gap), and (C.3)
+        (EnumerableSet array_push — needs new slot in proj_sim)
+        remain. (A), (B), (D) closed. The R049 follow-on for the
+        EnumerableSet _values array is the deepest blocker; until
+        proj_sim grows that slot the walker for [fun_add_2085] has
+        nowhere to discharge the array_push sstores. *)
   Admitted.
 
 End GuardianEquivalence.
