@@ -912,6 +912,169 @@ Module GuardianEquivalence.
                    (role_values_body_map sim) (role, idx))
     | Some (make_state env state_base memory proj_sim_pre) ?}}.
 
+  (** ===== Bit-mask leaf for the bytes32 offset-0 body write =====
+
+      [update_byte_slice_dynamic32 prev 0 v] reduces to [v] for any
+      [v ∈ [0, 2^256)], independent of [prev]. The shallow body is:
+
+        shiftBits := mul(shiftBytes, 8)              (* = 0 *)
+        mask      := shl(shiftBits, MAX)             (* = MAX *)
+        toInsert  := shl(shiftBits, toInsert)        (* = v *)
+        value     := and(prev, not(mask))            (* = 0 *)
+        result    := or(value, and(toInsert, mask))  (* = v *)
+
+      Same shape as [ThrottleLibLeaves.run_update_byte_slice_32_shift_0]
+      but with [shift_left_dynamic 0 _] in place of [shift_left_0 _]. *)
+  Lemma run_shift_left_dynamic_0 codes env state (v : U256.t)
+      (H_v : 0 <= v < 2^256) :
+    {{? codes, env, Some state |
+      shift_left_dynamic 0 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_left_dynamic.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.shl. simpl.
+    rewrite Z.mul_1_r.
+    rewrite Z.mod_small by exact H_v.
+    pe; reflexivity.
+  Qed.
+
+  Lemma run_update_byte_slice_dynamic32_offset_0
+      codes env state (old_value new_value : U256.t)
+      (H_new : 0 <= new_value < 2^256) :
+    {{? codes, env, Some state |
+      update_byte_slice_dynamic32 old_value 0 new_value ⇓ Result.Ok new_value
+    | Some state ?}}.
+  Proof.
+    unfold update_byte_slice_dynamic32.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    (* The first shift_left_dynamic has [bits = Pure.mul 0 8 = 0] and
+       value = MAX = 2^256 - 1; both in U256-range. The second has
+       bits = 0 and value = new_value (in range by H_new). *)
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (Stdlib.mul _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.mul, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (shift_left_dynamic _ _) _ ⇓ _ | _ ?}} =>
+          c; [ first
+                 [ apply run_shift_left_dynamic_0; exact H_new
+                 | apply run_shift_left_dynamic_0;
+                   change (2^256) with 115792089237316195423570985008687907853269984665640564039457584007913129639936;
+                   lia ] | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.not _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.not, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.and _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.and, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.or _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.or, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    (* Reduce the final result. Pure.mul 0 8 = 0 is in shiftBits already.
+       After the [shift_left_dynamic] arms close to MAX and new_value,
+       we get [or(and(prev, not(MAX)), and(new_value, MAX)) = new_value]. *)
+    s.
+    unfold Pure.and, Pure.or, Pure.not.
+    change (2 ^ 256 -
+            115792089237316195423570985008687907853269984665640564039457584007913129639935 - 1)
+      with 0.
+    rewrite Z.land_0_r.
+    rewrite Z.lor_0_l.
+    change 115792089237316195423570985008687907853269984665640564039457584007913129639935
+      with (Z.ones 256).
+    rewrite Z.land_ones by lia.
+    rewrite Z.mod_small by exact H_new.
+    pe; reflexivity.
+  Qed.
+
+  (** [shift_right_0_unsigned v] = [shr 0 v] = [v / 1] = [v]. Local copy
+      since the (later-defined) sibling [run_shift_right_0_unsigned] is
+      forward-referenced; both have the same body. *)
+  Lemma run_shift_right_0_unsigned_for_bytes32 codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      shift_right_0_unsigned v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_right_0_unsigned.
+    lu. repeat (lu || cu || p). s.
+    apply RunO.PureEq; [|reflexivity].
+    unfold Pure.shr. simpl. rewrite Z.div_1_r. reflexivity.
+  Qed.
+
+  (** [prepare_store_t_bytes32 v] = [shr 0 v] = [v / 1] = [v]. *)
+  Lemma run_prepare_store_t_bytes32 codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      prepare_store_t_bytes32 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold prepare_store_t_bytes32.
+    lu. l. {
+      c. { apply run_shift_right_0_unsigned_for_bytes32. }
+      p.
+    }
+    p.
+  Qed.
+
+  (** ===== Wrapper leaf: [update_storage_value_t_bytes32_to_t_bytes32]
+      at the array-body slot under [proj_sim] =====
+
+      Bakes in the post-length-sstore four-slot shape and threads the
+      body sstore through [run_sstore_role_values_body_at_proj_sim].
+      Chain inside [update_storage_value_t_bytes32_to_t_bytes32]:
+        convert_t_bytes32_to_t_bytes32 value          (* = value *)
+        sload(slot)                                    (* prev *)
+        prepare_store_t_bytes32(value)                 (* = value *)
+        update_byte_slice_dynamic32(prev, 0, value)    (* = value *)
+        sstore(slot, value)                            (* body write *)
+      Final post-state has slot 3's body_map updated at (role, idx). *)
+  Lemma run_update_storage_value_t_bytes32_at_proj_sim
+      codes env state_base memory sim (role idx value : U256.t)
+      (length_map' : Dict.t U256.t U256.t)
+      (H_v : 0 <= value < 2^256) :
+    let proj_sim_pre :=
+      [ StorableValue.Map2 (role_member_map sim);
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map length_map';
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    let body_map' :=
+      Dict.declare_or_assign (role_values_body_map sim) (role, idx) value in
+    let proj_sim_post :=
+      [ StorableValue.Map2 (role_member_map sim);
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map length_map';
+        StorableValue.Map2 body_map' ] in
+    {{? codes, env, Some (make_state env state_base memory proj_sim_pre) |
+      update_storage_value_t_bytes32_to_t_bytes32
+        (keccak256_single (keccak256_tuple2 role 1) + idx) 0 value ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_sim_post) ?}}.
+  Proof.
+    cbv zeta.
+    unfold update_storage_value_t_bytes32_to_t_bytes32.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_bytes32_to_t_bytes32 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_bytes32_to_t_bytes32 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_sload_role_values_body_at_proj_sim | ]
+      | |- {{? _, _, _ |
+            LowM.Call (prepare_store_t_bytes32 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_prepare_store_t_bytes32 | ]
+      | |- {{? _, _, _ |
+            LowM.Call (update_byte_slice_dynamic32 _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_update_byte_slice_dynamic32_offset_0; exact H_v | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply (run_sstore_role_values_body_at_proj_sim
+                       codes env state_base memory sim role idx value length_map') | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
+
   (** ===== Composite: [run_array_push_at_proj_sim] =====
 
       Steps the EnumerableSet [_values] [array_push] body against the
@@ -941,21 +1104,32 @@ Module GuardianEquivalence.
 
       ===== Status =====
 
-      Statement landed; proof is a mechanical assembly of the three
-      axioms above plus the framework's keccak / mstore /
-      update_byte_slice / convert chain. Left [Admitted] until the
-      walker's bit-mask sub-chain is mechanically dispatched — the
-      remaining work is roughly the same shape as ThrottleLib's
-      [run_update_storage_offset_0_at_two_slot_list] but routed through
-      the array-body shape and with the [keccak256_single] dataslot
-      step in the middle. ~100 lines once the inner walker arms are
-      assembled. *)
+      [Qed]. The walker closes via an inline [lazymatch] that dispatches:
+        - [LowM.Let] / inner-call inlining via [l] / [cu];
+        - re-unfolding of [M.strong_let_] / [M.let_] / [M.do] as they
+          re-introduce themselves at each step;
+        - both panic-guard [Shallow.if_]s (outer [oldLen < 2^64], inner
+          [oldLen < arrayLength_post]) via [first [rewrite H_lt_oldLen_2_64
+          | rewrite H_lt_oldLen_inner]] under [Pure.iszero (Pure.lt _ _)];
+        - the four trust axioms (length sload pre/post, body sload, length
+          sstore, body sstore) at the OZ-actual array slot shapes;
+        - [apply_run_mstore] + [apply_run_keccak256_single] for the
+          [array_dataslot] composite plus [CanonizeState.execute] to refold
+          the state into [make_state] shape after the mstore;
+        - the bit-mask leaves
+          ([run_update_byte_slice_dynamic32_offset_0],
+          [run_prepare_store_t_bytes32]) and the body-write wrapper
+          [run_update_storage_value_t_bytes32_at_proj_sim]. *)
   Lemma run_array_push_at_proj_sim
       codes env state_base memory sim (role value : U256.t)
       (* The overflow guard requires the new length to fit in 2^64. *)
       (H_len_bound :
          StorableValue.map_get_u256 (role_values_length_map sim) role
          + 1 < 18446744073709551616)
+      (* The value fits in U256 — caller-supplied since this lemma is
+         generic over the stored value. For OZ's [add_admin] consumers
+         the value is an Address (< 2^160 < 2^256). *)
+      (H_value_u256 : 0 <= value < 2 ^ 256)
       (* The memory layout has at least one word so mstore at offset 0
          lands cleanly. *)
       (H_mem : exists w0 rest, memory = w0 :: rest) :
@@ -1029,75 +1203,144 @@ Module GuardianEquivalence.
       split; [exact H_oldLen_nn|].
       change (2^240) with 1766847064778384329583297500742918515827483896875618958121606201292619776.
       lia. }
-    (** Walker session findings (Admitted with infrastructure in place).
-
-        The infrastructure landed in this session:
-          - [keccak256_single_offset_bound] + [Pure_add_keccak_single_offset]
-            (Phase 1) for the [add(dataArea, oldLen)] step.
-          - [run_sload_role_values_length_at_proj_sim_post] for the inner
-            length sload that fires AFTER the length sstore (the
-            [storage_array_index_access] body re-reads the bumped length).
-          - [run_sload_role_values_body_at_proj_sim] companion to the
-            existing [run_sstore_role_values_body_at_proj_sim]; the
-            walker reads the body slot before the [update_byte_slice]
-            chain merges it with the incoming [value].
-
-        Walker prelude (pose / destruct / arithmetic facts) compiles —
-        see [H_oldLen_bound] / [H_pa_old1] / [H_pm_old1] /
-        [H_pa_kec_old] in the proof body block reachable via a partial
-        walker attempt (`Show.` after [destruct H_mem]).
-
-        Tactical blockers encountered (each could close with focused
-        time, none individually large but they cumulatively exceed the
-        single-session budget):
-          (1) [Shallow.let_state] / [Shallow.if_] unfold cascade — after
-              the eager [unfold M.strong_let_, M.let_, M.generic_let,
-              M.pure, M.call, Shallow.let_state, Shallow.if_], the goal
-              alternates between [LowM.Let] (constructor) and
-              [LowM.let_] (CPS function) shapes. The [l]/[lu]/[cu]
-              tactic family handles each but the discipline of when to
-              [simpl LowM.let_] vs [cu] is intricate. ThrottleLib's
-              [throttle_walker] absorbs this with a single recursive
-              [lazymatch] sweep — building the analogous walker here
-              (call it [array_push_walker]) is the right structural
-              move and the natural next step.
-          (2) [update_byte_slice_dynamic32 (sload slot) 0 v] algebraic
-              reduction. The full chain is
-              [or(and(prev, not(shl(0, MAX))), and(shl(0, shr(0, v)),
-              shl(0, MAX)))]. For [v] in [0, 2^256) this equals [v],
-              independent of [prev]. The proof is ~15 lines once
-              isolated as a leaf lemma [run_update_byte_slice_offset_0]
-              (mirroring [ThrottleLibLeaves.run_update_storage_value_offset_0_t_uint256_to_t_uint256])
-              — recommended approach: extract as a sibling helper and
-              apply via [c] in the walker.
-          (3) The body sstore's stored value, after the [update_byte_slice]
-              chain, has shape [Pure.or _ _]. Discharging this requires
-              the algebraic identity from (2). Once (2) is a Qed'd
-              leaf, the walker arm becomes [c; [apply
-              run_update_byte_slice_offset_0 | apply
-              run_sstore_role_values_body_at_proj_sim]].
-          (4) State threading across the length sstore: after the sstore,
-              the storage is the 4-slot list with [length_map']
-              swapped in. The subsequent sload (the inner re-read in
-              [storage_array_index_access]) needs to see this. The
-              post-axiom shape is precisely the [proj_sim_post] in the
-              new [run_sload_role_values_length_at_proj_sim_post]
-              axiom, so threading works once the walker dispatches it.
-
-        Recommendation for next session (~45 min estimated): factor
-        out the bit-mask leaf as a separate lemma, then build a
-        compact [array_push_walker] [lazymatch] that handles each call
-        head (sload / sstore / mstore / keccak256_single / lt / iszero
-        / add / mul / and / or / not / shl / shr) in one sweep. The
-        eight-step outline in this docstring then resolves
-        mechanically via the walker plus the four explicit dispatch
-        arms (length-sload, length-sstore, body-sload, body-sstore +
-        bit-mask leaf).
-
-        The four new axioms (Phase 1 single-keccak bound + two new
-        sload axioms) and the lemma statement are sufficient
-        infrastructure; only the walker assembly remains. *)
-  Admitted.
+    (* H_value_u256 is now a caller-supplied precondition (above). *)
+    (* The walker needs to know [lt oldLen (2^64) = 1] to take the
+       no-panic branch of the outer overflow guard. *)
+    assert (H_lt_oldLen_2_64 : Pure.lt oldLen 18446744073709551616 = 1).
+    { unfold Pure.lt. destruct (Z.ltb_spec oldLen 18446744073709551616);
+      [reflexivity | lia]. }
+    (* And [lt oldLen (oldLen+1) = 1] for the inner panic guard in
+       storage_array_index_access. *)
+    assert (H_lt_oldLen_succ : Pure.lt oldLen (Pure.add oldLen 1) = 1).
+    { rewrite H_pa_old1.
+      unfold Pure.lt. destruct (Z.ltb_spec oldLen (oldLen + 1));
+      [reflexivity | lia]. }
+    (* After the length sstore, the inner length re-read fetches
+       [map_get_u256 length_map' role = oldLen+1]. *)
+    assert (H_get_length_map'_role :
+              StorableValue.map_get_u256 length_map' role = oldLen + 1).
+    { unfold length_map', StorableValue.map_get_u256.
+      generalize (role_values_length_map sim) as d. intro d.
+      induction d as [|[k v] rest_d IH].
+      - (* Empty dict: declare_or_assign appends (role, oldLen+1). *)
+        cbn.
+        change (Dict.Eq.eqb role role) with (role =? role).
+        rewrite Z.eqb_refl. reflexivity.
+      - (* Non-empty: case-split on whether the head key matches role. *)
+        cbn -[Z.eqb].
+        change (Dict.Eq.eqb k role) with (k =? role).
+        destruct (Z.eqb_spec k role) as [Hek | Hne].
+        + (* k = role: replaced in place. *)
+          subst k. cbn -[Z.eqb].
+          change (Dict.Eq.eqb role role) with (role =? role).
+          rewrite Z.eqb_refl. reflexivity.
+        + (* k <> role: appended to tail; recurse. *)
+          cbn -[Z.eqb].
+          change (Dict.Eq.eqb role k) with (role =? k).
+          replace (role =? k) with false by
+            (symmetry; apply Z.eqb_neq; lia).
+          exact IH. }
+    assert (H_lt_oldLen_inner :
+              Pure.lt oldLen (StorableValue.map_get_u256 length_map' role) = 1).
+    { rewrite H_get_length_map'_role.
+      unfold Pure.lt. destruct (Z.ltb_spec oldLen (oldLen + 1));
+      [reflexivity | lia]. }
+    (* Final witnesses for the existentials. *)
+    exists mem_after_mstore.
+    eexists.
+    split; [|reflexivity].
+    unfold array_push_from_t_bytes32_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr,
+           storage_array_index_access_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr,
+           array_length_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr,
+           array_dataslot_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state, Shallow.if_.
+    (* The walker. Each arm handles one call/let shape. The first arms
+       eagerly re-unfold the M-monad operators that re-introduce
+       themselves at each step (inner [let~ '] forms reach an
+       [M.strong_let_] that the top-level unfold doesn't see through). *)
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.strong_let_, M.generic_let
+      | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.let_, M.generic_let
+      | |- {{? _, _, _ | M.do _ _ ⇓ _ | _ ?}} =>
+          unfold M.do
+      (* Reduce both panic-guard ifs: outer [lt(oldLen, 2^64)] and inner
+         [lt(oldLen, oldLen+1)]. Both lt's reduce to 1, then iszero to 0,
+         then [0 =? 0] picks the no-panic branch. *)
+      | |- {{? _, _, _ |
+            if Pure.iszero (Pure.lt _ _) =? 0 then _ else _ ⇓ _ | _ ?}} =>
+          first [ fold oldLen; rewrite H_lt_oldLen_2_64
+                | fold oldLen length_map'; rewrite H_lt_oldLen_inner ];
+          simpl Pure.iszero; cbv iota
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      (* Inline a call whose body is itself a let-computation (e.g.
+         storage_array_index_access body) — use CallUnfold (cu) to turn
+         it into LowM.let_, then subsequent arms process the inner chain. *)
+      | |- {{? _, _, _ | LowM.Call (LowM.Let _ _) _ ⇓ _ | _ ?}} => cu
+      (* Length sload at array anchor. Two cases:
+           - against [proj_sim sim] (the very first read).
+           - against the post-length-sstore four-slot shape (re-read
+             inside storage_array_index_access).
+         The post-shape needs an explicit length_map' argument; we
+         instantiate it to the bumped length here. *)
+      | |- {{? _, _, Some (make_state _ _ _ (proj_sim _)) |
+            LowM.Call (Stdlib.sload (keccak256_tuple2 _ 1)) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_sload_role_values_length_at_proj_sim | ]
+      | |- {{? _, _, Some (make_state _ _ _ _) |
+            LowM.Call (Stdlib.sload (keccak256_tuple2 _ 1)) _ ⇓ _ | _ ?}} =>
+          c; [ eapply run_sload_role_values_length_at_proj_sim_post | ]
+      (* Body sload at array body slot. *)
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload (keccak256_single (keccak256_tuple2 _ 1) + _)) _
+            ⇓ _ | _ ?}} =>
+          c; [ eapply run_sload_role_values_body_at_proj_sim | ]
+      (* Length sstore at array anchor (length bump). *)
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sstore (keccak256_tuple2 _ 1) _) _ ⇓ _ | _ ?}} =>
+          c; [ fold oldLen; rewrite H_pa_old1;
+               eapply run_sstore_role_values_length_at_proj_sim | ]
+      (* Body sstore at array body slot. *)
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sstore (keccak256_single (keccak256_tuple2 _ 1) + _) _) _
+            ⇓ _ | _ ?}} =>
+          c; [ eapply run_sstore_role_values_body_at_proj_sim | ]
+      (* mstore for array_dataslot. After the mstore axiom, the state
+         shape uses record-update notation; refold via CanonizeState. *)
+      | |- {{? _, _, Some (make_state _ _ _ _) |
+            LowM.Call (Stdlib.mstore _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply_run_mstore | CanonizeState.execute ]
+      (* keccak256_single for array_dataslot. Works against either the
+         make_state shape or the record-update shape — handle both. *)
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.keccak256 _ 32) _ ⇓ _ | _ ?}} =>
+          c; [ first [ apply_run_keccak256_single
+                     | CanonizeState.execute; apply_run_keccak256_single ]
+             | CanonizeState.execute ]
+      (* Stdlib pure arithmetic: lt, iszero, add, mul. *)
+      | |- {{? _, _, _ | LowM.Call (Stdlib.lt _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.lt, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.iszero, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Call (Stdlib.mul _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.mul, M.pure; apply RunO.Pure | ]
+      (* The body update_storage_value call dispatches via the wrapper
+         leaf. The slot expression is [Pure.add (keccak256_single _)
+         (Pure.mul _ 1)]; simplify both pure ops first so the wrapper's
+         [keccak256_single ... + idx] shape matches. *)
+      | |- {{? _, _, _ |
+            LowM.Call (update_storage_value_t_bytes32_to_t_bytes32 _ 0 _) _ ⇓ _ | _ ?}} =>
+          fold oldLen; rewrite H_pm_old1, H_pa_kec_old;
+          c; [ apply (run_update_storage_value_t_bytes32_at_proj_sim
+                       codes env state_base mem_after_mstore sim role oldLen value
+                       length_map' H_value_u256) | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
 
   (** ----- Bool-path leaves (offset-0 static variants) ----- *)
 
