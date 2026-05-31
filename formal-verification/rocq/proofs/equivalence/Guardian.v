@@ -4303,23 +4303,53 @@ Module GuardianEquivalence.
         but our sim isn't structured to represent it; we case-split on
         the role to dispatch. *)
     subst sim_ac caller state.
-    (* Phase 2 witness — choose sim' based on the role. Three cases:
-       DEFAULT_ADMIN_ROLE, OPTIMISTIC_GUARDIAN_ROLE,
-       OPTIMISTIC_GUARDIAN_MANAGER_ROLE, plus fallthrough. The
-       fallthrough is interesting — in OZ semantics _grantRole still
-       performs the storage write at the unknown role's slot, but our
-       proj_sim only models the three named roles. For now this proof
-       targets the three named roles only and the fallthrough remains
-       a residual structural gap. *)
-    (** Walker pending: the 5-deep call chain
-        ([modifier_onlyRole_1351] →
-         [fun_getRoleAdmin_1340] + [fun__checkRole_1305] →
-         [fun_grantRole_1359_inner] → [fun__grantRole_704] →
-         [fun__grantRole_1468] + [fun_add_2085]) with state-threading,
-        case-split on [hasRole] (already-member vs not-a-member),
-        Shallow.if_ admin gate reduction, and post-state projection
-        equality remains to be assembled. All required leaves are landed
-        — see WISDOM R051 + this docstring's residual catalogue. *)
+    (** ===== Phase 5 status — BLOCKED on Dict-shape mismatch =====
+
+        Phase 1 refactored this session to surface [proj_sim_post] +
+        memory shape (see [run_fun__grantRole_1468_at_proj_sim_not_member]).
+        Phases 2/3/4/4.5/outer all composable. The remaining gap is the
+        post-state projection equality the modifier wrapper's
+        [Hbody_post] hypothesis demands.
+
+        The post-Phase-1 storage's slot 0 is
+        [Dict.declare_or_assign (role_member_map sim) (role, account) 1],
+        which (for [account] not a member) reduces to
+        [role_member_map sim ++ [((role, account), 1)]] —
+        key APPENDED at the dict-list's tail (after all three roles'
+        [members_for_role] blocks).
+
+        The bridge lemma [role_member_map_add_admin_not_in] gives
+        [((DEFAULT_ADMIN_ROLE_bytes32, addr), 1) :: role_member_map s] —
+        key CONS-PREPENDED (it sits between the DEFAULT block prelude
+        and the OPT_G block).
+
+        These dict-lists are observationally equal for lookup (the
+        only ((DEFAULT, account), _) key in either is the new entry,
+        yielding 1) but NOT [Dict.t (U256.t * U256.t) U256.t]-equal.
+        Slot 1 (positions) and slot 3 (values body) face the same
+        append-vs-prepend mismatch; slot 2 (length, fixed 3-entry
+        dict) lines up syntactically.
+
+        Pinning [sim'] to match the post-Phase-2 storage is
+        structurally impossible: no Guardian.State.t exists whose
+        [role_member_map] equals
+        [role_member_map sim ++ [((DEFAULT, account), 1)]] —
+        the projection's role-block ordering (DEFAULT, then OPT_G,
+        then OPT_GM) forces any new DEFAULT entry to land BEFORE the
+        OPT_G block in any sim variant, not after the OPT_GM block.
+
+        Closing the milestone requires one of:
+        - A new sstore axiom variant whose post-storage uses
+          cons-prepend instead of [Dict.declare_or_assign];
+        - A canonicalization lemma that rewrites
+          [Dict.declare_or_assign d k v] to a CONS form by
+          permuting the dict-list (requires a setoid framework for
+          dict equality);
+        - Weakening the theorem statement's last clause to use
+          observational [project_sim_to_ac]-based equality instead
+          of syntactic [proj_sim sim'] equality.
+
+        See WISDOM R054 for the diagnosis. *)
   Admitted.
 
 End GuardianEquivalence.
