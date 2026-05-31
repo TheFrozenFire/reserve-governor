@@ -161,28 +161,137 @@ Module GuardianEquivalence.
     positions_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
                        s.(State.optimisticGuardianManagers).
 
-  (** ----- Full projection — TWO slots =====
+  (** ----- Slot-2 / Slot-3: AccessControlEnumerable `_values` array =====
+
+      OZ's [EnumerableSet.Set._values] is a length-prefixed dynamic
+      [bytes32[]] array. Solidity storage layout for [bytes32[]] at
+      anchor slot [N]:
+
+        slot[N]                = array length          (a single U256)
+        slot[keccak256(N) + i] = values[i]             (one slot per element)
+
+      Per-role anchor: [keccak256(role, 1) + 0 = keccak256(role, 1)].
+      So the array length per role lives at [keccak256(role, 1)] and the
+      body element [values[i]] at [keccak256(keccak256(role, 1)) + i].
+
+      ===== Projection design =====
+
+      The framework's existing [StorableValue.t] inductive does not have
+      a dedicated dynamic-array carrier; we encode the array using two
+      additional slots in the simulated-storage list, mirroring the
+      slot-1 [Map2] approximation pattern already in use for
+      [_positions] (which itself approximates the
+      [keccak256(addr, keccak256(role, 1) + 1)] shape to the
+      framework's [keccak256(addr, keccak256(role, 1))] [Map2] shape;
+      see R049 / the slot-1 docstring above):
+
+        slot 2 — [StorableValue.Map (role -> length)]
+                 framework slot expression: [keccak256(role, 2)]
+                 actual OZ slot: [keccak256(role, 1)]
+                 (off-by-index by exactly the same amount as slot-1's
+                  approximation; the eventual walker bridge lemma
+                  rewrites at the call site, mirroring the planned
+                  [run_sload_role_position_at_proj_sim] for slot 1).
+
+        slot 3 — [StorableValue.Map2 ((role, idx) -> value)]
+                 framework slot expression:
+                   [keccak256(idx, keccak256(role, 3))]
+                 actual OZ slot:
+                   [keccak256(keccak256(role, 1)) + idx]
+                 (the Map2 encoding routes [idx] through the inner
+                  keccak; the walker bridge will rewrite to the
+                  additive-offset form using the same offset-bound
+                  axiom that discharges
+                  [Pure_add_keccak_offset]).
+
+      The choice to use two separate slots — rather than packing
+      length+body into a single dict — is so each [StorableValue]
+      carries a single concrete dict-shape and stays directly
+      addressable by the existing [run_sload_map_u256] /
+      [run_sload_map2_u256] axioms. The bridge lemma below mutates
+      both slots simultaneously when [add_admin] fires; the same
+      pattern as the slot-0/slot-1 cons-prefix shape from
+      [proj_sim_add_admin_not_in]. *)
+
+  (** Per-role array length. Each role's array length equals the
+      current list length under the cons-to-front sim convention. *)
+  Definition role_values_length_map (s : State.t) :
+      Dict.t U256.t U256.t :=
+    [ (DEFAULT_ADMIN_ROLE_bytes32,
+        Z.of_nat (List.length s.(State.admins)));
+      (OPTIMISTIC_GUARDIAN_ROLE_bytes32,
+        Z.of_nat (List.length s.(State.optimisticGuardians)));
+      (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32,
+        Z.of_nat (List.length s.(State.optimisticGuardianManagers))) ].
+
+  (** Per-(role, index) array body element. Under the cons-to-front
+      convention, the head of the list is the most-recent insertion
+      and sits at index [length - 1] in the OZ append-style array;
+      equivalently, element at index [i] in the array corresponds to
+      the value that, at the moment of insertion, made the array
+      length [i + 1]. Concretely: with sim list [a_k :: a_{k-1} :: ...
+      :: a_0], the OZ array (post-mutation) is [a_0; a_1; ...; a_k];
+      so the body dict has key [(role, Z.of_nat i)] mapping to
+      [a_i] = the element prepended when the previous list had
+      length [i]. *)
+  Fixpoint values_for_role_aux
+      (role : U256.t) (n : nat) (addrs : list Address) :
+      Dict.t (U256.t * U256.t) U256.t :=
+    match addrs with
+    | []          => []
+    | a :: rest   =>
+      (* [n] is the array length BEFORE prepending [a]; under the
+         cons-to-front convention, [a]'s body-index is exactly [n]. *)
+      ((role, Z.of_nat n), a) :: values_for_role_aux role (pred n) rest
+    end.
+
+  (** Top-level helper: assigns body indices in reverse-cons order.
+      With list [a_k :: ... :: a_0] of length [k+1], the head [a_k]
+      gets body-index [k]. Inductive companion lemmas (below) make
+      this cons-vs-empty case-split structural. *)
+  Definition values_for_role
+      (role : U256.t) (addrs : list Address) :
+      Dict.t (U256.t * U256.t) U256.t :=
+    values_for_role_aux role (pred (List.length addrs)) addrs.
+
+  (** Concatenation across the three named roles, mirroring the
+      [role_member_map] / [role_positions_map] shape. *)
+  Definition role_values_body_map (s : State.t) :
+      Dict.t (U256.t * U256.t) U256.t :=
+    values_for_role DEFAULT_ADMIN_ROLE_bytes32
+                    s.(State.admins) ++
+    values_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                    s.(State.optimisticGuardians) ++
+    values_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                    s.(State.optimisticGuardianManagers).
+
+  (** ----- Full projection — FOUR slots =====
 
       Slot 0: the [_roles] mapping's nested [members] sub-field
               (Map2 of (role, account) -> 0/1).
       Slot 1: the [_roleMembers] positions sub-mapping under
-              AccessControlEnumerable. The [_values] length cell
-              and the [_values[i]] array slots are NOT modelled
-              here — they're either reconstructable from the
-              positions map plus list length (for the length cell)
-              or unobserved by the view-and-grant equivalence path
-              (the array body is touched only by [getRoleMember],
-              which Guardian.sol does not call). If a future
-              equivalence does need them, this projection extends
-              naturally to add a third slot. *)
+              AccessControlEnumerable (Map2 of (role, addr) -> 1-pos).
+      Slot 2: the [_roleMembers] [_values] array length, per role
+              (Map of role -> length).
+      Slot 3: the [_roleMembers] [_values] array body, per (role, idx)
+              (Map2 of (role, idx) -> value).
+
+      Slots 2 and 3 are the R051.c extension. Pre-R051.c the projection
+      had two slots; the array body slots were unmodelled because no
+      observer in the view-only equivalence path read them. The
+      grantRole mutator path's [fun_add_2085] / [fun__add_1614]
+      [array_push] DOES sstore against these slots, so a faithful
+      mutator-equivalence walker needs the slots to exist. *)
   Definition proj_sim (s : State.t) : SimulatedStorage.t := [
     StorableValue.Map2 (role_member_map s);
-    StorableValue.Map2 (role_positions_map s)
+    StorableValue.Map2 (role_positions_map s);
+    StorableValue.Map (role_values_length_map s);
+    StorableValue.Map2 (role_values_body_map s)
   ].
 
   (** ----- Well-formedness ----- *)
   Lemma proj_sim_length (s : State.t) :
-    List.length (proj_sim s) = 2%nat.
+    List.length (proj_sim s) = 4%nat.
   Proof. reflexivity. Qed.
 
   Lemma proj_sim_roles (s : State.t) :
@@ -193,6 +302,16 @@ Module GuardianEquivalence.
   Lemma proj_sim_positions (s : State.t) :
     List.nth_error (proj_sim s) 1
     = Some (StorableValue.Map2 (role_positions_map s)).
+  Proof. reflexivity. Qed.
+
+  Lemma proj_sim_values_length (s : State.t) :
+    List.nth_error (proj_sim s) 2
+    = Some (StorableValue.Map (role_values_length_map s)).
+  Proof. reflexivity. Qed.
+
+  Lemma proj_sim_values_body (s : State.t) :
+    List.nth_error (proj_sim s) 3
+    = Some (StorableValue.Map2 (role_values_body_map s)).
   Proof. reflexivity. Qed.
 
   (** ===== Bridge: [addr_in] ↔ [In] ===== *)
@@ -291,16 +410,76 @@ Module GuardianEquivalence.
     simpl. reflexivity.
   Qed.
 
+  (** ===== Bridge: per-slot helpers for slots 2 and 3 =====
+
+      Slot 2 (length map): under [add_admin s addr] with [addr] not
+      previously a member, the DEFAULT_ADMIN role's length entry
+      increases by 1; other entries are unchanged. This is a pure
+      dict-shape rewrite — no inductive case-split needed. *)
+  Lemma role_values_length_map_add_admin_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.admins) ->
+      role_values_length_map (Guardian.add_admin s addr) =
+      (DEFAULT_ADMIN_ROLE_bytes32,
+        Z.of_nat (List.length s.(State.admins)) + 1)
+      :: List.tl (role_values_length_map s).
+  Proof.
+    intros s addr Hni.
+    unfold role_values_length_map, Guardian.add_admin, Guardian.add_role.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    cbn [List.length List.tl].
+    f_equal.
+    + f_equal. lia.
+  Qed.
+
+  (** Slot 3 (body map): under [add_admin s addr] with [addr] not
+      previously a member, the new entry [((DEFAULT, length admins),
+      addr)] is cons-prefixed onto the body map. Mirrors the slot-1
+      [role_positions_map_add_admin_not_in] shape — same per-role
+      cons-to-front argument.
+
+      Helper: [values_for_role role (addr :: admins)] unfolds to
+      [((role, length admins), addr) :: values_for_role role admins]
+      modulo the aux-vs-top-level [pred] dance. *)
+  Lemma values_for_role_cons_unfold
+      (role : U256.t) (addr : Address) (rest : list Address) :
+    values_for_role role (addr :: rest) =
+    ((role, Z.of_nat (List.length rest)), addr) :: values_for_role role rest.
+  Proof.
+    unfold values_for_role.
+    simpl (List.length (addr :: rest)).
+    (* [pred (S (length rest))] = [length rest]. *)
+    change (Nat.pred (S (List.length rest))) with (List.length rest).
+    simpl (values_for_role_aux role (List.length rest) (addr :: rest)).
+    reflexivity.
+  Qed.
+
+  Lemma role_values_body_map_add_admin_not_in :
+    forall (s : State.t) (addr : Address),
+      ~ In addr s.(State.admins) ->
+      role_values_body_map (Guardian.add_admin s addr) =
+      ((DEFAULT_ADMIN_ROLE_bytes32, Z.of_nat (List.length s.(State.admins))),
+        addr)
+      :: role_values_body_map s.
+  Proof.
+    intros s addr Hni.
+    unfold role_values_body_map, Guardian.add_admin, Guardian.add_role.
+    simpl. rewrite (proj2 (addr_in_false_iff_not_In _ _) Hni).
+    rewrite values_for_role_cons_unfold.
+    simpl. reflexivity.
+  Qed.
+
   (** ===== Bridge: [proj_sim] after [add_admin] — the headline (B) =====
 
       Equates the projection of the post-[add_admin] sim to a
-      cons-prefixed projection of the pre-[add_admin] sim, in both
-      slots simultaneously. Used by the residual-C walker proof
-      (see [run_grantRole_1359_equivalent]'s docstring) to close the
-      post-sstore state equality after the inner [_grantRole_1468]
-      sstore (slot 0, the bool members map) and the
-      [fun_add_2085]/[fun__add_1614] sstores at slot 1 (the
-      positions map). *)
+      cons-prefixed projection of the pre-[add_admin] sim, in all
+      FOUR slots simultaneously. R051.c extends the original two-slot
+      shape with slots 2 (length) and 3 (body). Used by the
+      residual-C walker proof (see [run_grantRole_1359_equivalent]'s
+      docstring) to close the post-sstore state equality after the
+      inner [_grantRole_1468] sstore (slot 0) and the
+      [fun_add_2085]/[fun__add_1614] sstores (slots 1/2/3). *)
   Theorem proj_sim_add_admin_not_in :
     forall (s : State.t) (addr : Address),
       ~ In addr s.(State.admins) ->
@@ -311,12 +490,22 @@ Module GuardianEquivalence.
         StorableValue.Map2
           (((DEFAULT_ADMIN_ROLE_bytes32, addr),
             Z.of_nat (List.length s.(State.admins)) + 1)
-           :: role_positions_map s) ].
+           :: role_positions_map s);
+        StorableValue.Map
+          ((DEFAULT_ADMIN_ROLE_bytes32,
+            Z.of_nat (List.length s.(State.admins)) + 1)
+           :: List.tl (role_values_length_map s));
+        StorableValue.Map2
+          (((DEFAULT_ADMIN_ROLE_bytes32,
+              Z.of_nat (List.length s.(State.admins))), addr)
+           :: role_values_body_map s) ].
   Proof.
     intros s addr Hni.
     unfold proj_sim.
     rewrite (role_member_map_add_admin_not_in s addr Hni).
     rewrite (role_positions_map_add_admin_not_in s addr Hni).
+    rewrite (role_values_length_map_add_admin_not_in s addr Hni).
+    rewrite (role_values_body_map_add_admin_not_in s addr Hni).
     reflexivity.
   Qed.
 
@@ -1016,22 +1205,42 @@ Module GuardianEquivalence.
       Critical missing infrastructure (each is a separate lemma to be
       landed before this Qed):
 
-        (A) [CLOSED — task #248] Slot 1+ modeling: [proj_sim] now
-            covers BOTH slot 0 (the [_roles] members Map2) and slot 1
-            (the [_roleMembers] positions Map2; see [positions_for_role]
-            and [role_positions_map] above). The [_values] length cell
-            and array body slots are not modelled — they're either
-            reconstructable from the positions map plus list length, or
-            unobserved by the grant equivalence path.
+        (A) [CLOSED — task #248, extended task #264 (R051.c)] Slot
+            modeling: [proj_sim] now covers FOUR slots —
+              - slot 0: [_roles] members Map2 (role, account) → 0/1
+              - slot 1: [_roleMembers] positions Map2 (role, addr) →
+                1-indexed-position
+              - slot 2: [_roleMembers] [_values] array length per role
+                (Map role → length) — R051.c addition
+              - slot 3: [_roleMembers] [_values] array body per (role,
+                idx) (Map2 (role, idx) → value) — R051.c addition.
+            Slots 2 and 3 carry the dynamic-array data the
+            [fun_add_2085] / [fun__add_1614] [array_push] writes to.
+            Approximation caveat: the framework's [run_sload_map_u256]
+            / [run_sload_map2_u256] axioms route lookups through
+            [keccak256(role, Z.of_nat index)] (single-key Map) and
+            [keccak256(idx, keccak256(role, Z.of_nat index))] (Map2)
+            respectively — NOT the OZ-actual
+            [keccak256(role, 1)] (anchor) / [keccak256(keccak256(role,1)) + idx]
+            (body) slot expressions. Slot-1's positions modeling
+            inherits the same gap (R049 docstring spells it out).
+            The eventual walker-side bridge lemma will need an
+            axiomatic equation between the framework's nested-keccak
+            shape and the actual array shape — see C.3 below.
 
-        (B) [CLOSED — task #248] Projection-side bridge:
+        (B) [CLOSED — task #248, extended task #264 (R051.c)]
+            Projection-side bridge:
             [proj_sim_add_admin_not_in] (and idempotency companion
             [proj_sim_add_admin_in]) equates the projection of the
             post-[add_admin] sim to a cons-prefixed projection of the
-            pre-add sim, in both slots simultaneously. Closed by
-            induction on the role list, with
-            [addr_in_false_iff_not_In] as the bridge between the
-            sim's Boolean membership and the Coq [In] predicate.
+            pre-add sim, NOW IN ALL FOUR SLOTS simultaneously. The
+            R051.c-added per-slot helper lemmas
+            [role_values_length_map_add_admin_not_in] and
+            [role_values_body_map_add_admin_not_in]
+            (plus [values_for_role_cons_unfold]) carry the slots-2-and-3
+            half. Closed by case-split on the [addr_in admins] guard
+            + arithmetic, with [addr_in_false_iff_not_In] bridging the
+            sim's Boolean membership to Coq [In].
 
         (C) Walker leaves — three distinct gaps remain:
 
@@ -1064,36 +1273,63 @@ Module GuardianEquivalence.
 
             (C.3) [run_fun_add_2085] — EnumerableSet add. The body
                   calls [fun__add_1614] which performs:
-                    - [array_push_from_t_bytes32_to_t_array...dyn_storage]
-                      (writes to slot 1's _values length cell AND the
-                      array body element at slot 1's keccak base + length)
+                    - [array_push_from_t_bytes32_to_t_array...dyn_storage]:
+                      [sload(set_slot)] (length read) +
+                      [sstore(set_slot, len+1)] (length bump) +
+                      [sstore(keccak(set_slot) + len, value)] (body
+                       write at the keccak-derived dataslot).
                     - [update_storage_value_offset_0_t_uint256_to_t_uint256]
-                      at the positions sub-mapping (slot 1's offset 1).
-                  The _values length cell and array body slots are NOT
-                  modelled in proj_sim. R049 explicitly defers these
-                  ("If a future equivalence touches [getRoleMember] or
-                  [getRoleMemberCount], extend proj_sim with additional
-                  slots"). For grantRole, NO downstream observer reads
-                  these — but the SSTOREs fire anyway, and the walker
-                  needs leaves to discharge them. This is a multi-day
-                  workstream: extend proj_sim with a third slot for the
-                  EnumerableSet _values array (length + body), build
-                  [run_array_push_at_proj_sim] as an R040-style wrapper,
-                  build a per-role bridge lemma analogous to
-                  [proj_sim_add_admin_not_in] but for the _values array.
+                      at the positions sub-mapping (slot 1's offset 1):
+                      [sload + bit-mask + sstore] at
+                      [keccak(value, keccak(role, 1) + 1)].
+                  Post-R051.c the SLOTS (2 length, 3 body) exist in
+                  proj_sim. What remains: the walker leaf
+                  [run_array_push_at_proj_sim] that steps the three
+                  sstores. The framework's [run_sstore_map_u256] /
+                  [run_sstore_map2_u256] axioms give sstore at the
+                  NESTED-KECCAK shape ([keccak(role, 2)] for the
+                  length, [keccak(idx, keccak(role, 3))] for the
+                  body); the array_push body in Guardian_shallow.v
+                  invokes them at the ARRAY shape ([set_slot] for the
+                  length, [keccak(set_slot) + idx] for the body),
+                  where [set_slot] is the EnumerableSet anchor
+                  ([keccak(role, 1)] in OZ-actual; whatever the
+                  caller computes from [keccak256_tuple2 role 1] in
+                  Yul). The mismatch is purely a slot-expression
+                  rewrite — same shape as slot-1's positions
+                  approximation (R049). Closing C.3 requires:
+                    - a [run_sstore_at_set_slot_length] axiom
+                      bridging the array-shape length sstore to the
+                      framework's [run_sstore_map_u256 storage 2]
+                      lemma (i.e., a trusted assertion that
+                      [keccak(set_slot)] under the [set_slot] derived
+                      from [keccak256_tuple2 role 1] aligns with
+                      [keccak(role, 2)] — analogous to slot-1's
+                      positions-shape trust).
+                    - a [run_sstore_at_set_dataslot_body] axiom for
+                      the body slot.
+                    - a [run_update_storage_value_offset_0_t_uint256]
+                      wrapper for the positions sstore (R040 pattern
+                      against slot 1's Map2).
+                    - the array_push composite walker chaining
+                      [sload length → sstore length+1 → mstore
+                      anchor → keccak (the dataslot) → sstore body],
+                      threading state through.
+                  Phases 1 + 2 (slots 2/3 + projection bridge) landed
+                  in task #264. Phase 3 (the walker leaf) was
+                  attempted and deferred — see WISDOM R052 on the
+                  array-shape vs nested-keccak gap.
 
         (D) Caller bridge: [run_fun__msgSender_3197] reads the
             [Stdlib.caller] primitive and returns [env.(Environment.caller)].
             CLOSED — see lemma of the same name above.
 
-      Status as of task #250: residuals (A), (B), and (D) closed.
-      Residuals (C.1), (C.2), and (C.3) remain. The proof body below
-      sets up the R047 case-split structure (case on
-      [AccessControl.grantRole]'s result) and poses
-      [run_hasRole_equivalent] for the modifier's auth check, then
-      [Admitted]s on the residuals. C.3 is the deepest blocker; until
-      proj_sim grows the _values array slots, the walker for
-      [fun_add_2085] has nowhere to land the array_push sstore. *)
+      Status as of task #264: residuals (A), (B), and (D) closed
+      (slots 2/3 + bridge extended for R051.c). Residuals (C.1),
+      (C.2), and (C.3-walker) remain. The proof body below sets up
+      the R047 case-split structure (case on [AccessControl.grantRole]'s
+      result) and poses [run_hasRole_equivalent] for the modifier's
+      auth check, then [Admitted]s on the residuals. *)
   Theorem run_grantRole_1359_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)

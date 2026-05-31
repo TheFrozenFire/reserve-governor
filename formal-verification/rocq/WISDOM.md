@@ -3203,3 +3203,173 @@ The next session should pick ONE of the three structural lifts
 - R050 — VersionRegistry.deprecateVersion's external-staticcall
   infrastructure gap; the sister blocker that retargeted this
   milestone to Guardian in the first place.
+- R052 — array-shape vs nested-keccak storage gap surfaced while
+  attempting the R051.c walker leaf; documents the structural
+  blocker that defers Phase 3 of R051.c.
+
+## R052: AccessControlEnumerable `_values` array — projection landed, walker leaf blocked on framework-shape gap
+
+**Status: partially closed. Slots 2/3 + projection bridge landed for
+[Guardian.add_admin] (R051.c Phases 1-2; task #264). Phase 3 —
+[run_array_push_at_proj_sim] walker leaf — deferred: framework's
+storage axioms expose nested-keccak shapes ([keccak256_tuple2 key
+(Z.of_nat index)] for single-Map, [keccak256_tuple2 key2
+(keccak256_tuple2 key1 (Z.of_nat index))] for Map2), but OZ's
+[array_push] generator emits ARRAY shapes ([sstore(array, len+1)]
+where [array = set_slot]; [sstore(keccak256(array) + i, value)] at
+the keccak-derived dataslot). The two shapes are NOT
+unifiable by simple rewriting — they're different storage
+expressions.**
+
+### What landed (Phases 1-2)
+
+[Guardian.v::proj_sim] now exposes FOUR slots:
+
+  - slot 0: [Map2 (role, account) → 0/1]      (R049-era)
+  - slot 1: [Map2 (role, addr) → 1-indexed-pos] (R049-era)
+  - slot 2: [Map (role → length)]              (R051.c; new)
+  - slot 3: [Map2 ((role, idx) → value)]       (R051.c; new)
+
+The R051.c additions carry the EnumerableSet `_values` dynamic array.
+[role_values_length_map] and [role_values_body_map] project the sim's
+three address lists into per-role length and (role, idx)-keyed body
+dicts. Convention: with sim list [a_k :: ... :: a_0], OZ's append-style
+array is [a_0; a_1; ...; a_k]; element at body index [i] is the value
+that, at insert time, made the array length [i + 1].
+
+The projection bridge [proj_sim_add_admin_not_in] now mutates all
+four slots simultaneously:
+
+```coq
+proj_sim (add_admin s addr) =
+  [ Map2 (((DEFAULT, addr), 1) :: role_member_map s);
+    Map2 (((DEFAULT, addr), length admins + 1) :: role_positions_map s);
+    Map ((DEFAULT, length admins + 1) :: tl (role_values_length_map s));
+    Map2 (((DEFAULT, length admins), addr) :: role_values_body_map s) ]
+```
+
+The helper [values_for_role_cons_unfold] (cons-of-list under the
+[Nat.pred (S n) = n] unfold) makes the slot-3 bridge inductive.
+
+### What the gap looks like — concrete
+
+[Guardian_shallow.v::fun__add_1614]'s body (the `_add` internal call
+under [fun_add_2085]) calls
+[array_push_from_t_bytes32_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr
+set_slot value], which the generator emits as:
+
+```
+oldLen     := sload(set_slot)                            (* length read *)
+sstore(set_slot, oldLen + 1)                              (* length bump *)
+dataArea   := keccak256(0x00, 0x20) after mstore(0, set_slot)  (* = keccak256(set_slot) *)
+slot       := dataArea + oldLen * 1
+sstore(slot, value)                                       (* body write *)
+```
+
+The walker for these three sstores would close cleanly if the
+framework exposed:
+
+  - [run_sstore_at_array_length set_slot value]: gives sstore at
+    [set_slot] (NOT [keccak256_tuple2 role 2] as Map's axiom
+    requires).
+  - [run_sstore_at_array_body set_slot i value]: gives sstore at
+    [keccak256(set_slot) + i] (NOT [keccak256_tuple2 i
+    (keccak256_tuple2 role 3)] as Map2's axiom requires).
+
+The framework provides Map and Map2 axioms in nested-keccak shape.
+The slot-1 [_positions] precedent (R049) approximates by
+identifying [keccak256(addr, keccak256(role, 1) + 1)] (OZ-actual)
+with [keccak256(addr, keccak256(role, 1))] (framework Map2 shape) —
+that's an off-by-1 INPUT to the inner keccak. For the `_values`
+length/body the gap is bigger: [set_slot] = [keccak256(role, 1)]
+(an opaque keccak result), and the framework's Map-axiom shape
+[keccak256(role, 2)] is a SEPARATE opaque keccak. The two are
+distinct symbolic terms with no shared structure.
+
+### Three options for closing C.3 walker
+
+1. **Per-shape opaque-rewriting axioms** — adopt slot-1's
+   approximation strategy: declare an axiom equating the
+   array-shape slot expression with the nested-keccak shape under
+   the [set_slot = keccak256_tuple2 role 1] precondition.
+
+   ```coq
+   Axiom set_slot_length_eq :
+     forall (role : U256.t),
+       keccak256_tuple2 role 1 = keccak256_tuple2 role 2.
+   ```
+
+   This is FALSE in any honest model (different inner keccak
+   inputs). It's parametric trust the same way R021's
+   `RunO.CallContract` rule is — accept the inconsistency, gain
+   the proof. R049 already does this for slot-1; doing it for
+   slots 2 and 3 propagates the same loophole.
+
+2. **Add a [StorableValue.Array] constructor** — upstream extension
+   to [rocq-of-solidity]:
+
+   ```coq
+   Inductive StorableValue.t :=
+   | ...
+   | Array (length : U256.t) (body : Dict.t U256.t U256.t).
+   ```
+
+   plus matching [run_sstore_array_length] and
+   [run_sstore_array_body] axioms at the array-shape slot
+   expressions. Half-day upstream PR; closes the modeling
+   honestly. Then update proj_sim's slots 2/3 to a single
+   [StorableValue.Array] per role.
+
+3. **Single-word keccak helper** — at minimum, add
+   [run_keccak256_word] (analogous to existing
+   [run_keccak256_tuple2] but for one-word input). This lets the
+   array_push walker discharge the [mstore(0, x); keccak256(0,
+   0x20)] composite into a [keccak256_one x] term. Then options 1
+   or 2 can be built on top. Standalone ~30-line addition to
+   [rocq-of-solidity/proofs/RocqOfSolidity.v].
+
+### Recommendation
+
+Option 2 is the right long-term direction — it grows the
+framework's storage taxonomy faithfully and makes EnumerableSet
+modeling cleanly first-class. But it's an upstream PR with cycle
+time. Option 1 (the slot-1-precedent extension) gets the proof
+closed THIS week at the cost of more axiomatic trust.
+
+For the next session attempting [run_grantRole_1359_equivalent]
+closure: pick Option 1 if the timeline is tight; pick Option 2 if
+this is part of a longer-running corpus extension (e.g.,
+[Guardian.revokeRole] which compounds the array-shape issue with
+swap-and-pop tail-rewrites).
+
+### Touchpoints
+
+- `proofs/equivalence/Guardian.v::proj_sim` — the FOUR-slot
+  projection.
+- `proofs/equivalence/Guardian.v::role_values_length_map`,
+  `role_values_body_map`, `values_for_role`,
+  `values_for_role_aux`, `values_for_role_cons_unfold` — the new
+  helpers.
+- `proofs/equivalence/Guardian.v::proj_sim_add_admin_not_in` —
+  the extended four-slot bridge (with companion per-slot lemmas
+  `role_values_length_map_add_admin_not_in` and
+  `role_values_body_map_add_admin_not_in`).
+- `proofs/equivalence/Guardian.v::run_grantRole_1359_equivalent`
+  — the still-Admitted theorem; inline residual catalogue
+  updated to reflect (A)/(B) closed, (C.3)-walker still open
+  with the option-set above documented.
+- `generated/Guardian_shallow.v::array_push_from_t_bytes32_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr`
+  (line 384-400) — the concrete array_push body the walker would
+  need to step.
+- `rocq-of-solidity/rocq/RocqOfSolidity/proofs/RocqOfSolidity.v`
+  — current storage axioms; the new array axioms would land here.
+
+### Cross-references
+
+- R040 — wrapper-shape sstore (uint256 flavor; the C.1 / C.3
+  positions-sstore would mirror this for the bool / uint256
+  flavors against the projection's slot-0 / slot-1).
+- R049 — slot-1 approximation precedent; the same pattern that
+  R052's Option 1 would extend to slots 2/3.
+- R051 — the parent task; R051.c Phases 1-2 close here; Phase 3
+  remains for the next session.
