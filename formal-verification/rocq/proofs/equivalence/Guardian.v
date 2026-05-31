@@ -969,34 +969,62 @@ Module GuardianEquivalence.
   (** ----- Axiom: sload at array length anchor =====
 
       The OZ-actual array length slot is [keccak256_tuple2 role 1].
-      Under [proj_sim sim], that slot's value is
-      [StorableValue.map_get_u256 (role_values_length_map sim) role]
-      (slot 2 of [proj_sim] is the per-role length map). *)
+      Under any four-slot projection variant with slot 2 the per-role
+      length map, that slot's value is
+      [StorableValue.map_get_u256 length_map role].
+
+      R054 generalization (2026-05-31): parameterized over the slot-0
+      [member_map_in], slot-1 [positions_map_in], slot-2 [length_map_in],
+      and slot-3 [body_map_in] so the axiom applies against arbitrary
+      4-slot projection variants — letting Phase 1's mutated-slot-0
+      post-state flow into Phase 2's array-length sload. *)
   Axiom run_sload_role_values_length_at_proj_sim :
-    forall codes env state_base memory sim (role : U256.t),
-    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+    forall codes env state_base memory (role : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (length_map_in : Dict.t U256.t U256.t)
+        (body_map_in : Dict.t (U256.t * U256.t) U256.t),
+    let proj :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
+    {{? codes, env, Some (make_state env state_base memory proj) |
       Stdlib.sload (keccak256_tuple2 role 1) ⇓
-      Result.Ok (StorableValue.map_get_u256
-                   (role_values_length_map sim) role)
-    | Some (make_state env state_base memory (proj_sim sim)) ?}}.
+      Result.Ok (StorableValue.map_get_u256 length_map_in role)
+    | Some (make_state env state_base memory proj) ?}}.
 
   (** ----- Axiom: sstore at array length anchor =====
 
       Writing [value] at the OZ-actual array length slot updates
-      slot 2's per-role length map at key [role]. *)
+      slot 2's per-role length map at key [role].
+
+      R054 generalization (2026-05-31): parameterized over the slot-0
+      [member_map_in], slot-1 [positions_map_in], slot-2 [length_map_in],
+      and slot-3 [body_map_in] so the axiom applies against arbitrary
+      4-slot projection variants. *)
   Axiom run_sstore_role_values_length_at_proj_sim :
-    forall codes env state_base memory sim (role value : U256.t),
+    forall codes env state_base memory (role value : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (length_map_in : Dict.t U256.t U256.t)
+        (body_map_in : Dict.t (U256.t * U256.t) U256.t),
     let length_map' :=
-      Dict.declare_or_assign (role_values_length_map sim) role value in
-    let proj_sim' :=
-      [ StorableValue.Map2 (role_member_map sim);
-        StorableValue.Map2 (role_positions_map sim);
+      Dict.declare_or_assign length_map_in role value in
+    let proj_pre :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
+    let proj_post :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
         StorableValue.Map length_map';
-        StorableValue.Map2 (role_values_body_map sim) ] in
-    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+        StorableValue.Map2 body_map_in ] in
+    {{? codes, env, Some (make_state env state_base memory proj_pre) |
       Stdlib.sstore (keccak256_tuple2 role 1) value ⇓
       Result.Ok tt
-    | Some (make_state env state_base memory proj_sim') ?}}.
+    | Some (make_state env state_base memory proj_post) ?}}.
 
   (** ----- Axiom: sstore at array body element =====
 
@@ -1006,24 +1034,27 @@ Module GuardianEquivalence.
       element write after [array_dataslot] resolves the data area to
       [keccak256_single (set_slot)]. *)
   Axiom run_sstore_role_values_body_at_proj_sim :
-    forall codes env state_base memory sim (role idx value : U256.t)
-        (length_map' : Dict.t U256.t U256.t),
+    forall codes env state_base memory (role idx value : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (length_map_in : Dict.t U256.t U256.t)
+        (body_map_in : Dict.t (U256.t * U256.t) U256.t),
     let body_map' :=
-      Dict.declare_or_assign (role_values_body_map sim) (role, idx) value in
-    let proj_sim_pre :=
-      [ StorableValue.Map2 (role_member_map sim);
-        StorableValue.Map2 (role_positions_map sim);
-        StorableValue.Map length_map';
-        StorableValue.Map2 (role_values_body_map sim) ] in
-    let proj_sim' :=
-      [ StorableValue.Map2 (role_member_map sim);
-        StorableValue.Map2 (role_positions_map sim);
-        StorableValue.Map length_map';
+      Dict.declare_or_assign body_map_in (role, idx) value in
+    let proj_pre :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
+    let proj_post :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
         StorableValue.Map2 body_map' ] in
-    {{? codes, env, Some (make_state env state_base memory proj_sim_pre) |
+    {{? codes, env, Some (make_state env state_base memory proj_pre) |
       Stdlib.sstore (keccak256_single (keccak256_tuple2 role 1) + idx) value ⇓
       Result.Ok tt
-    | Some (make_state env state_base memory proj_sim') ?}}.
+    | Some (make_state env state_base memory proj_post) ?}}.
 
   (** ----- Axiom: sload at array length (post-bump shape) =====
 
@@ -1034,18 +1065,20 @@ Module GuardianEquivalence.
       need to land it against the post-bump 4-slot list (not the literal
       [proj_sim sim] shape). *)
   Axiom run_sload_role_values_length_at_proj_sim_post :
-    forall codes env state_base memory sim (role : U256.t)
+    forall codes env state_base memory (role : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
         (length_map' : Dict.t U256.t U256.t)
         (body_map' : Dict.t (U256.t * U256.t) U256.t),
-    let proj_sim_post :=
-      [ StorableValue.Map2 (role_member_map sim);
-        StorableValue.Map2 (role_positions_map sim);
+    let proj :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
         StorableValue.Map length_map';
         StorableValue.Map2 body_map' ] in
-    {{? codes, env, Some (make_state env state_base memory proj_sim_post) |
+    {{? codes, env, Some (make_state env state_base memory proj) |
       Stdlib.sload (keccak256_tuple2 role 1) ⇓
       Result.Ok (StorableValue.map_get_u256 length_map' role)
-    | Some (make_state env state_base memory proj_sim_post) ?}}.
+    | Some (make_state env state_base memory proj) ?}}.
 
   (** ----- Axiom: sload at array body element =====
 
@@ -1058,18 +1091,20 @@ Module GuardianEquivalence.
       the [map_get_u256] default of 0 — modeling Solidity's zero-init
       for fresh array indices. *)
   Axiom run_sload_role_values_body_at_proj_sim :
-    forall codes env state_base memory sim (role idx : U256.t)
-        (length_map' : Dict.t U256.t U256.t),
-    let proj_sim_pre :=
-      [ StorableValue.Map2 (role_member_map sim);
-        StorableValue.Map2 (role_positions_map sim);
-        StorableValue.Map length_map';
-        StorableValue.Map2 (role_values_body_map sim) ] in
-    {{? codes, env, Some (make_state env state_base memory proj_sim_pre) |
+    forall codes env state_base memory (role idx : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (length_map_in : Dict.t U256.t U256.t)
+        (body_map_in : Dict.t (U256.t * U256.t) U256.t),
+    let proj :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
+    {{? codes, env, Some (make_state env state_base memory proj) |
       Stdlib.sload (keccak256_single (keccak256_tuple2 role 1) + idx) ⇓
-      Result.Ok (StorableValue.map_get_u256
-                   (role_values_body_map sim) (role, idx))
-    | Some (make_state env state_base memory proj_sim_pre) ?}}.
+      Result.Ok (StorableValue.map_get_u256 body_map_in (role, idx))
+    | Some (make_state env state_base memory proj) ?}}.
 
   (** ===== Bit-mask leaf for the bytes32 offset-0 body write =====
 
@@ -1187,26 +1222,29 @@ Module GuardianEquivalence.
         sstore(slot, value)                            (* body write *)
       Final post-state has slot 3's body_map updated at (role, idx). *)
   Lemma run_update_storage_value_t_bytes32_at_proj_sim
-      codes env state_base memory sim (role idx value : U256.t)
-      (length_map' : Dict.t U256.t U256.t)
+      codes env state_base memory (role idx value : U256.t)
+      (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (length_map_in : Dict.t U256.t U256.t)
+      (body_map_in : Dict.t (U256.t * U256.t) U256.t)
       (H_v : 0 <= value < 2^256) :
-    let proj_sim_pre :=
-      [ StorableValue.Map2 (role_member_map sim);
-        StorableValue.Map2 (role_positions_map sim);
-        StorableValue.Map length_map';
-        StorableValue.Map2 (role_values_body_map sim) ] in
+    let proj_pre :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
     let body_map' :=
-      Dict.declare_or_assign (role_values_body_map sim) (role, idx) value in
-    let proj_sim_post :=
-      [ StorableValue.Map2 (role_member_map sim);
-        StorableValue.Map2 (role_positions_map sim);
-        StorableValue.Map length_map';
+      Dict.declare_or_assign body_map_in (role, idx) value in
+    let proj_post :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
         StorableValue.Map2 body_map' ] in
-    {{? codes, env, Some (make_state env state_base memory proj_sim_pre) |
+    {{? codes, env, Some (make_state env state_base memory proj_pre) |
       update_storage_value_t_bytes32_to_t_bytes32
         (keccak256_single (keccak256_tuple2 role 1) + idx) 0 value ⇓
       Result.Ok tt
-    | Some (make_state env state_base memory proj_sim_post) ?}}.
+    | Some (make_state env state_base memory proj_post) ?}}.
   Proof.
     cbv zeta.
     unfold update_storage_value_t_bytes32_to_t_bytes32.
@@ -1218,7 +1256,9 @@ Module GuardianEquivalence.
           c; [ apply run_convert_t_bytes32_to_t_bytes32 | ]
       | |- {{? _, _, _ |
             LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
-          c; [ apply run_sload_role_values_body_at_proj_sim | ]
+          c; [ apply (run_sload_role_values_body_at_proj_sim
+                       codes env state_base memory role idx
+                       member_map_in positions_map_in length_map_in body_map_in) | ]
       | |- {{? _, _, _ |
             LowM.Call (prepare_store_t_bytes32 _) _ ⇓ _ | _ ?}} =>
           c; [ apply run_prepare_store_t_bytes32 | ]
@@ -1228,7 +1268,8 @@ Module GuardianEquivalence.
       | |- {{? _, _, _ |
             LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
           c; [ apply (run_sstore_role_values_body_at_proj_sim
-                       codes env state_base memory sim role idx value length_map') | ]
+                       codes env state_base memory role idx value
+                       member_map_in positions_map_in length_map_in body_map_in) | ]
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
       | |- _ => s
       end).
@@ -1280,11 +1321,20 @@ Module GuardianEquivalence.
           [run_prepare_store_t_bytes32]) and the body-write wrapper
           [run_update_storage_value_t_bytes32_at_proj_sim]. *)
   Lemma run_array_push_at_proj_sim
-      codes env state_base memory sim (role value : U256.t)
+      codes env state_base memory (role value : U256.t)
+      (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (length_map_in : Dict.t U256.t U256.t)
+      (body_map_in : Dict.t (U256.t * U256.t) U256.t)
       (* The overflow guard requires the new length to fit in 2^64. *)
       (H_len_bound :
-         StorableValue.map_get_u256 (role_values_length_map sim) role
+         StorableValue.map_get_u256 length_map_in role
          + 1 < 18446744073709551616)
+      (* role_values_length_map values are all [Z.of_nat _]-derived in
+         the canonical projection, so non-negative. For the generic
+         pre-state, the caller supplies the bound directly. *)
+      (H_len_nn :
+         0 <= StorableValue.map_get_u256 length_map_in role)
       (* The value fits in U256 — caller-supplied since this lemma is
          generic over the stored value. For OZ's [add_admin] consumers
          the value is an Address (< 2^160 < 2^256). *)
@@ -1295,30 +1345,35 @@ Module GuardianEquivalence.
          needs 2 scratch words). *)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let oldLen :=
-      StorableValue.map_get_u256 (role_values_length_map sim) role in
+      StorableValue.map_get_u256 length_map_in role in
     let length_map' :=
-      Dict.declare_or_assign (role_values_length_map sim) role
+      Dict.declare_or_assign length_map_in role
         (oldLen + 1) in
     let body_map' :=
-      Dict.declare_or_assign (role_values_body_map sim) (role, oldLen)
+      Dict.declare_or_assign body_map_in (role, oldLen)
         value in
-    let proj_sim' :=
-      [ StorableValue.Map2 (role_member_map sim);
-        StorableValue.Map2 (role_positions_map sim);
+    let proj_pre :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
+    let proj_post :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
         StorableValue.Map length_map';
         StorableValue.Map2 body_map' ] in
     exists w1' rest' state',
-    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+    {{? codes, env, Some (make_state env state_base memory proj_pre) |
       array_push_from_t_bytes32_to_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr
         (keccak256_tuple2 role 1) value ⇓
       Result.Ok tt
     | Some state' ?}}
     /\ state' = make_state env state_base
-                  (keccak256_tuple2 role 1 :: w1' :: rest') proj_sim'.
+                  (keccak256_tuple2 role 1 :: w1' :: rest') proj_post.
   Proof.
     (** R051.c Phase 3 walker. See the docstring above for the
         eight-step outline; below is the concrete assembly. *)
-    intros oldLen length_map' body_map' proj_sim'.
+    intros oldLen length_map' body_map' proj_pre proj_post.
     destruct H_mem as (w0 & w1 & rest & ->).
     (* The mstore inside array_dataslot writes [keccak256_tuple2 role 1]
        to memory word 0; afterwards memory = (kec :: w1 :: rest). Pose
@@ -1327,27 +1382,16 @@ Module GuardianEquivalence.
     set (mem_after_mstore := keccak256_tuple2 role 1 :: w1 :: rest).
     (* The post-state has the body sstored on top of the length sstore.
        Pose it explicitly to drive the existential witness. *)
-    set (proj_sim_after_length :=
-           [ StorableValue.Map2 (role_member_map sim);
-             StorableValue.Map2 (role_positions_map sim);
+    set (proj_after_length :=
+           [ StorableValue.Map2 member_map_in;
+             StorableValue.Map2 positions_map_in;
              StorableValue.Map length_map';
-             StorableValue.Map2 (role_values_body_map sim) ]).
+             StorableValue.Map2 body_map_in ]).
     (* Step bounds: H_len_bound ⇒ oldLen < 2^64, oldLen + 1 < 2^256. *)
     assert (H_oldLen_bound : oldLen < 18446744073709551616) by
       (unfold oldLen; lia).
-    (* role_values_length_map's values are all [Z.of_nat _] by
-       construction, hence non-negative; lift through [map_get_u256]'s
-       default-to-zero fallback. *)
-    assert (H_oldLen_nn : 0 <= oldLen).
-    { unfold oldLen, StorableValue.map_get_u256, role_values_length_map.
-      simpl Dict.get.
-      destruct (Dict.Eq.eqb role DEFAULT_ADMIN_ROLE_bytes32);
-        [apply Nat2Z.is_nonneg|].
-      destruct (Dict.Eq.eqb role OPTIMISTIC_GUARDIAN_ROLE_bytes32);
-        [apply Nat2Z.is_nonneg|].
-      destruct (Dict.Eq.eqb role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32);
-        [apply Nat2Z.is_nonneg|].
-      lia. }
+    (* oldLen non-negativity comes from caller-supplied [H_len_nn]. *)
+    assert (H_oldLen_nn : 0 <= oldLen) by exact H_len_nn.
     (* oldLen + 1 fits in U256. *)
     assert (H_old_plus_one_u256 : 0 <= oldLen + 1 < 2 ^ 256) by lia.
     (* Pure.add oldLen 1 = oldLen + 1. *)
@@ -1378,30 +1422,30 @@ Module GuardianEquivalence.
       unfold Pure.lt. destruct (Z.ltb_spec oldLen (oldLen + 1));
       [reflexivity | lia]. }
     (* After the length sstore, the inner length re-read fetches
-       [map_get_u256 length_map' role = oldLen+1]. *)
-    assert (H_get_length_map'_role :
-              StorableValue.map_get_u256 length_map' role = oldLen + 1).
-    { unfold length_map', StorableValue.map_get_u256.
-      generalize (role_values_length_map sim) as d. intro d.
-      induction d as [|[k v] rest_d IH].
-      - (* Empty dict: declare_or_assign appends (role, oldLen+1). *)
-        cbn.
-        change (Dict.Eq.eqb role role) with (role =? role).
+       [map_get_u256 length_map' role = oldLen+1]. Helper lemma
+       generalized over the dict and the value separately so the
+       inductive step's IH applies cleanly. *)
+    assert (H_dict_declare_role_eq :
+      forall (d : Dict.t U256.t U256.t) (k : U256.t) (v : U256.t),
+        StorableValue.map_get_u256 (Dict.declare_or_assign d k v) k = v).
+    { intros d k v.
+      unfold StorableValue.map_get_u256, Dict.declare_or_assign.
+      induction d as [|[k' v'] rest_d IH]; cbn.
+      - change (Dict.Eq.eqb k k) with (k =? k).
         rewrite Z.eqb_refl. reflexivity.
-      - (* Non-empty: case-split on whether the head key matches role. *)
-        cbn -[Z.eqb].
-        change (Dict.Eq.eqb k role) with (k =? role).
-        destruct (Z.eqb_spec k role) as [Hek | Hne].
-        + (* k = role: replaced in place. *)
-          subst k. cbn -[Z.eqb].
-          change (Dict.Eq.eqb role role) with (role =? role).
+      - change (Dict.Eq.eqb k' k) with (k' =? k).
+        destruct (Z.eqb_spec k' k) as [Hek | Hne].
+        + subst k'. cbn.
+          change (Dict.Eq.eqb k k) with (k =? k).
           rewrite Z.eqb_refl. reflexivity.
-        + (* k <> role: appended to tail; recurse. *)
-          cbn -[Z.eqb].
-          change (Dict.Eq.eqb role k) with (role =? k).
-          replace (role =? k) with false by
+        + cbn.
+          change (Dict.Eq.eqb k k') with (k =? k').
+          replace (k =? k') with false by
             (symmetry; apply Z.eqb_neq; lia).
           exact IH. }
+    assert (H_get_length_map'_role :
+              StorableValue.map_get_u256 length_map' role = oldLen + 1).
+    { unfold length_map'. apply H_dict_declare_role_eq. }
     assert (H_lt_oldLen_inner :
               Pure.lt oldLen (StorableValue.map_get_u256 length_map' role) = 1).
     { rewrite H_get_length_map'_role.
@@ -1442,17 +1486,16 @@ Module GuardianEquivalence.
          it into LowM.let_, then subsequent arms process the inner chain. *)
       | |- {{? _, _, _ | LowM.Call (LowM.Let _ _) _ ⇓ _ | _ ?}} => cu
       (* Length sload at array anchor. Two cases:
-           - against [proj_sim sim] (the very first read).
+           - against the pre-state four-slot shape (very first read).
            - against the post-length-sstore four-slot shape (re-read
              inside storage_array_index_access).
-         The post-shape needs an explicit length_map' argument; we
-         instantiate it to the bumped length here. *)
-      | |- {{? _, _, Some (make_state _ _ _ (proj_sim _)) |
-            LowM.Call (Stdlib.sload (keccak256_tuple2 _ 1)) _ ⇓ _ | _ ?}} =>
-          c; [ apply run_sload_role_values_length_at_proj_sim | ]
+         Both dispatch via the generalized sload axiom — the pre/post
+         distinction is in the length_map_in argument. *)
       | |- {{? _, _, Some (make_state _ _ _ _) |
             LowM.Call (Stdlib.sload (keccak256_tuple2 _ 1)) _ ⇓ _ | _ ?}} =>
-          c; [ eapply run_sload_role_values_length_at_proj_sim_post | ]
+          c; [ first
+                 [ eapply run_sload_role_values_length_at_proj_sim
+                 | eapply run_sload_role_values_length_at_proj_sim_post ] | ]
       (* Body sload at array body slot. *)
       | |- {{? _, _, _ |
             LowM.Call (Stdlib.sload (keccak256_single (keccak256_tuple2 _ 1) + _)) _
@@ -1497,8 +1540,9 @@ Module GuardianEquivalence.
             LowM.Call (update_storage_value_t_bytes32_to_t_bytes32 _ 0 _) _ ⇓ _ | _ ?}} =>
           fold oldLen; rewrite H_pm_old1, H_pa_kec_old;
           c; [ apply (run_update_storage_value_t_bytes32_at_proj_sim
-                       codes env state_base mem_after_mstore sim role oldLen value
-                       length_map' H_value_u256) | ]
+                       codes env state_base mem_after_mstore role oldLen value
+                       member_map_in positions_map_in length_map' body_map_in
+                       H_value_u256) | ]
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
       | |- _ => s
       end).
@@ -3087,18 +3131,19 @@ Module GuardianEquivalence.
       [run_sload_role_values_length_at_proj_sim_post] /
       [run_sload_role_values_body_at_proj_sim] axioms. *)
   Axiom run_sload_role_positions_at_proj_sim :
-    forall codes env state_base memory sim (role value : U256.t)
-        (length_map' : Dict.t U256.t U256.t)
-        (positions_map' : Dict.t (U256.t * U256.t) U256.t)
-        (body_map' : Dict.t (U256.t * U256.t) U256.t),
+    forall codes env state_base memory (role value : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (length_map_in : Dict.t U256.t U256.t)
+        (body_map_in : Dict.t (U256.t * U256.t) U256.t),
     let proj :=
-      [ StorableValue.Map2 (role_member_map sim);
-        StorableValue.Map2 positions_map';
-        StorableValue.Map length_map';
-        StorableValue.Map2 body_map' ] in
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
     {{? codes, env, Some (make_state env state_base memory proj) |
       Stdlib.sload (keccak256_tuple2 value (keccak256_tuple2 role 1 + 1)) ⇓
-      Result.Ok (StorableValue.map_get_u256 positions_map' (role, value))
+      Result.Ok (StorableValue.map_get_u256 positions_map_in (role, value))
     | Some (make_state env state_base memory proj) ?}}.
 
   (** ----- Axiom: sstore at positions sub-mapping =====
@@ -3108,22 +3153,23 @@ Module GuardianEquivalence.
       parametric-trust footprint as the sload above and the slot 2/3
       sstore axioms in R051.c). *)
   Axiom run_sstore_role_positions_at_proj_sim :
-    forall codes env state_base memory sim (role value new_position : U256.t)
-        (length_map' : Dict.t U256.t U256.t)
+    forall codes env state_base memory (role value new_position : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
         (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
-        (body_map' : Dict.t (U256.t * U256.t) U256.t),
+        (length_map_in : Dict.t U256.t U256.t)
+        (body_map_in : Dict.t (U256.t * U256.t) U256.t),
     let positions_map' :=
       Dict.declare_or_assign positions_map_in (role, value) new_position in
     let proj_pre :=
-      [ StorableValue.Map2 (role_member_map sim);
+      [ StorableValue.Map2 member_map_in;
         StorableValue.Map2 positions_map_in;
-        StorableValue.Map length_map';
-        StorableValue.Map2 body_map' ] in
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
     let proj_post :=
-      [ StorableValue.Map2 (role_member_map sim);
+      [ StorableValue.Map2 member_map_in;
         StorableValue.Map2 positions_map';
-        StorableValue.Map length_map';
-        StorableValue.Map2 body_map' ] in
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
     {{? codes, env, Some (make_state env state_base memory proj_pre) |
       Stdlib.sstore (keccak256_tuple2 value (keccak256_tuple2 role 1 + 1)) new_position ⇓
       Result.Ok tt
@@ -3330,23 +3376,24 @@ Module GuardianEquivalence.
       [keccak256(value, keccak256(role, 1) + 1)]. Post-state has slot 1
       updated via [Dict.declare_or_assign] at key [(role, value)]. *)
   Lemma run_update_storage_value_t_uint256_at_positions_proj_sim
-      codes env state_base memory sim (role value new_position : U256.t)
-      (length_map' : Dict.t U256.t U256.t)
+      codes env state_base memory (role value new_position : U256.t)
+      (member_map_in : Dict.t (U256.t * U256.t) U256.t)
       (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
-      (body_map' : Dict.t (U256.t * U256.t) U256.t)
+      (length_map_in : Dict.t U256.t U256.t)
+      (body_map_in : Dict.t (U256.t * U256.t) U256.t)
       (H_new_position : 0 <= new_position < 2^256) :
     let positions_map' :=
       Dict.declare_or_assign positions_map_in (role, value) new_position in
     let proj_pre :=
-      [ StorableValue.Map2 (role_member_map sim);
+      [ StorableValue.Map2 member_map_in;
         StorableValue.Map2 positions_map_in;
-        StorableValue.Map length_map';
-        StorableValue.Map2 body_map' ] in
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
     let proj_post :=
-      [ StorableValue.Map2 (role_member_map sim);
+      [ StorableValue.Map2 member_map_in;
         StorableValue.Map2 positions_map';
-        StorableValue.Map length_map';
-        StorableValue.Map2 body_map' ] in
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
     {{? codes, env, Some (make_state env state_base memory proj_pre) |
       update_storage_value_offset_0_t_uint256_to_t_uint256
         (keccak256_tuple2 value (keccak256_tuple2 role 1 + 1)) new_position ⇓
@@ -3364,8 +3411,8 @@ Module GuardianEquivalence.
       | |- {{? _, _, _ |
             LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
           c; [ apply (run_sload_role_positions_at_proj_sim
-                       codes env state_base memory sim role value
-                       length_map' positions_map_in body_map') | ]
+                       codes env state_base memory role value
+                       member_map_in positions_map_in length_map_in body_map_in) | ]
       | |- {{? _, _, _ |
             LowM.Call (prepare_store_t_uint256 _) _ ⇓ _ | _ ?}} =>
           c; [ apply run_prepare_store_t_uint256_local | ]
@@ -3376,8 +3423,8 @@ Module GuardianEquivalence.
       | |- {{? _, _, _ |
             LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
           c; [ apply (run_sstore_role_positions_at_proj_sim
-                       codes env state_base memory sim role value new_position
-                       length_map' positions_map_in body_map') | ]
+                       codes env state_base memory role value new_position
+                       member_map_in positions_map_in length_map_in body_map_in) | ]
       | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
       | |- _ => s
       end).
@@ -3409,23 +3456,26 @@ Module GuardianEquivalence.
       keccak); the post-state's memory tail is left as an existential
       so the caller can thread it. *)
   Lemma run_fun__contains_1760_at_proj_sim_not_in
-      codes env state_base memory sim (role value : U256.t)
+      codes env state_base memory (role value : U256.t)
+      (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (length_map_in : Dict.t U256.t U256.t)
+      (body_map_in : Dict.t (U256.t * U256.t) U256.t)
       (H_not_in :
-         StorableValue.map_get_u256 (role_positions_map sim) (role, value) = 0)
+         StorableValue.map_get_u256 positions_map_in (role, value) = 0)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let proj :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
     exists w0' w1' rest',
-    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+    {{? codes, env, Some (make_state env state_base memory proj) |
       fun__contains_1760 (keccak256_tuple2 role 1) value ⇓
       Result.Ok 0
-    | Some (make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)) ?}}.
+    | Some (make_state env state_base (w0' :: w1' :: rest') proj) ?}}.
   Proof.
-    (* Specialize the projection — the lazymatch / sload arms below
-       see the 4-slot list literal so the trust axiom applies. *)
-    change (proj_sim sim) with
-      ([ StorableValue.Map2 (role_member_map sim);
-         StorableValue.Map2 (role_positions_map sim);
-         StorableValue.Map (role_values_length_map sim);
-         StorableValue.Map2 (role_values_body_map sim) ]).
+    cbv zeta.
     (* [Pure.add (keccak256_tuple2 role 1) 1 = keccak256_tuple2 role 1 + 1]. *)
     assert (H_pa_kec_1 :
               Pure.add (keccak256_tuple2 role 1) 1
@@ -3436,10 +3486,10 @@ Module GuardianEquivalence.
     pose proof (MappingIndexAccessBytes32Uint256.run_mapping_index_access
                   codes env state_base
                   (keccak256_tuple2 role 1 + 1) value
-                  ([ StorableValue.Map2 (role_member_map sim);
-                     StorableValue.Map2 (role_positions_map sim);
-                     StorableValue.Map (role_values_length_map sim);
-                     StorableValue.Map2 (role_values_body_map sim) ])
+                  ([ StorableValue.Map2 member_map_in;
+                     StorableValue.Map2 positions_map_in;
+                     StorableValue.Map length_map_in;
+                     StorableValue.Map2 body_map_in ])
                   memory H_mem) as Hmia.
     destruct Hmia as (w0_m & w1_m & rest_m & Hmia).
     set (mem_after_mia := w0_m :: w1_m :: rest_m).
@@ -3448,24 +3498,24 @@ Module GuardianEquivalence.
     assert (Hmia' :
       {{? codes, env,
           Some (make_state env state_base memory
-                  ([ StorableValue.Map2 (role_member_map sim);
-                     StorableValue.Map2 (role_positions_map sim);
-                     StorableValue.Map (role_values_length_map sim);
-                     StorableValue.Map2 (role_values_body_map sim) ]))
+                  ([ StorableValue.Map2 member_map_in;
+                     StorableValue.Map2 positions_map_in;
+                     StorableValue.Map length_map_in;
+                     StorableValue.Map2 body_map_in ]))
       | mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_uint256_ₓ_of_t_bytes32
           (Pure.add (keccak256_tuple2 role 1) 1) value
         ⇓ Result.Ok (keccak256_tuple2 value (keccak256_tuple2 role 1 + 1))
       | Some (make_state env state_base mem_after_mia
-                ([ StorableValue.Map2 (role_member_map sim);
-                   StorableValue.Map2 (role_positions_map sim);
-                   StorableValue.Map (role_values_length_map sim);
-                   StorableValue.Map2 (role_values_body_map sim) ])) ?}}).
+                ([ StorableValue.Map2 member_map_in;
+                   StorableValue.Map2 positions_map_in;
+                   StorableValue.Map length_map_in;
+                   StorableValue.Map2 body_map_in ])) ?}}).
     { rewrite H_pa_kec_1. exact Hmia. }
     (* The positions sload returns 0 by [H_not_in]. *)
     pose proof (run_sload_role_positions_at_proj_sim
-                  codes env state_base mem_after_mia sim role value
-                  (role_values_length_map sim) (role_positions_map sim)
-                  (role_values_body_map sim)) as Hsl.
+                  codes env state_base mem_after_mia role value
+                  member_map_in positions_map_in
+                  length_map_in body_map_in) as Hsl.
     cbv zeta in Hsl.
     rewrite H_not_in in Hsl.
     exists w0_m, w1_m, rest_m.
@@ -3560,20 +3610,32 @@ Module GuardianEquivalence.
       The wrapper is set up for the call from [fun_add_2085] where
       [set_slot = keccak256_tuple2 role 1]. *)
   Lemma run_fun__add_1614_at_proj_sim_not_in
-      codes env state_base memory sim (role value : U256.t)
+      codes env state_base memory (role value : U256.t)
+      (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (length_map_in : Dict.t U256.t U256.t)
+      (body_map_in : Dict.t (U256.t * U256.t) U256.t)
       (H_value_u256 : 0 <= value < 2^256)
       (H_not_in :
-         StorableValue.map_get_u256 (role_positions_map sim) (role, value) = 0)
+         StorableValue.map_get_u256 positions_map_in (role, value) = 0)
       (H_len_bound :
-         StorableValue.map_get_u256 (role_values_length_map sim) role
+         StorableValue.map_get_u256 length_map_in role
          + 1 < 18446744073709551616)
+      (H_len_nn :
+         0 <= StorableValue.map_get_u256 length_map_in role)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let proj :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
     exists state',
-    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+    {{? codes, env, Some (make_state env state_base memory proj) |
       fun__add_1614 (keccak256_tuple2 role 1) value ⇓
       Result.Ok 1
     | Some state' ?}}.
   Proof.
+    cbv zeta.
     (* The slot expression for the [+0] and [+1] field-offset writes
        reduces under [Pure_add_keccak_offset]. *)
     assert (H_pa_kec_0 :
@@ -3586,32 +3648,27 @@ Module GuardianEquivalence.
     { apply Pure_add_keccak_offset. lia. }
     (* Set oldLen / length_map' / body_map' for the state-tracking
        through the walker. *)
-    set (oldLen := StorableValue.map_get_u256
-                     (role_values_length_map sim) role).
+    set (oldLen := StorableValue.map_get_u256 length_map_in role).
     set (length_map' := Dict.declare_or_assign
-                          (role_values_length_map sim) role (oldLen + 1)).
+                          length_map_in role (oldLen + 1)).
     set (body_map' := Dict.declare_or_assign
-                        (role_values_body_map sim) (role, oldLen) value).
-    (* oldLen bounds (same proof as [run_fun_add_2085_at_proj_sim]). *)
+                        body_map_in (role, oldLen) value).
+    (* oldLen bounds: directly from the [H_len_bound] and [H_len_nn]
+       caller-supplied hypotheses (the previous unconditional [Z.of_nat]
+       lower bound relied on the [role_values_length_map sim] structure,
+       which is no longer available in the generic form). *)
     assert (H_oldLen_bound : oldLen < 18446744073709551616) by
       (unfold oldLen; lia).
-    assert (H_oldLen_nn : 0 <= oldLen).
-    { unfold oldLen, StorableValue.map_get_u256, role_values_length_map.
-      simpl Dict.get.
-      destruct (Dict.Eq.eqb role DEFAULT_ADMIN_ROLE_bytes32);
-        [apply Nat2Z.is_nonneg|].
-      destruct (Dict.Eq.eqb role OPTIMISTIC_GUARDIAN_ROLE_bytes32);
-        [apply Nat2Z.is_nonneg|].
-      destruct (Dict.Eq.eqb role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32);
-        [apply Nat2Z.is_nonneg|].
-      lia. }
+    assert (H_oldLen_nn : 0 <= oldLen) by exact H_len_nn.
     (* [oldLen + 1] fits in u256 — needed for the positions write bound. *)
     assert (H_newLen_u256 : 0 <= oldLen + 1 < 2 ^ 256) by lia.
     (* Step 1: contains_1760 walker — returns 0, memory shape preserved
        (modulo MIA scratch). *)
     pose proof (run_fun__contains_1760_at_proj_sim_not_in
-                  codes env state_base memory sim role value
+                  codes env state_base memory role value
+                  member_map_in positions_map_in length_map_in body_map_in
                   H_not_in H_mem) as Hcontains.
+    cbv zeta in Hcontains.
     destruct Hcontains as (w0_c & w1_c & rest_c & Hcontains).
     set (mem_after_c := w0_c :: w1_c :: rest_c).
     (* Step 3: array_push walker — bumps length+body. The walker needs
@@ -3623,25 +3680,26 @@ Module GuardianEquivalence.
               exists w0 w1 rest, mem_after_c = w0 :: w1 :: rest).
     { unfold mem_after_c. eauto 10. }
     pose proof (run_array_push_at_proj_sim
-                  codes env state_base mem_after_c sim role value
-                  H_len_bound H_value_u256 H_mem_after_c_2) as Hpush.
+                  codes env state_base mem_after_c role value
+                  member_map_in positions_map_in length_map_in body_map_in
+                  H_len_bound H_len_nn H_value_u256 H_mem_after_c_2) as Hpush.
     cbv zeta in Hpush.
     fold oldLen length_map' body_map' in Hpush.
     destruct Hpush as (w1_p & rest_p & state_after_push & Hpush & Hstate_after_push).
     set (mem_after_push := keccak256_tuple2 role 1 :: w1_p :: rest_p).
-    set (proj_sim_after_push :=
-           [ StorableValue.Map2 (role_member_map sim);
-             StorableValue.Map2 (role_positions_map sim);
+    set (proj_after_push :=
+           [ StorableValue.Map2 member_map_in;
+             StorableValue.Map2 positions_map_in;
              StorableValue.Map length_map';
              StorableValue.Map2 body_map' ]).
-    fold mem_after_push proj_sim_after_push in Hstate_after_push.
+    fold mem_after_push proj_after_push in Hstate_after_push.
     rewrite Hstate_after_push in Hpush.
     (* MIA leaf for the positions sub-mapping (step 5), against the
        post-push 4-slot projection — uses the 2-word memory handle. *)
     pose proof (MappingIndexAccessBytes32Uint256.run_mapping_index_access
                   codes env state_base
                   (keccak256_tuple2 role 1 + 1) value
-                  proj_sim_after_push
+                  proj_after_push
                   mem_after_push
                   (ex_intro _ (keccak256_tuple2 role 1)
                     (ex_intro _ w1_p
@@ -3651,48 +3709,51 @@ Module GuardianEquivalence.
     (* Repackage the MIA with [Pure.add _ 1] surface shape. *)
     assert (Hmia' :
       {{? codes, env,
-          Some (make_state env state_base mem_after_push proj_sim_after_push)
+          Some (make_state env state_base mem_after_push proj_after_push)
       | mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_uint256_ₓ_of_t_bytes32
           (Pure.add (keccak256_tuple2 role 1) 1) value
         ⇓ Result.Ok (keccak256_tuple2 value (keccak256_tuple2 role 1 + 1))
-      | Some (make_state env state_base mem_after_mia proj_sim_after_push) ?}}).
+      | Some (make_state env state_base mem_after_mia proj_after_push) ?}}).
     { rewrite H_pa_kec_1. exact Hmia. }
     (* Pre-pose the post-bump length sload: at [keccak256_tuple2 role 1]
        against the post-push 4-slot state, returns
        [map_get_u256 length_map' role = oldLen + 1]. *)
     pose proof (run_sload_role_values_length_at_proj_sim_post
-                  codes env state_base mem_after_push sim role
-                  length_map' body_map')
+                  codes env state_base mem_after_push role
+                  member_map_in positions_map_in length_map' body_map')
       as Hsload_len_post.
     cbv zeta in Hsload_len_post.
-    fold proj_sim_after_push in Hsload_len_post.
-    assert (H_get_length_map' :
-              StorableValue.map_get_u256 length_map' role = oldLen + 1).
-    { unfold length_map', StorableValue.map_get_u256.
-      generalize (role_values_length_map sim) as d. intro d.
-      induction d as [|[k v] rest_d IH].
-      - cbn.
-        change (Dict.Eq.eqb role role) with (role =? role).
+    fold proj_after_push in Hsload_len_post.
+    assert (H_dict_declare_role_eq :
+      forall (d : Dict.t U256.t U256.t) (k : U256.t) (v : U256.t),
+        StorableValue.map_get_u256 (Dict.declare_or_assign d k v) k = v).
+    { intros d k v.
+      unfold StorableValue.map_get_u256, Dict.declare_or_assign.
+      induction d as [|[k' v'] rest_d IH]; cbn.
+      - change (Dict.Eq.eqb k k) with (k =? k).
         rewrite Z.eqb_refl. reflexivity.
-      - cbn -[Z.eqb].
-        change (Dict.Eq.eqb k role) with (k =? role).
-        destruct (Z.eqb_spec k role) as [Hek | Hne].
-        + subst k. cbn -[Z.eqb].
-          change (Dict.Eq.eqb role role) with (role =? role).
+      - change (Dict.Eq.eqb k' k) with (k' =? k).
+        destruct (Z.eqb_spec k' k) as [Hek | Hne].
+        + subst k'. cbn.
+          change (Dict.Eq.eqb k k) with (k =? k).
           rewrite Z.eqb_refl. reflexivity.
-        + cbn -[Z.eqb].
-          change (Dict.Eq.eqb role k) with (role =? k).
-          replace (role =? k) with false by
+        + cbn.
+          change (Dict.Eq.eqb k k') with (k =? k').
+          replace (k =? k') with false by
             (symmetry; apply Z.eqb_neq; lia).
           exact IH. }
+    assert (H_get_length_map' :
+              StorableValue.map_get_u256 length_map' role = oldLen + 1).
+    { unfold length_map'. apply H_dict_declare_role_eq. }
     rewrite H_get_length_map' in Hsload_len_post.
     (* Step 6: positions write. We feed it the [length_map'] threaded
-       in, the unchanged [role_positions_map sim] as positions_map_in,
-       and [body_map'] as body_map'. New position = oldLen + 1. *)
+       in, the unchanged [positions_map_in], and [body_map'] as body.
+       New position = oldLen + 1. *)
     pose proof (run_update_storage_value_t_uint256_at_positions_proj_sim
-                  codes env state_base mem_after_mia sim role value
-                  (oldLen + 1) length_map'
-                  (role_positions_map sim) body_map' H_newLen_u256)
+                  codes env state_base mem_after_mia role value
+                  (oldLen + 1)
+                  member_map_in positions_map_in length_map' body_map'
+                  H_newLen_u256)
       as Hpos.
     cbv zeta in Hpos.
     (* Post-state for the existential. *)
@@ -3813,20 +3874,32 @@ Module GuardianEquivalence.
       call chain ([_contains_1760] + [array_push] + positions
       sstore). *)
   Lemma run_fun_add_2085_at_proj_sim
-      codes env state_base memory sim (role value : U256.t)
+      codes env state_base memory (role value : U256.t)
+      (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+      (length_map_in : Dict.t U256.t U256.t)
+      (body_map_in : Dict.t (U256.t * U256.t) U256.t)
       (H_value : 0 <= value < 2^160)
       (H_not_in :
-         StorableValue.map_get_u256 (role_positions_map sim) (role, value) = 0)
+         StorableValue.map_get_u256 positions_map_in (role, value) = 0)
       (H_len_bound :
-         StorableValue.map_get_u256 (role_values_length_map sim) role
+         StorableValue.map_get_u256 length_map_in role
          + 1 < 18446744073709551616)
+      (H_len_nn :
+         0 <= StorableValue.map_get_u256 length_map_in role)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let proj :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
     exists state',
-    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+    {{? codes, env, Some (make_state env state_base memory proj) |
       fun_add_2085 (keccak256_tuple2 role 1) value ⇓
       Result.Ok 1
     | Some state' ?}}.
   Proof.
+    cbv zeta.
     (* Phase 2 outer wrapper: convert chain (all no-ops for value < 2^160)
        then dispatch via [_add_1614]'s composable witness. *)
     (* Value bound also fits in 2^256 — needed for convert chain and
@@ -3843,8 +3916,10 @@ Module GuardianEquivalence.
     { rewrite Pure_add_keccak_offset by lia. lia. }
     (* Compose [_add_1614]'s witness for the inner call. *)
     pose proof (run_fun__add_1614_at_proj_sim_not_in
-                  codes env state_base memory sim role value
-                  H_value_u256 H_not_in H_len_bound H_mem) as Hinner.
+                  codes env state_base memory role value
+                  member_map_in positions_map_in length_map_in body_map_in
+                  H_value_u256 H_not_in H_len_bound H_len_nn H_mem) as Hinner.
+    cbv zeta in Hinner.
     destruct Hinner as (state_inner & Hinner).
     eexists.
     unfold fun_add_2085.
@@ -4771,7 +4846,7 @@ Module GuardianEquivalence.
     subst result.
     unfold AccessControl.grantRole at 1.
     rewrite H_result_success. cbn match.
-    (** ===== Phase 5 status (post-R054 observational refactor) =====
+    (** ===== Phase 5 status (post-R054 axiom-generalization) =====
 
         Theorem now stated with [observationally_eq_storage] (per-slot
         [map_get_u256] equality) as the third clause — replacing the
@@ -4783,66 +4858,72 @@ Module GuardianEquivalence.
          [role_values_body_map_sstore_observes_add_admin_not_in])
         cover the four-slot discharge of that observational equivalence.
 
-        The remaining blocker for full Qed is operational, not
-        structural: composing Phase 1
-        ([run_fun__grantRole_1468_at_proj_sim_not_member]) with
-        Phase 2 ([run_fun_add_2085_at_proj_sim]) into a single walk
-        of [fun__grantRole_704]'s not-member branch.
+        The four sstore axioms and the [array_push] / [_contains_1760]
+        / [_add_1614] / [add_2085] / [_t_uint256_at_positions] /
+        [_t_bytes32_at_proj_sim] wrappers have all been GENERALIZED to
+        accept arbitrary [member_map_in / positions_map_in /
+        length_map_in / body_map_in] pre-state shapes — letting
+        Phase 1's post-state (slot 0 = Dict.declare_or_assign ...)
+        flow into Phase 2 directly. This was the structural
+        prerequisite for the not-member branch composition.
 
-        Phase 1 produces a post-state with slot 0 mutated to
-        [Dict.declare_or_assign (role_member_map sim) (role, account) 1].
-        Phase 2's lemma is parameterized over a [sim] and HARDCODES the
-        pre-state as [proj_sim sim] — its slots 1/2/3 sstore axioms
-        ([run_sstore_role_positions_at_proj_sim], etc.) similarly
-        match against [proj_sim sim]'s shape, leaving slot 0 fixed at
-        [role_member_map sim]. Composing the two requires either:
+        ===== What remains for Qed =====
 
-          (i) a generalized variant of [run_fun_add_2085_at_proj_sim]
-              that accepts an arbitrary slot-0 [member_map_in : Dict.t ...]
-              parameter (instead of computing it from [sim]), letting
-              the post-Phase-1 storage flow through. The slot-1/2/3
-              axioms it routes through likewise need [_with_member_map]
-              variants. ~150 lines of mechanical generalization across
-              the four sstore axioms + the four wrapper lemmas. The
-              proof bodies are unchanged — only the lemma signatures
-              and the threaded-dict parameters need broadening.
+        With Phase 2 now composable on top of Phase 1, the milestone
+        assembly is a multi-branch case analysis:
 
-          (ii) an alternative: rewrite Phase 1's post-state to a
-              [proj_sim sim'] form before invoking Phase 2. But this
-              IS the syntactic equality WISDOM R054 proved
-              irreconcilable — would have to permute the dict-list
-              entries (cons-vs-append), which Phase 2's literal
-              [Dict.declare_or_assign] cannot tolerate without a
-              setoid framework over [Dict.t].
+          - role-known? (DEFAULT vs OPT_G vs OPT_GM vs unknown).
+            For unknown roles, [AccessControl.grantRole] still returns
+            Success (the [getRoleAdmin] lookup falls back to
+            DEFAULT_ADMIN under our projection where unknown roles'
+            entries don't appear). The shallow walker hits an
+            uncovered case in the modifier's getRoleAdmin chain;
+            either case-split it out (require [H_role_known]) or
+            handle the fallback explicitly. The current
+            [run_modifier_onlyRole_1351_admin_passes] takes
+            [H_role_known] as a hypothesis, so we'd want to extend
+            the theorem's preconditions accordingly.
 
-        Path (i) is the cleanest closure path. Estimated effort:
-        ~2-4 hours of mechanical work. The observational milestone
-        clause + the 4 bridge lemmas landed here unblock that work
-        completely — once the generalized Phase 2 lemma lands, the
-        Phase 5 closure assembles in ~50-100 lines via:
+          - account-already-a-member?
+            -- TRUE for [role = DEFAULT_ADMIN_ROLE]: [sim' := sim],
+               use [run_fun__grantRole_1468_at_proj_sim_member] inside
+               Phase 3's already-member arm; the observational storage
+               clause discharges reflexively.
+            -- FALSE for [role = DEFAULT_ADMIN_ROLE]: [sim' :=
+               add_admin sim account]. The not-member composition:
 
-          - case-split [addr_in admins account]
-              -- TRUE: [sim' := sim], use
-                 [run_fun__grantRole_1468_at_proj_sim_member] + the
-                 [fun__grantRole_704] already-member branch's internal
-                 walk (Phase 3 closes this end-to-end). The observational
-                 storage clause discharges trivially: storage unchanged,
-                 so [observationally_eq_storage (proj_sim sim) (proj_sim sim)]
-                 holds reflexively.
-              -- FALSE: [sim' := add_admin sim account], compose Phase 1
-                 + the generalized Phase 2 into [Hnotmem], feed Phase 3,
-                 thread through Phase 4 + modifier wrapper +
-                 [run_fun_grantRole_1359_at_proj_sim]. Discharge the
-                 observational storage clause via the four
-                 [_sstore_observes_add_admin_not_in] bridges + the slot-2
-                 syntactic-equality lemma. The [H_addr_absent]
-                 hypotheses each bridge needs come from
-                 [H_not_member] + the projection's three-block layout
-                 (proof similar to [role_member_map_values_bool]).
+                  1. Phase 1 walker (Qed'd) produces post-state with
+                     slot 0 = [Dict.declare_or_assign ... 1].
+                  2. The post-Phase-1 storage flows through the
+                     generalized Phase 2 walker as [member_map_in :=
+                     Dict.declare_or_assign (role_member_map sim) ... 1].
+                  3. Phase 2 (now generalized) produces a post-state
+                     with slots 1/2/3 mutated; slot 0 remains the
+                     Phase-1 mutated map.
+                  4. Phase 3's [Hnotmem] hypothesis is satisfied by
+                     this combined walker.
+                  5. Phase 4 + modifier wrapper + outer wrapper lift
+                     to the public entry.
+                  6. The observational clause discharges via the four
+                     [_sstore_observes_add_admin_not_in] bridges
+                     (with the slot-2 piece using the syntactic-
+                     equality lemma).
 
-        See WISDOM R054 (and its 2026-05-31 follow-up) for the diagnosis
-        and the foundational lemmas that enabled this session's
-        refactor. *)
+            Analogous proofs for OPT_G / OPT_GM roles need
+            [add_optimistic_guardian{_manager}] analogs of the four
+            observational bridges, plus the [has_admin]-equivalent for
+            the role-of-interest. Out of scope for this session.
+
+        The MEMBER branch above is the simpler one (state unchanged,
+        observational clause is reflexivity). The not-member branch
+        requires the full Phase 1+2 walker stitching plus the
+        Phase 4/modifier/outer threading — substantial mechanical
+        work (~100-150 lines).
+
+        See WISDOM R054 (and its 2026-05-31 follow-up) for the
+        diagnosis. The axiom generalization landed in the 2026-05-31
+        follow-up makes the structurally-impossible blocker disappear;
+        what remains is the operational assembly. *)
     subst sim_ac caller state.
   Admitted.
 
