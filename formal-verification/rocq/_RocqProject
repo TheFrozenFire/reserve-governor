@@ -246,6 +246,7 @@ generated/RewardTokenRegistry_shallow.v
 generated/Guardian_shallow.v
 generated/UnstakingManager_shallow.v
 generated/ProposalLib_shallow.v
+generated/OptimisticSelectorRegistry_shallow.v
 proofs/equivalence/Common.v
 proofs/equivalence/StaticCallBridge.v
 proofs/equivalence/AbiEncoding.v
@@ -263,3 +264,4 @@ proofs/equivalence/EnumerableSet.v
 proofs/equivalence/Checkpoints.v
 proofs/equivalence/ECDSA.v
 proofs/equivalence/ProposalLib.v
+proofs/equivalence/SelectorRegistry.v
