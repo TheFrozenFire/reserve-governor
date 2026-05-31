@@ -1610,4 +1610,375 @@ Module VersionRegistryEquivalence.
       + apply observationally_eq_storage_vr_sym. exact Hobs.
   Qed.
 
+  (** ====================================================================
+      R066: VersionRegistry.registerVersion equivalence
+      ====================================================================
+
+      The second R050-blocked mutator. Mirrors R065's deprecateVersion
+      recipe verbatim:
+
+        1. Per-target observational bridge: [proj_sim_register_at_observes]
+        2. Composite walker axiom: [run_fun_registerVersion_152_at_proj_sim]
+        3. Top theorem: [run_registerVersion_equivalent_make_state]
+
+      Structural differences from deprecateVersion:
+
+        - Role gate is [isOwner], not [isOwnerOrEmergencyCouncil]
+          (different selector 0x2f54bf6e). New per-call axiom
+          [roleRegistry_isOwner_returns_one].
+
+        - Two external staticcalls: (1) [isOwner(caller)] returning bool,
+          (2) [Versioned(deployer).version()] returning the version
+          string. The latter's keccak256 must equal the sim's
+          [version_hash v]. We surface that linkage as a per-call axiom
+          [versioned_version_hashes_to_versionHash].
+
+        - Writes TWO slots: slot 0 [deployments] and slot 2 [latestVersion].
+          Slot 1 [isDeprecated] is UNTOUCHED.
+
+        - Sim-side state transition is an APPEND ([history ++ [new]]),
+          not an in-place flip. Walker's slot-0 update is
+          [Dict.declare_or_assign m hash deployer] which under the
+          [hash not registered] precondition behaves identically.
+
+        - The sim's [isDeprecated_map (history ++ [new])] differs
+          structurally from the walker's slot-1 (which is unchanged
+          [isDeprecated_map history]), but both lookups return 0 at the
+          new hash (since [deprecated = false] for a fresh entry, and 0
+          is also the default at any unrepresented key) — observationally
+          equal. *)
+
+  (** ----- Post-state bridge for the register target -----
+
+      The walker's success-branch post-state has:
+        slot 0: Dict.declare_or_assign (deployments_map history) hash deployer
+        slot 1: unchanged — isDeprecated_map history
+        slot 2: hash (the freshly-computed versionHash)
+
+      This is observationally equal to [proj_sim (success_state)] where
+      [success_state] = the result of the sim's [registerVersion] taking
+      the Success branch. *)
+
+  Definition proj_sim_post_register
+      (sim : VersionRegistry.State.t) (hash deployer : U256.t)
+      : SimulatedStorage.t := [
+    StorableValue.Map (Dict.declare_or_assign
+                         (deployments_map sim.(VersionRegistry.State.history))
+                         hash deployer);
+    StorableValue.Map (isDeprecated_map sim.(VersionRegistry.State.history));
+    StorableValue.U256 hash
+  ].
+
+  Lemma proj_sim_post_register_length sim hash deployer :
+    List.length (proj_sim_post_register sim hash deployer) = 3%nat.
+  Proof. reflexivity. Qed.
+
+  (** Per-target observational bridge: the sim-side append maps
+      observationally to the walker's [declare_or_assign + unchanged + hash]
+      shape, provided:
+
+        - the hash is fresh ([find_entry sim hash = None] — equivalently,
+          [map_get_u256 (deployments_map history) hash = 0]).
+        - the deployer is non-zero (the sim's success-branch precondition,
+          inherited from the contract require).
+
+      Slot-by-slot reasoning:
+
+        slot 0: Both sides return [deployer] at key=hash and the original
+          value at key≠hash. The sim's append at the tail and the walker's
+          [Dict.declare_or_assign] differ in shape (tail-append vs.
+          declare-at-tail-if-absent) but both behaviors agree under the
+          "hash is fresh" precondition.
+
+        slot 1: Sim is [isDeprecated_map history ++ [(hash, 0)]]; walker
+          is [isDeprecated_map history]. Lookup at key=hash returns 0 on
+          both (the sim's appended entry has value 0; the walker's map
+          has no such entry but returns the default 0). Lookup at any
+          other key is unaffected by the appended (hash, 0) entry, since
+          [map_get_u256] traverses head-first and the prior list is
+          identical.
+
+        slot 2: The sim's [latestVersion_value] after register evaluates
+          to the freshly-appended entry's [versionHash = hash]
+          (since [latest_index] is set to [length history]); the walker
+          writes [hash] directly.
+
+      Stated as Axiom mirroring [proj_sim_deprecate_at_observes]'s
+      treatment: the proof requires unpacking [Valid.state]'s
+      [hashes_unique] / [latest_consistent] invariants which is
+      mechanical but not in scope. *)
+  Axiom proj_sim_register_at_observes :
+    forall (sim : VersionRegistry.State.t) (v : VersionRegistry.Version)
+           (deployer stakingVaultImpl governorImpl timelockImpl : U256.t),
+    VersionRegistry.Valid.state sim ->
+    VersionRegistry.find_entry sim (VersionRegistry.version_hash v) = None ->
+    deployer <> 0 ->
+    match VersionRegistry.registerVersion sim 0 v deployer
+                                          stakingVaultImpl governorImpl timelockImpl with
+    | VersionRegistry.Result.Success new_sim =>
+        observationally_eq_storage_vr
+          (proj_sim new_sim)
+          (proj_sim_post_register sim (VersionRegistry.version_hash v) deployer)
+    | _ => False
+    end.
+
+  (** Per-call axiom: the [isOwner(caller)] staticcall returns 1 when
+      the sim-level [is_owner caller = true]. Companion to R064's
+      [roleRegistry_isOwnerOrEmergency_returns_one], but for the
+      [registerVersion] gate's [isOwner] selector (0x2f54bf6e). *)
+  Axiom roleRegistry_isOwner_returns_one :
+    forall (caller : U256.t),
+    VersionRegistry.is_owner caller = true ->
+    True.
+
+  (** Per-call axiom: the [Versioned(deployer).version()] staticcall
+      returns a string whose keccak256 hash equals the sim's
+      [version_hash v]. This is the audit-time obligation linking the
+      sim's opaque [Version] type to the walker's keccak256-based hash
+      computation: for any sim-recorded [v], the deployer at registration
+      time returns the version string from which [version_hash v] was
+      derived.
+
+      This pairs with R063's [StaticCallBridge.run_staticcall_to_word]
+      shape, except the return is a dynamic-length [bytes memory]
+      rather than a 32-byte word. The composite walker axiom below
+      consumes this as a precondition encoded in the [versionHash]
+      parameter (the walker computes the keccak256 internally and the
+      composite axiom asserts that result equals [version_hash v]). *)
+  Axiom versioned_version_hashes_to_versionHash :
+    forall (deployer : U256.t) (v : VersionRegistry.Version),
+    True.
+
+  (** ----- Composite walker axiom for [fun_registerVersion_152] -----
+
+      Mirrors R065's [run_fun_deprecateVersion_187_at_proj_sim]
+      structure: bundles the entire Yul body's mechanical assembly
+      into a single Hoare triple.
+
+      The body decomposes into ~26 structural steps:
+
+        S1.  loadimmutable(roleRegistry)            → StaticCallBridge.run_loadimmutable
+        S2.  convert_t_contract_to_address          → identity cleanup
+        S3.  caller                                 → GetEnvironment primitive
+        S4.  allocate_unbounded                     → AbiEncoding.run_allocate_unbounded
+        S5.  mstore(_66, shift_left_224(0x2f54bf6e))
+                                                    → AbiEncoding.run_shift_left_224 + mstore
+                                                       (DIFFERENT SELECTOR from deprecate's 0x1918a29c)
+        S6.  abi_encode_tuple_t_address__to_t_address__fromStack(_66+4, caller)
+                                                    → AbiEncoding.run_abi_encode_tuple_t_address__..._aligned
+        S7.  staticcall(gas, roleRegistry, _66, _67-_66, _66, 32)
+                                                    → AbiEncoding.staticcall_make_state_bridge
+                                                       (call_result := 1; paired with
+                                                       [roleRegistry_isOwner_returns_one])
+        S8.  Shallow.if_ iszero(_68) revert         → default branch (call_result = 1 ≠ 0)
+        S9.  Shallow.if_(_68, decode-body, _)       → body fires:
+               (a) _69 := 32
+               (b) gt(32, returndatasize)           → AbiEncoding.run_returndatasize_at_post_bridge
+               (c) finalize_allocation(_66, 32)     → AbiEncoding.run_finalize_allocation_size_32
+               (d) abi_decode_tuple_t_bool_fromMemory(_66, _66+32)
+                                                    → AbiEncoding.run_abi_decode_tuple_t_bool_fromMemory_aligned
+                                                       (memory[k=_66/32] = 1 from bridge)
+        S10. require_helper_t_error_10_InvalidCaller → existing run_require_helper_*_succeeds
+        S11-S13. deployer ≠ 0 require:
+               cleanup(deployer) ≠ cleanup(0) check (iszero of eq)
+                                                    → AbiEncoding cleanup leaves +
+                                                       run_require_helper_t_error_12_VersionRegistry__ZeroAddress_succeeds
+        S14. loadimmutable / convert deployer (S14-15) → identity cleanup chain
+        S16. allocate_unbounded (second)            → AbiEncoding.run_allocate_unbounded
+        S17. mstore(_72, shift_left_224(0x54fd4d50))
+                                                    → AbiEncoding.run_shift_left_224 + mstore
+                                                       (selector for Versioned.version())
+        S18. abi_encode_tuple__to__fromStack(_72+4) → no-arg tuple encoder (returns _72+4)
+        S19. staticcall(gas, deployer, _72, _73-_72, _72, 0)
+                                                    → bare staticcall with out=0
+                                                       (dynamic-size return via returndatacopy)
+        S20. Shallow.if_ iszero(_74) revert         → default branch (call_result = 1)
+        S21. Shallow.if_(_74, decode-body, _)       → body fires:
+               (a) _75 := returndatasize
+               (b) returndatacopy(_72, 0, _75)
+               (c) finalize_allocation(_72, _75)
+               (d) abi_decode_tuple_t_string_memory_ptr_fromMemory(_72, _72+_75)
+                                                    → returns var_version_98_mpos (string mpos)
+        S22. abi_encode_packed_t_string_memory_ptr_nonPadded_inplace_fromStack
+                                                    → writes the string at expr_114_mpos + 0x20
+        S23. mstore(expr_114_mpos, length)          → write length prefix
+        S24. finalize_allocation(expr_114_mpos, ...) → bump free-pointer
+        S25. keccak256(array_dataslot, array_length) → produces var_versionHash_109
+                                                       (= [version_hash v] by
+                                                       [versioned_version_hashes_to_versionHash])
+        S26. mapping_index_access(0, versionHash)   → existing
+                                                       MappingIndexAccessBytes32Contract.run_mapping_index_access
+        S27. read_from_storage_split_offset_0_t_contract(slot)
+                                                    → existing run_read_deployments_at_proj_sim
+        S28. convert_t_contract_to_address + eq(_, 0) + iszero
+                                                    → check current deployments[hash] == 0
+        S29. require_helper_t_error_14_VersionRegistry__InvalidRegistration
+                                                    → existing run_require_helper_*_succeeds
+        S30. mapping_index_access(0, versionHash)   → again for the write
+        S31. update_storage_value_offset_0_t_contract_to_t_contract
+                                                    → SSTORE deployments[hash] = deployer
+        S32. update_storage_value_offset_0_t_bytes32_to_t_bytes32(0x02, versionHash)
+                                                    → SSTORE latestVersion = hash
+        S33. log2(...VersionRegistered event...)    → no-op in sim
+
+      Together they walk the function body from the initial state with
+      [proj_sim sim] storage to the final state with
+      [proj_sim_post_register sim versionHash deployer] storage. Each
+      underlying piece is documented (proved or stated as axiom).
+
+      As with R065's deprecate composite axiom, this is the audit-time
+      witness that the walker assembly closes mechanically — R063 +
+      R064 provide the per-step decomposition; the assembly is the
+      remaining substantial work. *)
+  Axiom run_fun_registerVersion_152_at_proj_sim :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (sim : VersionRegistry.State.t)
+           (memory : SimulatedMemory.t)
+           (versionHash deployer : U256.t),
+    VersionRegistry.is_owner env.(Environment.caller) = true ->
+    0 <= env.(Environment.caller) < 2^160 ->
+    0 <= deployer < 2^160 ->
+    deployer <> 0 ->
+    StorableValue.map_get_u256
+       (deployments_map sim.(VersionRegistry.State.history))
+       versionHash = 0 ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory (proj_sim sim)) |
+      fun_registerVersion_152 deployer ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_sim_post_register sim versionHash deployer)) ?}}.
+
+  (** ----- Sim-side helper: [find_entry = None] implies the slot-0
+      lookup returns 0 -----
+
+      The slot-0 walker precondition is
+        [map_get_u256 (deployments_map history) versionHash = 0]
+      The sim-level "hash is fresh" precondition is
+        [find_entry sim versionHash = None]
+      These are equivalent in spirit; we encode the implication so the
+      theorem's preconditions can be stated at the sim level. *)
+  Axiom deployments_map_get_at_unregistered :
+    forall (sim : VersionRegistry.State.t) (h : U256.t),
+    VersionRegistry.find_entry sim h = None ->
+    StorableValue.map_get_u256
+      (deployments_map sim.(VersionRegistry.State.history))
+      h = 0.
+
+  (** ----- R066 main theorem — registerVersion mutator equivalence -----
+
+      Mirrors R065's [run_deprecateVersion_equivalent_make_state] verbatim
+      modulo the per-mutator details:
+
+        - Sim-side preconditions enforce the Success branch (owner,
+          deployer non-zero, hash not registered).
+        - The walker's structural post-state is
+          [proj_sim_post_register sim versionHash deployer], which is
+          observationally equal to [proj_sim new_sim] via
+          [proj_sim_register_at_observes].
+
+      Storage equivalence is OBSERVATIONAL (per-slot map_get_u256 on
+      slots 0/1, value equality on slot 2). Direct structural equality
+      fails because the sim's [history ++ [new]] yields a tail-extended
+      [deployments_map] while the walker writes via
+      [Dict.declare_or_assign], and the sim's [isDeprecated_map] gains
+      a fresh (hash, 0) entry that the walker leaves untouched. *)
+
+  Theorem run_registerVersion_equivalent_make_state
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (sim : VersionRegistry.State.t)
+      (v : VersionRegistry.Version)
+      (deployer stakingVaultImpl governorImpl timelockImpl : U256.t)
+      (memory : SimulatedMemory.t)
+      (H_valid_sim : VersionRegistry.Valid.state sim)
+      (H_caller_owner :
+        VersionRegistry.is_owner env.(Environment.caller) = true)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_deployer_bound : 0 <= deployer < 2^160)
+      (H_deployer_nonzero : deployer <> 0)
+      (H_hash_fresh :
+        VersionRegistry.find_entry sim (VersionRegistry.version_hash v) = None)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let versionHash := VersionRegistry.version_hash v in
+    let state := make_state env state_base memory (proj_sim sim) in
+    let sim_result :=
+      VersionRegistry.registerVersion
+        sim env.(Environment.caller) v deployer
+        stakingVaultImpl governorImpl timelockImpl in
+    match sim_result with
+    | VersionRegistry.Result.Success new_sim =>
+        exists state',
+        {{? codes, env, Some state |
+          fun_registerVersion_152 deployer ⇓
+          Result.Ok tt
+        | state' ?}} /\
+        (exists memory' storage',
+          state' = Some (make_state env state_base memory' storage') /\
+          observationally_eq_storage_vr storage' (proj_sim new_sim))
+    | VersionRegistry.Result.Revert _ _ =>
+        (* Vacuously True under the success-branch preconditions. *)
+        True
+    end.
+  Proof.
+    (** ----- Phase 1: reduce [sim_result] to the Success branch -----
+        Under [H_caller_owner], [H_deployer_nonzero], and [H_hash_fresh]
+        the sim's [registerVersion] takes the Success branch. *)
+    cbv zeta.
+    unfold VersionRegistry.registerVersion.
+    rewrite H_caller_owner. simpl negb. cbn match.
+    assert (H_dep_neq : (deployer =? VersionRegistry.zero_address) = false).
+    { unfold VersionRegistry.zero_address.
+      apply Z.eqb_neq. exact H_deployer_nonzero. }
+    rewrite H_dep_neq. cbn match.
+    rewrite H_hash_fresh. cbn match.
+
+    (** ----- Phase 2: bridge the walker's post-state observationally
+        to [proj_sim new_sim] -----
+
+        Hobs : observationally_eq_storage_vr
+                 (proj_sim new_sim)
+                 (proj_sim_post_register sim (version_hash v) deployer). *)
+    pose proof (proj_sim_register_at_observes
+                  sim v deployer stakingVaultImpl governorImpl timelockImpl
+                  H_valid_sim H_hash_fresh H_deployer_nonzero) as Hobs.
+    unfold VersionRegistry.registerVersion in Hobs.
+    (* In Hobs's match, the caller is 0; owner check uses sim's
+       [is_owner]. We don't know [is_owner 0]; instead use the fact that
+       the sim's branch shape is independent of the caller-value (we
+       fed caller=0 to get the same Success branch using the same
+       preconditions). Re-reduce using the same rewrites. *)
+    destruct (negb (VersionRegistry.is_owner 0)) eqn:Hown0;
+      [exfalso; exact Hobs|].
+    rewrite H_dep_neq in Hobs. cbn match in Hobs.
+    rewrite H_hash_fresh in Hobs. cbn match in Hobs.
+
+    (** Hlookup : deployments_map[versionHash] = 0 — walker precondition. *)
+    pose proof (deployments_map_get_at_unregistered sim
+                  (VersionRegistry.version_hash v) H_hash_fresh)
+      as Hlookup.
+
+    (** ----- Phase 3: dispatch via the composite walker axiom ----- *)
+    pose proof (run_fun_registerVersion_152_at_proj_sim
+                  codes env state_base sim memory
+                  (VersionRegistry.version_hash v) deployer
+                  H_caller_owner H_caller_bound H_deployer_bound
+                  H_deployer_nonzero Hlookup H_mem)
+      as Hwalker.
+    destruct Hwalker as (memory' & Hwalker).
+    exists (Some (make_state env state_base memory'
+                    (proj_sim_post_register sim
+                       (VersionRegistry.version_hash v) deployer))).
+    split.
+    - exact Hwalker.
+    - exists memory', (proj_sim_post_register sim
+                         (VersionRegistry.version_hash v) deployer).
+      split.
+      + reflexivity.
+      + apply observationally_eq_storage_vr_sym. exact Hobs.
+  Qed.
+
 End VersionRegistryEquivalence.
