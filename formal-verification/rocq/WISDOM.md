@@ -5361,3 +5361,111 @@ mutation on an external view).
 - `generated/ProposalLib_shallow.v` — newly generated, 6181 lines.
 - `scripts/shallow-embed-sweep` — `SHALLOW_TARGETS` extended.
 - `_RocqProject` — file order extended with ProposalLib entries.
+
+## R061: AccessControlEnumerable view-fns — Qed via Guardian projection + one R059-shape axiom
+
+### Context
+
+OZ's [AccessControlEnumerable] is an *abstract* extension on top of
+[AccessControl] (R055/R059). It adds three view functions over the
+EnumerableSet of role-holders:
+
+- `getRoleMember(role, idx)`     view → address
+- `getRoleMemberCount(role)`     view → uint256
+- `getRoleMembers(role)`         view → address[] memory
+
+plus override hooks for `_grantRole` / `_revokeRole` that push or
+swap-and-pop the per-role `EnumerableSet.AddressSet`.
+
+### Critical insight: no standalone shallow form
+
+[AccessControlEnumerable] has no constructor and is never deployed
+on its own — it's `abstract`. Solc inlines its Yul into every
+inheriting contract. In the Reserve Governor corpus, [Guardian] is
+the only consumer; its [Guardian_shallow.v] thus contains:
+
+  fun_getRoleMember_641         (the view)
+  fun_getRoleMemberCount_656    (the view)
+  fun_getRoleMembers_672        (the view)
+  fun_at_2194 / fun__at_1791    (EnumerableSet at)
+  fun_length_2167 / fun__length_1774  (EnumerableSet length)
+  fun_values_2224 / fun__values_1805  (EnumerableSet values copy)
+
+So the AccessControlEnumerable equivalence file
+([proofs/equivalence/AccessControlEnumerable.v]) is hosted on top
+of Guardian's [proj_sim] — the same four-slot projection that
+covers slots 0 (members) / 1 (positions) / 2 (length) / 3 (body).
+
+The override hooks (`_grantRole` / `_revokeRole`) need no separate
+work: their inlined Yul lives in the top-level mutator walkers
+[run_grantRole_1359_equivalent] (R055) and
+[run_revokeRole_1378_equivalent] (R059) which were ALREADY proven
+end-to-end against the AccessControl mock.
+
+### Methodology applied
+
+The R059 [set_eq_at_role] predicate composed cleanly with the new
+view-function walkers. Specifically:
+
+- [getRoleMemberCount] reads slot 2 (length map). The post-revoke
+  cardinality is fully invariant under swap-and-pop, so this view
+  composes trivially with R059's relaxation.
+- [getRoleMember] reads slot 3 (body map) at a specific index.
+  Post-revoke, OZ may have reordered the body array (swap-and-pop),
+  while the sim's order-preserving filter does not. The
+  equivalence is stated at the projection-level (against
+  [role_values_body_map]), so downstream callers reason in terms
+  of whichever post-state predicate fits — usually [set_eq_at_role].
+
+### What landed Qed vs. axiomatized
+
+Qed:
+
+- [run_fun__length_1774_at_proj_sim] (inner length walker)
+- [run_fun_length_2167_at_proj_sim] (length wrapper)
+- [run_fun_getRoleMemberCount_656_equivalent] — TOP-LEVEL VIEW Qed
+- [run_fun_at_2194_at_proj_sim] (address-cleanup chain)
+- [run_fun_getRoleMember_641_equivalent] — TOP-LEVEL VIEW Qed
+
+R061 trust axioms (same shape as R059):
+
+- [run_fun__at_1791_at_proj_sim] (~250 LOC walker over the
+  storage_array_index_access mstore-keccak-add path).
+  Justification: the body's Yul is a direct transcription of a
+  guarded array index read; no buggy walker can satisfy the
+  post-condition. Auditor reviewing the axiom needs to inspect the
+  Yul; mechanizing the walker is feasible (~250 LOC, no
+  structural blockers).
+- [run_fun_getRoleMembers_672_at_proj_sim] — the address-array
+  memory-copy walker. Existential over the returned memory
+  pointer; downstream callers in the corpus do not consume the
+  result, so the existential form is sufficient. Mechanizing the
+  walker requires modeling [allocate_unbounded] /
+  [finalize_allocation] / [array_storeLengthForEncoding_*]
+  primitives — a ~300 LOC investment with no structural blockers.
+
+### Pre-existing axioms reused (no new framework assumptions)
+
+- [run_sload_role_values_length_at_proj_sim] (R051.c)
+- [run_sload_role_values_body_at_proj_sim] (R051.c)
+- [keccak256_tuple2_offset_bound] / [keccak256_single_offset_bound]
+  (R049 / R051.c)
+- [DEFAULT_ADMIN_ROLE_bytes32] etc. (R055 role-distinctness shape)
+
+### File touchpoints
+
+- `mocks/AccessControl.v` — extended with [getRoleMember],
+  [getRoleMemberCount], [getRoleMembers].
+- `proofs/equivalence/AccessControlEnumerable.v` — new file,
+  ~600 LOC including extensive docstrings.
+- `_RocqProject` — extended with the new file (after Guardian).
+
+### Implication for downstream work
+
+Reserve Governor consumers of AccessControlEnumerable's view
+functions (audit narratives, off-chain enumeration tools) can now
+appeal to the top-level Qed theorems without re-deriving the
+projection-vs-sim bridge. If a future audit narrative needs
+positional equality post-revoke, it must EITHER (a) restrict
+attention to grant-only chains where order is preserved, OR
+(b) thread through R059's [set_eq_at_role] as the relaxation.
