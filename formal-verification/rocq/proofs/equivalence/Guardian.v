@@ -641,23 +641,42 @@ Module GuardianEquivalence.
       [AccessControl.grantRole] from the mock) is recorded as an
       [Admitted] target so downstream proofs can cite it. *)
 
-  (** ----- What the shallow form ACTUALLY does (proof-of-method) =====
+  (** ----- What the shallow form ACTUALLY does (Qed) =====
 
-      The walker scaffold below validates that:
-        - Goal 1 (cleanup_t_bool (iszero hr_v)) closes via the existing
-          leaf pattern (cu / lu / p).
-        - The hasRole sub-call is composed via run_hasRole_equivalent.
-        - The let_state~ switch is the residual — both arms emit 0
-          on the value channel, but bridging the shared output
-          metavariable across the if-then-else needs the R033 PureEq
-          pattern (since one arm Leaves with 0 and the other Tts
-          with var__1438 which was Pure-bound to 0).
+      The shallow form's [fun__grantRole_1468] is a constant
+      function: it returns 0 with state unchanged, regardless of
+      [role] and [account] inputs. This proof closes with Qed and
+      exposes the generator bug — when the shallow form is fixed
+      (so that the success branch actually does the sstore), this
+      theorem will need to be either retired or restated, with the
+      mutator-equivalence direction taking over.
 
-      Two residual goals at end of scaffold:
-        - the case-split (iszero3 =? 0 = true|false) — both arms
-          need to evaluate to (Result.Ok 0)
-        - the final pattern unwrap goal extracting var__1437 = 0
-          from the let_state~ pair. *)
+      Proof technique — note for the next reader:
+
+      The let_state~ switch has two arms that emit DIFFERENT
+      BlockUnit modes (Leave vs Tt) but the SAME value (0). A
+      naive [eexists; case-split] tangles the [?output_inter]
+      metavariable across both arms because the two branches need
+      different output shapes ([(Leave, 0)] vs [(Tt, 0)]).
+
+      The fix: **case-split BEFORE [eexists]**. This scopes the
+      witness per-branch, so each branch independently instantiates
+      its own [state'] (we use [exists state_hr.] explicitly), and
+      the walker's intermediate metavars also live per-branch.
+
+      The rest of the proof in each branch:
+        1. Walker fires through the prelude (zero_value, hasRole call).
+        2. Goal 1: iszero + cleanup_t_bool — close by direct stepping
+           [c. { unfold iszero. apply RunO.Pure. } s. c. { unfold
+           cleanup_t_bool. lu. repeat (lu || cu || p). } p].
+        3. Goal 2: the let_state~ switch — unfold Shallow.let_state +
+           apply [rewrite Hd] to commit the branch. In hd=true
+           (already-member) branch, we step through the inner
+           Let-Let-Pure chain producing (Leave, 0). In hd=false
+           (not-a-member) branch, we step the else arm producing
+           (Tt, 0). Either way the final var__1437 is 0.
+        4. Goal 3: final unwrap [match (_, var__1437) => Pure var__1437]
+           reduces by [cbn match; apply RunO.Pure]. *)
   Theorem run_grantRole_1468_observed_behavior
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -680,48 +699,59 @@ Module GuardianEquivalence.
     destruct Hhr as (state_hr & Hhr).
     set (hr_v := StorableValue.map_get_u256
                    (role_member_map sim) (role, account)) in *.
-    eexists.
-    cbv zeta.
-    unfold fun__grantRole_1468.
-    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
-    repeat (lazymatch goal with
-      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
-      | |- {{? _, _, _ |
-            LowM.Call zero_value_for_split_t_bool _
-            ⇓ _ | _ ?}} =>
-          c; [ unfold zero_value_for_split_t_bool;
-               lu; repeat (lu || cu || p) | ]
-      | |- {{? _, _, _ |
-            LowM.Call (fun_hasRole_1292 _ _) _
-            ⇓ _ | _ ?}} =>
-          eapply RunO.Call; [ exact Hhr | apply RunO.Pure ]
-      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
-      | |- _ => s
-      end).
-    (* Three goals remain after the walker:
-       Goal 1: iszero + cleanup_t_bool composition on hr_v
-       Goal 2: the let_state~ switch
-       Goal 3: the final pair unwrap *)
-    - (* Goal 1: iszero hr_v then cleanup_t_bool — at the bullet the
-         goal is [LowM.Call (iszero hr_v) (fun result => ...)] where
-         the continuation is itself a match returning a LowM.Call. *)
-      c. { unfold iszero. apply RunO.Pure. } s.
-      c. { unfold cleanup_t_bool. lu. repeat (lu || cu || p). } p.
-    - (* Goal 2: let_state~ switch on (iszero^3 hr_v) =? 0
-         Residual: needs R033-style PureEq bridge to close both arms
-         to a shared output metavariable. Both arms produce value 0,
-         but the output_inter metavar gets instantiated by Goal 3's
-         (which has the same output_inter), creating an evar-scope
-         tangle. WISDOM R044 pattern B (subst the lets) doesn't apply;
-         R036 (upfront pose) doesn't apply (no inner lemma to pose);
-         R033 (PureEq bridge) is the right tool but the goal structure
-         needs further preprocessing — left as residual. *)
-      admit.
-    - (* Goal 3: final unwrap — depends on Goal 2's output_inter
-         instantiation. Becomes [LowM.Pure (Result.Ok 0)] once the
-         switch's output is resolved to [(BlockUnit.Tt|Leave, 0)]. *)
-      admit.
-  Admitted.
+    set (cond := Pure.iszero (Pure.iszero (Pure.iszero hr_v))) in *.
+    (* Case-split BEFORE [eexists] so the walker's metavars are
+       scoped per-branch — bypasses the R046 if-then-else
+       metavariable trap (see WISDOM entry below). *)
+    destruct (cond =? 0) eqn:Hd.
+    - exists state_hr.
+      cbv zeta. unfold fun__grantRole_1468.
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      repeat (lazymatch goal with
+        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+        | |- {{? _, _, _ |
+              LowM.Call zero_value_for_split_t_bool _
+              ⇓ _ | _ ?}} =>
+            c; [ unfold zero_value_for_split_t_bool;
+                 lu; repeat (lu || cu || p) | ]
+        | |- {{? _, _, _ |
+              LowM.Call (fun_hasRole_1292 _ _) _
+              ⇓ _ | _ ?}} =>
+            eapply RunO.Call; [ exact Hhr | apply RunO.Pure ]
+        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+        | |- _ => s
+        end).
+      + c. { unfold iszero. apply RunO.Pure. } s.
+        c. { unfold cleanup_t_bool. lu. repeat (lu || cu || p). } p.
+      + cbn match.
+        unfold Shallow.let_state, M.strong_let_, M.let_, M.generic_let, M.pure.
+        l. { l. { p. } cbn match. fold cond. rewrite Hd.
+             l. { p. } l. { p. } p. } cbn match. p.
+      + cbn match. apply RunO.Pure.
+    - exists state_hr.
+      cbv zeta. unfold fun__grantRole_1468.
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      repeat (lazymatch goal with
+        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+        | |- {{? _, _, _ |
+              LowM.Call zero_value_for_split_t_bool _
+              ⇓ _ | _ ?}} =>
+            c; [ unfold zero_value_for_split_t_bool;
+                 lu; repeat (lu || cu || p) | ]
+        | |- {{? _, _, _ |
+              LowM.Call (fun_hasRole_1292 _ _) _
+              ⇓ _ | _ ?}} =>
+            eapply RunO.Call; [ exact Hhr | apply RunO.Pure ]
+        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+        | |- _ => s
+        end).
+      + c. { unfold iszero. apply RunO.Pure. } s.
+        c. { unfold cleanup_t_bool. lu. repeat (lu || cu || p). } p.
+      + cbn match.
+        unfold Shallow.let_state, M.strong_let_, M.let_, M.generic_let, M.pure.
+        l. { l. { p. } cbn match. fold cond. rewrite Hd. p. } cbn match. p.
+      + cbn match. apply RunO.Pure.
+  Qed.
 
   (** ----- Intended mutator-equivalence statement, parked =====
 

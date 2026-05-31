@@ -2409,3 +2409,196 @@ typically need BOTH patterns:
 RewardTokenRegistry.run_isRegistered_equivalent is the canonical
 example. Same shape generalizes to any
 `view_function token → helper_chain → leaf_view` composition.
+
+## R045: shallow_embed.py drops sstore in OZ _grantRole — generator bug
+
+**Status: blocks ALL OZ AccessControl mutator-equivalence proofs.**
+
+Diagnosed 2026-05-30 while staging task #234 Phase 1 (Guardian
+grantRole equivalence). The bug: `shallow_embed.py` drops the
+sstore body in the success branch of OZ's `_grantRole` Yul switch.
+
+### The bug
+
+OZ 5.4.0's `AccessControl._grantRole(role, account)` Solidity:
+
+```solidity
+function _grantRole(role, account) internal returns (bool) {
+  if (!hasRole(role, account)) {
+    _roles[role].hasRole[account] = true;   // <-- this sstore
+    emit RoleGranted(role, account, _msgSender());
+    return true;                            // <-- and this assignment
+  } else {
+    return false;
+  }
+}
+```
+
+In `Guardian_shallow.v`'s `fun__grantRole_1468`, the corresponding
+shallow form (verified via `rocq_query Print`):
+
+```coq
+let~ expr_1442 := fun_hasRole_1292 role account in
+let~ expr_1443 := cleanup_t_bool (iszero expr_1442) in
+let_state~ var__1439 :=
+  let~ δ := pure expr_1443 in
+  if δ =? 0 then    (* already a member *)
+    let~ expr_1463 := pure 0 in
+    let~ var__1439 := pure expr_1463 in
+    pure (BlockUnit.Leave, var__1439)
+  else              (* SHOULD grant, but body is a no-op *)
+    pure (BlockUnit.Tt, var__1438)      (* var__1438 = 0 here *)
+default~ var__1439 in
+pure (BlockUnit.Tt, var__1439)
+```
+
+The "should grant" branch is just `pure (BlockUnit.Tt, var__1438)`
+where var__1438 was Pure-bound to 0. The sstore
+(`update_storage_value_offset_0_t_bool_to_t_bool`) and the
+`var := 1` assignment from the deep form are both missing.
+
+Result: `fun__grantRole_1468` is observationally a constant function
+that returns 0 with state unchanged, regardless of inputs.
+
+### Detection recipe (cross-contract)
+
+For any OZ-derived shallow form, check the AccessControl mutator
+chain (\_grantRole / \_revokeRole / \_setRoleAdmin) by Print:
+
+```
+rocq_query Print <Contract>_<id>.<Contract>_<id>_deployed.fun__grantRole_<n>.
+```
+
+If the `let_state~ ... default~ ... in` body's `else` arm of the
+switch is `pure (BlockUnit.Tt, var__N)` (a no-op continuation),
+the sstore was dropped. Compare with the deep form's `Code.Function.make`
+for the same function — the deep form WILL have the missing
+mapping_index_access + update_storage_value_offset_0_t_bool_to_t_bool
+sequence inside a `M.switch` arm.
+
+### Affected proofs
+
+- `proofs/equivalence/Guardian.v::run_grantRole_1359_equivalent`
+  (admitted, awaiting upstream fix).
+- Any future RewardTokenRegistry / VersionRegistry / TimelockController
+  role-mutator equivalence (same OZ inheritance chain).
+
+### What still works
+
+- View-only equivalence (hasRole, getRoleAdmin, isRegistered, etc.)
+  — the read side doesn't touch the broken sstore arm.
+- Mock-level proofs against `mocks/AccessControl.v` — the mock is
+  sound; the gap is only in the shallow form.
+- Equivalence proofs for non-OZ-AccessControl mutators (e.g., the
+  Throttle's consumeProposalCharge — already Qed'd in ThrottleLib.v).
+
+### Fix path
+
+Upstream `shallow_embed.py` — option 1 from `notes/shallow_embed_oz_gaps.md`:
+extend `M.monadic` (in `rocq-of-solidity/rocq/RocqOfSolidity/RocqOfSolidity.v`)
+to traverse `Shallow.let_state`. The current Ltac defect causes the
+`success` lambda inside `Shallow.if_(| _, succ, _ |)` to be silently
+dropped when `succ` is a `let_state~`-shape with an sstore inside.
+
+A scoped alternative (until the upstream fix lands): hand-patch
+`Guardian_shallow.v::fun__grantRole_1468` to inline the missing
+sstore. Rejected — drift would re-introduce the bug on the next
+`shallow_embed.py` sweep, and there's no governance enforcing the
+patch. The right fix is upstream.
+
+### Provenance
+
+- First documented in: `proofs/equivalence/Guardian.v` inline
+  docstring above `run_grantRole_1359_equivalent`.
+- Cross-ref: WISDOM R035 (the underlying Ltac defect),
+  `notes/shallow_embed_oz_gaps.md` gap 2 (catalogued risk).
+
+## R046: Case-split BEFORE [eexists] when an if-then-else emits diverging BlockUnit modes
+
+**Status: closed. Pattern landed in
+`proofs/equivalence/Guardian.v::run_grantRole_1468_observed_behavior`.**
+
+A Yul switch (lowered as `Shallow.let_state ~ ... := [[ if δ =? 0
+then BlockUnit.Leave else BlockUnit.Tt ]] default~ ...`) whose two
+arms emit DIFFERENT `BlockUnit.t` modes but the same value cannot
+be closed with `eexists; ... ; destruct cond eqn:Hd`. The
+`?output_inter` metavariable for the let_state's intermediate
+result is shared across both branches; one branch instantiates it
+to `Result.Ok (Leave, 0)`, the other to `Result.Ok (Tt, 0)`, and
+they conflict.
+
+### Smell test
+
+After case-splitting on the switch condition inside an `eexists`
+proof, you get a unification error like:
+
+```
+Unable to unify
+  "Result.Ok (BlockUnit.Tt, 0)" with
+  "Result.Ok (BlockUnit.Leave, 0)".
+```
+
+The error fires at `apply RunO.Pure` in the second branch — the
+first branch already committed the metavar.
+
+### Fix — case-split before eexists, use [exists] explicitly per-arm
+
+```coq
+(* Set up the prelude (pose, set, etc.) — anything that doesn't
+   introduce existentials. *)
+intros state.
+pose proof (... ) as Hinner.
+set (cond := ...) in *.
+
+(* CASE-SPLIT FIRST, before eexists. *)
+destruct (cond =? 0) eqn:Hd.
+- (* hd = true branch *)
+  exists state_hr.           (* witness committed per-branch *)
+  ... close arm ...
+- (* hd = false branch *)
+  exists state_hr.           (* DIFFERENT witness (or same) per-branch *)
+  ... close arm ...
+```
+
+The witnesses can be the same (`state_hr` in both arms above) or
+different — but they're committed in disjoint scopes, so the
+metavar conflict disappears.
+
+### When to combine with R033
+
+R033's `RunO.PureEq` bridge fixes the *value* divergence (one arm
+emits `1e18` while the other emits `Z.min 1e18 raw`). R046 fixes
+the *control-mode* divergence (one arm `Leave`s while the other
+`Tt`s). The two are independent.
+
+If a switch's body has BOTH kinds of divergence (different modes
+AND different value shapes that need PureEq to bridge), apply R046
+first (case-split before eexists), then R033 inside each branch.
+
+### Why the case-split-after-eexists trap exists
+
+`eexists state'` allocates `?state'` as a metavariable in scope
+*before* the case-split. Any subsequent walker step that needs to
+produce a concrete `state'` instantiates it the first time. After
+the case-split, both arms share the same `?state'` — instantiated
+by whichever closes first.
+
+For `?output_inter` metavars (the intermediate output of a
+let_state or sub-call), the same applies — they're allocated by
+the walker BEFORE the case-split, so they're shared across arms.
+
+`destruct` before `eexists` keeps each arm's existentials in its
+own scope, so witnesses commit per-arm and don't conflict.
+
+### Touchpoints
+
+- `proofs/equivalence/Guardian.v::run_grantRole_1468_observed_behavior`
+  closes with Qed using this pattern (commit landing this WISDOM).
+- Future use: any OZ AccessControl mutator equivalence with the
+  same switch shape, once the upstream `shallow_embed.py` sstore
+  bug is fixed (see R045). The case-split-first pattern remains
+  the right move for any post-`shallow_embed.py`-fix mutator
+  whose two arms still emit different modes (the granted vs
+  already-member case).
+- Generalized: any Yul `for`-loop with conditional `break` /
+  `continue` / `leave` exit — same divergent-mode shape.
