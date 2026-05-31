@@ -4845,3 +4845,106 @@ to `origin`). Four commits forked from
 `Print Assumptions` on each new lemma reports only the pre-existing
 framework axioms (Storage / canonization). No new trust axioms
 introduced this session.
+
+## R060: ProposalLib equivalence — brief mischaracterised scope
+
+**Status: open. Tier-1 cleanup / convert leaves landed Qed (25 lemmas).
+Three composition theorems left Admitted with documented residuals.**
+
+The session brief described ProposalLib as a "pure Solidity library
+(no OZ deps, no external calls, no EnumerableSet)" with "4 uint48
+timestamps + uint8 state enum + address packed into 2 storage slots".
+Investigation of `contracts/governance/lib/ProposalLib.sol` revealed
+this characterisation does not match the source:
+
+1. **External calls everywhere.** The three public functions
+   ([proposeOptimistic], [proposePessimistic], [transitionToPessimistic])
+   ALL dispatch through [_governor()] (cast of `address(this)` to
+   the deployed ReserveOptimisticGovernor) and issue external
+   [staticcall]s to query [timelock()], [selectorRegistry()],
+   [state()], [proposalThreshold()], [votingDelay()], [votingPeriod()],
+   [proposalProposer()], and [getProposalId()]. Plus an [AccessControl.
+   hasRole] external read on the returned timelock contract.
+2. **No setters/getters.** The library has three large public
+   functions plus two private helpers ([_validateProposal],
+   [_saveProposal]) and a utility chain ([_isValidDescriptionForProposer],
+   [_unsafeReadBytesOffset], [_governor]). NOT a setter/getter API
+   over a packed slot.
+3. **Packed slot is OZ's struct.** The "4 uint48 + uint8 + address /
+   2 slots" layout the brief described matches the OZ
+   [GovernorUpgradeable.ProposalCore] struct — which ProposalLib
+   WRITES to (via [_saveProposal]'s three sstores at offsets
+   0/20/26 of slot+0). But the struct itself is owned by OZ, not
+   defined in ProposalLib.
+
+### What WAS achievable
+
+Three structural blockers prevent full Qed on the public functions:
+
+- **R050 (external staticcall infrastructure gap)** — same blocker
+  as `VersionRegistry.deprecateVersion`. Affects all three public
+  functions.
+- **[Shallow.if_] + [Shallow.let_state] walker pattern** — the
+  generated body uses [if]-gated revert sequences whose [let_state ...
+  default~ ...] tower introduces extra goals that the simple
+  [repeat (lu || cu)] doesn't drain. Affects [fun_toUint48_7536]
+  and [fun_toUint32_7592] inside [_saveProposal].
+- **No ProposalLib_shallow.v existed** — the file had to be generated
+  via `bash formal-verification/scripts/shallow-embed-sweep` (the
+  default target list omitted ProposalLib). Generation succeeded
+  (~6181 lines, 285 KB) once the script's `SHALLOW_TARGETS` array
+  was extended.
+
+### What landed
+
+`proofs/equivalence/ProposalLib.v` — ~510 lines:
+
+- **Tier 1.0 bit-mask lemmas** (4 Qed): [uint_implies_and_mask] as
+  a generalisation of upstream's [Address.implies_and_mask] over
+  arbitrary widths, plus specialisations for uint48 / uint32 / uint160.
+- **Tier 1.1 cleanup leaves** (21 Qed): the [run_cleanup_t_*] family
+  ([uint48], [uint32], [uint160], [address], [uint256], plus the
+  [_from_storage_] flavours) and [run_identity] / passthrough.
+- **Tier 1.2 convert leaves** (Qed within the same range): the
+  [run_convert_t_*_to_t_*] family chaining
+  [cleanup] → [identity] → [cleanup]. Includes the address-cast
+  chain ([t_address_to_t_address_payable], [t_address_payable_to_t_
+  contractₓ_ReserveOptimisticGovernor]).
+- **Tier 0 [_governor]** (Admitted): walker shape blocked at the
+  M.let_ Fixpoint exposed by [Stdlib.address]'s [let*] desugaring.
+  All leaves the walker would consume are Qed.
+- **Tier 0 [SafeCast.toUint48 / toUint32]** (Admitted): walker
+  blocked at the [Shallow.if_] + [Shallow.let_state] tower around
+  the revert arm. Happy-path branch (v < 2^N) needs the false-branch
+  routing.
+
+### Generator infrastructure landed
+
+- `formal-verification/scripts/shallow-embed-sweep` updated to
+  include ProposalLib in `SHALLOW_TARGETS`.
+- `formal-verification/rocq/_RocqProject` updated to include
+  [generated/ProposalLib_shallow.v] and
+  [proofs/equivalence/ProposalLib.v] in the build tier.
+
+### Implication for further work
+
+Closing the three Admitted theorems is a tractable next step IF a
+proof author can settle the walker pattern for ProposalLib's body
+shape — both blockers ([M.let_] Fixpoint for primitives,
+[Shallow.if_/let_state] for ifs) are general and would benefit any
+contract whose shallow body has the same generator output.
+
+Closing the THREE PUBLIC functions ([proposeOptimistic],
+[proposePessimistic], [transitionToPessimistic]) further requires
+the R050 external-staticcall infrastructure — the same workstream
+that blocks [VersionRegistry.deprecateVersion]. Solving R050 once
+unblocks BOTH contracts (plus any future contract that gates a
+mutation on an external view).
+
+### Touchpoints
+
+- `proofs/equivalence/ProposalLib.v` — the new file with the
+  Qed'd leaf ladder and three documented Admitted theorems.
+- `generated/ProposalLib_shallow.v` — newly generated, 6181 lines.
+- `scripts/shallow-embed-sweep` — `SHALLOW_TARGETS` extended.
+- `_RocqProject` — file order extended with ProposalLib entries.
