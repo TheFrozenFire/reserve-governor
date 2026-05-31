@@ -3457,3 +3457,72 @@ oldLen = dataArea + oldLen] step in the dataslot path.
   axioms here mirror that pattern for slots 2/3.
 - R051 — parent task; the C.3 walker leaf is now infrastructure-
   in-place but the composite proof body remains Admitted.
+
+### R051.c Phase 3 second pass (2026-05-31) — Phase 1 closed; Phase 2 walker open with infrastructure ready
+
+A follow-up session added the Phase 1 axiom + lemma and two new
+sload axioms that complete the trust-axiom set needed by the
+[run_array_push_at_proj_sim] walker:
+
+  - **[keccak256_single_offset_bound]** (+ derived
+    [Pure_add_keccak_single_offset]) — sibling to
+    [keccak256_tuple2_offset_bound]. Bounds:
+    `0 <= offset < 2^240 → keccak256_single anchor + offset < 2^256`.
+    The wider offset bound (vs the [< 32] used for struct fields)
+    accommodates array indices up to `2^64 - 1` under
+    EnumerableSet's `push` guard.
+  - **[run_sload_role_values_length_at_proj_sim_post]** — the
+    [storage_array_index_access] body re-reads the array length
+    AFTER the [array_push] length sstore has swapped a custom
+    [length_map'] into slot 2. The original axiom targets the
+    literal [proj_sim sim] shape; this post-shape variant lets the
+    walker thread the mid-walker storage mutation cleanly.
+  - **[run_sload_role_values_body_at_proj_sim]** — companion sload
+    to the existing body sstore axiom. The [update_storage_value]
+    body reads the body slot before merging with the incoming
+    value via [update_byte_slice_dynamic32]. Missing entries
+    return 0 via [map_get_u256]'s default, modeling Solidity's
+    zero-init for fresh array indices.
+
+The walker proof body remains Admitted with a detailed in-source
+status block (`run_array_push_at_proj_sim`) catalogueing the four
+tactical blockers encountered. Summary:
+
+  1. **let_state / if_ unfold cascade** — after eager unfold of
+     `M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+     Shallow.let_state, Shallow.if_`, the goal alternates between
+     `LowM.Let` (constructor) and `LowM.let_` (CPS function)
+     shapes. The `l`/`lu`/`cu` tactic family handles each but
+     deciding when to `simpl LowM.let_` vs `cu` requires care.
+     ThrottleLib's `throttle_walker` absorbs this with one
+     recursive `lazymatch` sweep — the structural fix is to
+     build an analogous `array_push_walker` for this contract.
+  2. **`update_byte_slice_dynamic32 (sload slot) 0 v` algebraic
+     reduction** — the chain
+     `or(and(prev, not(shl(0, MAX))), and(shl(0, shr(0, v)),
+     shl(0, MAX)))` reduces to `v` for `v` in `[0, 2^256)`,
+     independent of `prev`. ~15 lines once isolated as a leaf
+     lemma `run_update_byte_slice_offset_0_t_bytes32` mirroring
+     `ThrottleLibLeaves.run_update_storage_value_offset_0_t_uint256_to_t_uint256`.
+  3. **Body sstore arg** — after (2), the stored value is provably
+     `value`, so the walker arm becomes
+     `c; [apply run_update_byte_slice_offset_0 |
+        apply run_sstore_role_values_body_at_proj_sim]`.
+  4. **State threading across the length sstore** — closed by the
+     new `_post` axiom variant; only re-binding remains.
+
+**Recommendation for next session (~45 min estimated):** factor
+out the bit-mask leaf as a separate Qed lemma in
+`proofs/equivalence/Guardian.v` (or a Guardian_Leaves sibling),
+then assemble a compact `array_push_walker` `lazymatch` Ltac that
+dispatches each call head (sload / sstore / mstore /
+keccak256_single / lt / iszero / add / mul / and / or / not /
+shl / shr) in one recursive sweep. The eight-step outline resolves
+mechanically.
+
+**Build status:** Guardian.v compiles with the proof body
+Admitted; the three new infrastructure additions (1 axiom + 1
+lemma + 2 new sload axioms) are fully Qed/Axiom-stated and
+typecheck against the existing `proj_sim` projection. No
+existing definitions, axioms, or proof statements were modified
+in this pass.

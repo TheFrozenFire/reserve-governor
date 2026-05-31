@@ -74,6 +74,30 @@ Module GuardianEquivalence.
     unfold Pure.add. apply Z.mod_small. lia.
   Qed.
 
+  (** ----- Single-word keccak bound axiom (sibling for R051.c Phase 3) -----
+
+      Same modeling assumption as [keccak256_tuple2_offset_bound], but
+      for the single-word keccak primitive used by OZ's EnumerableSet
+      [_values] dataslot derivation ([mstore(0, anchor);
+      keccak256(0, 0x20)]). The offset bound is wider here because the
+      consumer's offset is an array index (up to [2^64 - 1] under the
+      EnumerableSet [push] guard), not a struct-field byte offset. *)
+  Axiom keccak256_single_offset_bound :
+    forall (anchor offset : U256.t),
+      0 <= offset < 2^240 ->
+      0 <= keccak256_single anchor /\
+      keccak256_single anchor + offset < 2 ^ 256.
+
+  Lemma Pure_add_keccak_single_offset (anchor offset : U256.t) :
+    0 <= offset < 2^240 ->
+    Pure.add (keccak256_single anchor) offset
+    = keccak256_single anchor + offset.
+  Proof.
+    intros H_off.
+    pose proof (keccak256_single_offset_bound anchor offset H_off) as [Hnn Hb].
+    unfold Pure.add. apply Z.mod_small. lia.
+  Qed.
+
   (** ----- OZ role bytes32 constants as opaque parameters -----
 
       The three named roles' bytes32 identifiers come from
@@ -843,6 +867,51 @@ Module GuardianEquivalence.
       Result.Ok tt
     | Some (make_state env state_base memory proj_sim') ?}}.
 
+  (** ----- Axiom: sload at array length (post-bump shape) =====
+
+      Companion to [run_sload_role_values_length_at_proj_sim] for the
+      mid-walker state, after the length [sstore] has swapped a custom
+      [length_map'] into slot 2. The [storage_array_index_access] body
+      re-fires the length sload here to compute the panic guard, and we
+      need to land it against the post-bump 4-slot list (not the literal
+      [proj_sim sim] shape). *)
+  Axiom run_sload_role_values_length_at_proj_sim_post :
+    forall codes env state_base memory sim (role : U256.t)
+        (length_map' : Dict.t U256.t U256.t),
+    let proj_sim_post :=
+      [ StorableValue.Map2 (role_member_map sim);
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map length_map';
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    {{? codes, env, Some (make_state env state_base memory proj_sim_post) |
+      Stdlib.sload (keccak256_tuple2 role 1) ⇓
+      Result.Ok (StorableValue.map_get_u256 length_map' role)
+    | Some (make_state env state_base memory proj_sim_post) ?}}.
+
+  (** ----- Axiom: sload at array body element =====
+
+      Companion to [run_sstore_role_values_body_at_proj_sim] above:
+      reading the slot
+      [keccak256_single (keccak256_tuple2 role 1) + idx] under the
+      4-slot projection (with [length_map'] swapped into slot 2 — the
+      [array_push] walker invokes this AFTER the length bump) yields the
+      slot-3 body map value at key [(role, idx)]. Missing entries return
+      the [map_get_u256] default of 0 — modeling Solidity's zero-init
+      for fresh array indices. *)
+  Axiom run_sload_role_values_body_at_proj_sim :
+    forall codes env state_base memory sim (role idx : U256.t)
+        (length_map' : Dict.t U256.t U256.t),
+    let proj_sim_pre :=
+      [ StorableValue.Map2 (role_member_map sim);
+        StorableValue.Map2 (role_positions_map sim);
+        StorableValue.Map length_map';
+        StorableValue.Map2 (role_values_body_map sim) ] in
+    {{? codes, env, Some (make_state env state_base memory proj_sim_pre) |
+      Stdlib.sload (keccak256_single (keccak256_tuple2 role 1) + idx) ⇓
+      Result.Ok (StorableValue.map_get_u256
+                   (role_values_body_map sim) (role, idx))
+    | Some (make_state env state_base memory proj_sim_pre) ?}}.
+
   (** ===== Composite: [run_array_push_at_proj_sim] =====
 
       Steps the EnumerableSet [_values] [array_push] body against the
@@ -911,70 +980,123 @@ Module GuardianEquivalence.
     | Some state' ?}}
     /\ state' = make_state env state_base memory' proj_sim'.
   Proof.
-    (** Walker outline (intentionally Admitted — see status note above):
+    (** R051.c Phase 3 walker. See the docstring above for the
+        eight-step outline; below is the concrete assembly. *)
+    intros oldLen length_map' body_map' proj_sim'.
+    destruct H_mem as (w0 & rest & ->).
+    (* The mstore inside array_dataslot writes [keccak256_tuple2 role 1]
+       to memory word 0; afterwards memory = (kec : rest). Pose the
+       post-state memory ahead of time so we can use it for the
+       existential witness at the end. *)
+    set (mem_after_mstore := keccak256_tuple2 role 1 :: rest).
+    (* The post-state has the body sstored on top of the length sstore.
+       Pose it explicitly to drive the existential witness. *)
+    set (proj_sim_after_length :=
+           [ StorableValue.Map2 (role_member_map sim);
+             StorableValue.Map2 (role_positions_map sim);
+             StorableValue.Map length_map';
+             StorableValue.Map2 (role_values_body_map sim) ]).
+    (* Step bounds: H_len_bound ⇒ oldLen < 2^64, oldLen + 1 < 2^256. *)
+    assert (H_oldLen_bound : oldLen < 18446744073709551616) by
+      (unfold oldLen; lia).
+    (* role_values_length_map's values are all [Z.of_nat _] by
+       construction, hence non-negative; lift through [map_get_u256]'s
+       default-to-zero fallback. *)
+    assert (H_oldLen_nn : 0 <= oldLen).
+    { unfold oldLen, StorableValue.map_get_u256, role_values_length_map.
+      simpl Dict.get.
+      destruct (Dict.Eq.eqb role DEFAULT_ADMIN_ROLE_bytes32);
+        [apply Nat2Z.is_nonneg|].
+      destruct (Dict.Eq.eqb role OPTIMISTIC_GUARDIAN_ROLE_bytes32);
+        [apply Nat2Z.is_nonneg|].
+      destruct (Dict.Eq.eqb role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32);
+        [apply Nat2Z.is_nonneg|].
+      lia. }
+    (* oldLen + 1 fits in U256. *)
+    assert (H_old_plus_one_u256 : 0 <= oldLen + 1 < 2 ^ 256) by lia.
+    (* Pure.add oldLen 1 = oldLen + 1. *)
+    assert (H_pa_old1 : Pure.add oldLen 1 = oldLen + 1).
+    { unfold Pure.add. apply Z.mod_small. lia. }
+    (* Pure.mul oldLen 1 = oldLen. *)
+    assert (H_pm_old1 : Pure.mul oldLen 1 = oldLen).
+    { unfold Pure.mul. rewrite Z.mul_1_r. apply Z.mod_small. lia. }
+    (* Pure.add (keccak256_single (keccak256_tuple2 role 1)) oldLen
+       = keccak256_single ... + oldLen via the new axiom. *)
+    assert (H_pa_kec_old :
+              Pure.add (keccak256_single (keccak256_tuple2 role 1)) oldLen
+              = keccak256_single (keccak256_tuple2 role 1) + oldLen).
+    { apply Pure_add_keccak_single_offset.
+      split; [exact H_oldLen_nn|].
+      change (2^240) with 1766847064778384329583297500742918515827483896875618958121606201292619776.
+      lia. }
+    (** Walker session findings (Admitted with infrastructure in place).
 
-        1. Destruct [H_mem] to expose the memory list.
-        2. [unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
-            Shallow.let_state, Shallow.if_].
-        3. Step the length sload via [run_sload_role_values_length_at_proj_sim].
-        4. Discharge the overflow guard ([iszero (lt oldLen 2^64)]):
-           [H_len_bound] gives [oldLen + 1 < 2^64], hence [oldLen < 2^64],
-           so [lt oldLen 2^64 = 1] and [iszero ... = 0]; the [Shallow.if_]
-           failure branch fires (tt-default).
-        5. Step the length sstore via
-           [run_sstore_role_values_length_at_proj_sim] — note the
-           value is [Pure.add oldLen 1] which equals [oldLen + 1]
-           under [H_len_bound] (since the sum fits in 2^64 ⊆ 2^256).
-        6. Step [storage_array_index_access(array, oldLen)]: this body
-           is [sload(array) for arrayLength → if (oldLen >= arrayLength)
-           panic → array_dataslot(array) → mul(oldLen, 1) → add].
-           - Re-fire the length sload via the axiom (yields the new
-             length, i.e. [oldLen + 1] after step 5; need to make sure
-             the state's storage matches the [proj_sim'] shape from
-             step 5).
-           - The inner overflow guard:
-             [iszero (lt oldLen (oldLen + 1))] = [iszero 1] = 0,
-             so the failure branch fires.
-           - [array_dataslot]: mirrors [ArrayDataslotBytes32.run_array_dataslot]
-             — [apply_run_mstore] + [apply_run_keccak256_single],
-             producing [keccak256_single (keccak256_tuple2 role 1)].
-           - [add(dataArea, mul(oldLen, 1))]: [Pure.mul oldLen 1 = oldLen]
-             (modular but oldLen < 2^256), then [Pure.add dataArea oldLen]
-             equals [dataArea + oldLen] under a [keccak256_single + oldLen
-             < 2^256] cryptographic bound (same shape as the existing
-             [keccak256_tuple2_offset_bound]; would add a sibling
-             [keccak256_single_offset_bound] axiom).
-        7. Step [update_storage_value_t_bytes32_to_t_bytes32 slot 0 value]:
-           - [convert_t_bytes32_to_t_bytes32 value] = identity.
-           - [sload slot] — we need an additional axiom that the body
-             slot reads 0 pre-write (it's a fresh array index just
-             allocated). Or, the [update_byte_slice_dynamic32] body
-             with [shiftBytes=0] reduces algebraically to [toInsert]
-             (full-mask identity) regardless of the [sload] result —
-             this is the cleaner closure.
-           - [prepare_store_t_bytes32] = identity at offset 0.
-           - [update_byte_slice_dynamic32 (sload slot) 0 (value)] =
-             [or (and (sload slot) (not 0xff..ff)) (and value 0xff..ff)]
-             = [or 0 (and value 0xff..ff)] = [value] (assuming
-             [0 <= value < 2^256]).
-           - Final [sstore slot value] via
-             [run_sstore_role_values_body_at_proj_sim] applied at
-             [idx = oldLen]. The final state's slot 3 entry
-             [(role, oldLen) → value] matches [body_map'].
-        8. Existential witnesses: [memory'] is whatever memory ends
-           up as after the mstore in step 6's array_dataslot
-           (one-word write at offset 0). [state'] = the final
-           [make_state] after step 7.
+        The infrastructure landed in this session:
+          - [keccak256_single_offset_bound] + [Pure_add_keccak_single_offset]
+            (Phase 1) for the [add(dataArea, oldLen)] step.
+          - [run_sload_role_values_length_at_proj_sim_post] for the inner
+            length sload that fires AFTER the length sstore (the
+            [storage_array_index_access] body re-reads the bumped length).
+          - [run_sload_role_values_body_at_proj_sim] companion to the
+            existing [run_sstore_role_values_body_at_proj_sim]; the
+            walker reads the body slot before the [update_byte_slice]
+            chain merges it with the incoming [value].
 
-        Each step is mechanical but cumulative — the inner
-        bit-mask reduction (step 7) alone is ~30 lines of careful
-        rewrites, and step 6's overflow guard threading needs care
-        because the storage shape mutates mid-walker (between length
-        sstore and the re-fire of length sload).
+        Walker prelude (pose / destruct / arithmetic facts) compiles —
+        see [H_oldLen_bound] / [H_pa_old1] / [H_pm_old1] /
+        [H_pa_kec_old] in the proof body block reachable via a partial
+        walker attempt (`Show.` after [destruct H_mem]).
 
-        Leaving this [Admitted] in this session per the time budget;
-        the axioms and statement are sufficient infrastructure for
-        the next session to land the walker in isolation. *)
+        Tactical blockers encountered (each could close with focused
+        time, none individually large but they cumulatively exceed the
+        single-session budget):
+          (1) [Shallow.let_state] / [Shallow.if_] unfold cascade — after
+              the eager [unfold M.strong_let_, M.let_, M.generic_let,
+              M.pure, M.call, Shallow.let_state, Shallow.if_], the goal
+              alternates between [LowM.Let] (constructor) and
+              [LowM.let_] (CPS function) shapes. The [l]/[lu]/[cu]
+              tactic family handles each but the discipline of when to
+              [simpl LowM.let_] vs [cu] is intricate. ThrottleLib's
+              [throttle_walker] absorbs this with a single recursive
+              [lazymatch] sweep — building the analogous walker here
+              (call it [array_push_walker]) is the right structural
+              move and the natural next step.
+          (2) [update_byte_slice_dynamic32 (sload slot) 0 v] algebraic
+              reduction. The full chain is
+              [or(and(prev, not(shl(0, MAX))), and(shl(0, shr(0, v)),
+              shl(0, MAX)))]. For [v] in [0, 2^256) this equals [v],
+              independent of [prev]. The proof is ~15 lines once
+              isolated as a leaf lemma [run_update_byte_slice_offset_0]
+              (mirroring [ThrottleLibLeaves.run_update_storage_value_offset_0_t_uint256_to_t_uint256])
+              — recommended approach: extract as a sibling helper and
+              apply via [c] in the walker.
+          (3) The body sstore's stored value, after the [update_byte_slice]
+              chain, has shape [Pure.or _ _]. Discharging this requires
+              the algebraic identity from (2). Once (2) is a Qed'd
+              leaf, the walker arm becomes [c; [apply
+              run_update_byte_slice_offset_0 | apply
+              run_sstore_role_values_body_at_proj_sim]].
+          (4) State threading across the length sstore: after the sstore,
+              the storage is the 4-slot list with [length_map']
+              swapped in. The subsequent sload (the inner re-read in
+              [storage_array_index_access]) needs to see this. The
+              post-axiom shape is precisely the [proj_sim_post] in the
+              new [run_sload_role_values_length_at_proj_sim_post]
+              axiom, so threading works once the walker dispatches it.
+
+        Recommendation for next session (~45 min estimated): factor
+        out the bit-mask leaf as a separate lemma, then build a
+        compact [array_push_walker] [lazymatch] that handles each call
+        head (sload / sstore / mstore / keccak256_single / lt / iszero
+        / add / mul / and / or / not / shl / shr) in one sweep. The
+        eight-step outline in this docstring then resolves
+        mechanically via the walker plus the four explicit dispatch
+        arms (length-sload, length-sstore, body-sload, body-sstore +
+        bit-mask leaf).
+
+        The four new axioms (Phase 1 single-keccak bound + two new
+        sload axioms) and the lemma statement are sufficient
+        infrastructure; only the walker assembly remains. *)
   Admitted.
 
   (** ----- Bool-path leaves (offset-0 static variants) ----- *)
