@@ -2957,6 +2957,149 @@ Module GuardianEquivalence.
       end).
   Qed.
 
+  (** ===== R053 Phase 2 sub-wrapper: [run_fun__contains_1760_at_proj_sim_not_in]
+      =====
+
+      [fun__contains_1760(set_slot, value)] is OZ EnumerableSet's
+      [_contains]:
+
+        _88_slot       := set_slot
+        _89            := add(set_slot, 1)            (* positions sub-mapping slot *)
+        _92            := MIA(_89, value)             (* positions slot for this (role, value) *)
+        _93            := read_from_storage_split_offset_0_t_uint256(_92)
+        expr_1757      := iszero(eq(cleanup_t_uint256(_93), 0))
+        return expr_1757
+
+      In the "not in the set" branch we have [_93 = 0] (the positions
+      sload returns 0 by [H_not_in]). Then [eq(0, 0) = 1], [iszero(1) = 0],
+      and [fun__contains_1760] returns [0] (false).
+
+      The wrapper is set up for the call from [fun__add_1614] where
+      [set_slot = keccak256_tuple2 role 1] (the role's set anchor); the
+      [+1] offset to the positions sub-mapping resolves cleanly via
+      [Pure_add_keccak_offset]. State is unchanged (sload only).
+
+      Memory is consumed by the MIA leaf (two [mstore]s then a
+      keccak); the post-state's memory tail is left as an existential
+      so the caller can thread it. *)
+  Lemma run_fun__contains_1760_at_proj_sim_not_in
+      codes env state_base memory sim (role value : U256.t)
+      (H_not_in :
+         StorableValue.map_get_u256 (role_positions_map sim) (role, value) = 0)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    exists w0' w1' rest',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__contains_1760 (keccak256_tuple2 role 1) value ⇓
+      Result.Ok 0
+    | Some (make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)) ?}}.
+  Proof.
+    (* Specialize the projection — the lazymatch / sload arms below
+       see the 4-slot list literal so the trust axiom applies. *)
+    change (proj_sim sim) with
+      ([ StorableValue.Map2 (role_member_map sim);
+         StorableValue.Map2 (role_positions_map sim);
+         StorableValue.Map (role_values_length_map sim);
+         StorableValue.Map2 (role_values_body_map sim) ]).
+    (* [Pure.add (keccak256_tuple2 role 1) 1 = keccak256_tuple2 role 1 + 1]. *)
+    assert (H_pa_kec_1 :
+              Pure.add (keccak256_tuple2 role 1) 1
+              = keccak256_tuple2 role 1 + 1).
+    { apply Pure_add_keccak_offset. lia. }
+    (* MIA leaf for the positions sub-mapping: produces the slot expr
+       [keccak256_tuple2 value (keccak256_tuple2 role 1 + 1)]. *)
+    pose proof (MappingIndexAccessBytes32Uint256.run_mapping_index_access
+                  codes env state_base
+                  (keccak256_tuple2 role 1 + 1) value
+                  ([ StorableValue.Map2 (role_member_map sim);
+                     StorableValue.Map2 (role_positions_map sim);
+                     StorableValue.Map (role_values_length_map sim);
+                     StorableValue.Map2 (role_values_body_map sim) ])
+                  memory H_mem) as Hmia.
+    destruct Hmia as (w0_m & w1_m & rest_m & Hmia).
+    set (mem_after_mia := w0_m :: w1_m :: rest_m).
+    (* Repackage the MIA with the [Pure.add _ 1] surface shape so the
+       walker's call arm matches the inner call's argument directly. *)
+    assert (Hmia' :
+      {{? codes, env,
+          Some (make_state env state_base memory
+                  ([ StorableValue.Map2 (role_member_map sim);
+                     StorableValue.Map2 (role_positions_map sim);
+                     StorableValue.Map (role_values_length_map sim);
+                     StorableValue.Map2 (role_values_body_map sim) ]))
+      | mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_uint256_ₓ_of_t_bytes32
+          (Pure.add (keccak256_tuple2 role 1) 1) value
+        ⇓ Result.Ok (keccak256_tuple2 value (keccak256_tuple2 role 1 + 1))
+      | Some (make_state env state_base mem_after_mia
+                ([ StorableValue.Map2 (role_member_map sim);
+                   StorableValue.Map2 (role_positions_map sim);
+                   StorableValue.Map (role_values_length_map sim);
+                   StorableValue.Map2 (role_values_body_map sim) ])) ?}}).
+    { rewrite H_pa_kec_1. exact Hmia. }
+    (* The positions sload returns 0 by [H_not_in]. *)
+    pose proof (run_sload_role_positions_at_proj_sim
+                  codes env state_base mem_after_mia sim role value
+                  (role_values_length_map sim) (role_positions_map sim)
+                  (role_values_body_map sim)) as Hsl.
+    cbv zeta in Hsl.
+    rewrite H_not_in in Hsl.
+    exists w0_m, w1_m, rest_m.
+    unfold fun__contains_1760,
+           read_from_storage_split_offset_0_t_uint256,
+           extract_from_storage_value_offset_0_t_uint256.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call,
+           Shallow.let_state.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | M.strong_let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.strong_let_, M.generic_let
+      | |- {{? _, _, _ | M.let_ _ _ ⇓ _ | _ ?}} =>
+          unfold M.let_, M.generic_let
+      | |- {{? _, _, _ | Shallow.let_state _ _ ⇓ _ | _ ?}} =>
+          unfold Shallow.let_state
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (LowM.Let _ _) _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_bool _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_bool;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call
+              (mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_uint256_ₓ_of_t_bytes32 _ _) _
+            ⇓ _ | _ ?}} =>
+          eapply RunO.Call; [ exact Hmia' | apply RunO.Pure ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hsl | ]
+      | |- {{? _, _, _ |
+            LowM.Call (shift_right_0_unsigned _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_shift_right_0_unsigned | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_from_storage_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold cleanup_from_storage_t_uint256, M.pure;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_cleanup_t_uint256_id | ]
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_rational_0_by_1_to_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold convert_t_rational_0_by_1_to_t_uint256;
+               lu; repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.iszero _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.iszero, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.eq _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.eq, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.add _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.add, M.pure; apply RunO.Pure | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
   (** ===== Main lemma: [run_fun_add_2085_at_proj_sim] =====
 
       Walker for OZ EnumerableSet [add] in the not-yet-in-set branch.
