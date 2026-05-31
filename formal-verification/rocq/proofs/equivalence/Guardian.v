@@ -2173,6 +2173,157 @@ Module GuardianEquivalence.
     all: try apply RunO.Pure.
   Qed.
 
+  (** ===== [fun__checkRole_1305] — admin gate, caller-IS-admin branch =====
+
+      Calls _msgSender to fetch the caller, then dispatches to
+      _checkRole_1326 with the caller as the account. The composition
+      requires the caller to BE a member of [role] (i.e.,
+      [hasRole role caller = 1]). *)
+  Lemma run_fun__checkRole_1305_at_proj_sim_pass
+      codes env state_base memory sim (role : U256.t)
+      (H_caller_admin :
+         StorableValue.map_get_u256 (role_member_map sim)
+           (role, env.(Environment.caller)) = 1)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    exists w0' w1' rest',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      fun__checkRole_1305 role ⇓
+      Result.Ok tt
+    | Some (make_state env state_base (w0' :: w1' :: rest') (proj_sim sim)) ?}}.
+  Proof.
+    pose proof (run_fun__msgSender_3197 codes env
+                  (make_state env state_base memory (proj_sim sim))) as Hms.
+    pose proof (run_fun__checkRole_1326_at_proj_sim_pass
+                  codes env state_base memory sim role
+                  env.(Environment.caller)
+                  H_caller_bound H_caller_admin H_mem) as Hckr.
+    destruct Hckr as (w0' & w1' & rest' & Hckr).
+    exists w0', w1', rest'.
+    unfold fun__checkRole_1305.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call fun__msgSender_3197 _ ⇓ _ | _ ?}} =>
+          c; [ exact Hms | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__checkRole_1326 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hckr | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== Modifier wrapper: [modifier_onlyRole_1351] (admin-passes branch) =====
+
+      The modifier body:
+        admin := getRoleAdmin role           (* → DEFAULT_ADMIN_ROLE *)
+        _checkRole admin                     (* → no-op if caller is admin *)
+        body of grantRole_1359_inner
+
+      Composes [run_fun_getRoleAdmin_1340_at_proj_sim] +
+      [run_fun__checkRole_1305_at_proj_sim_pass] + the inner body
+      walker passed in as [Hbody].
+
+      To keep the lemma reusable across mutator paths, [Hbody] takes the
+      memory shape after the prelude (3-cell-front intact form). *)
+  Lemma run_modifier_onlyRole_1351_admin_passes
+      codes env state_base memory sim (role account : U256.t) sim' state'
+      (H_role_known :
+         role = DEFAULT_ADMIN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+         role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+      (H_caller_admin : has_admin sim env.(Environment.caller) = true)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest)
+      (Hbody :
+        forall memory',
+          (exists w0 w1 rest, memory' = w0 :: w1 :: rest) ->
+          {{? codes, env, Some (make_state env state_base memory' (proj_sim sim)) |
+            fun_grantRole_1359_inner role account ⇓
+            Result.Ok tt
+          | state' ?}})
+      (Hbody_post :
+        exists memory', state' = Some (make_state env state_base memory' (proj_sim sim'))) :
+    exists state'',
+    {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+      modifier_onlyRole_1351 role account ⇓
+      Result.Ok tt
+    | state'' ?}}
+    /\ state'' = state'.
+  Proof.
+    (* getRoleAdmin returns DEFAULT_ADMIN_ROLE_bytes32 and threads memory.
+       After admin = DEFAULT_ADMIN_ROLE_bytes32, _checkRole_1305 is called
+       with the admin role; caller must be a DEFAULT_ADMIN holder. This is
+       precisely [H_caller_admin]. The chained call to [fun_grantRole_1359_inner]
+       runs the body. *)
+    pose proof (run_fun_getRoleAdmin_1340_at_proj_sim
+                  codes env state_base memory sim role H_role_known H_mem) as Hgra.
+    destruct Hgra as (w0' & w1' & rest' & Hgra).
+    set (mem_after_gra := w0' :: w1' :: rest').
+    (* H_caller_admin : has_admin sim caller = true.
+       Need: map_get_u256 (role_member_map sim) (DEFAULT_ADMIN_ROLE, caller) = 1.
+       That's exactly the body of [project_sim_to_ac_hasRole_admin], but
+       at the projection level. *)
+    assert (H_admin_member :
+              StorableValue.map_get_u256 (role_member_map sim)
+                (DEFAULT_ADMIN_ROLE_bytes32, env.(Environment.caller)) = 1).
+    { (* Compute via the dict-lookup over the admins list. *)
+      unfold role_member_map.
+      rewrite map_get_app_split.
+      unfold has_admin in H_caller_admin.
+      apply (proj1 (addr_in_true_iff_In _ _)) in H_caller_admin.
+      set (caller := env.(Environment.caller)) in *.
+      induction (State.admins sim) as [|a rest IH].
+      - simpl in H_caller_admin. exfalso. exact H_caller_admin.
+      - simpl members_for_role. simpl Dict.get.
+        cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+        rewrite Z.eqb_refl. simpl andb.
+        change (Dict.Eq.eqb caller a) with (caller =? a).
+        destruct (caller =? a) eqn:Hca.
+        + reflexivity.
+        + apply Z.eqb_neq in Hca.
+          destruct H_caller_admin as [Heq | Hin]; [congruence|].
+          apply IH. exact Hin. }
+    pose proof (run_fun__checkRole_1305_at_proj_sim_pass
+                  codes env state_base mem_after_gra sim
+                  DEFAULT_ADMIN_ROLE_bytes32
+                  H_admin_member H_caller_bound) as Hckr.
+    assert (Hmem_after_gra : exists w0 w1 rest,
+              mem_after_gra = w0 :: w1 :: rest).
+    { exists w0', w1', rest'. reflexivity. }
+    specialize (Hckr Hmem_after_gra).
+    destruct Hckr as (w0'' & w1'' & rest'' & Hckr).
+    set (mem_after_ckr := w0'' :: w1'' :: rest'').
+    assert (Hmem_after_ckr : exists w0 w1 rest,
+              mem_after_ckr = w0 :: w1 :: rest).
+    { exists w0'', w1'', rest''. reflexivity. }
+    specialize (Hbody mem_after_ckr Hmem_after_ckr).
+    eexists.
+    split; [|reflexivity].
+    unfold modifier_onlyRole_1351.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call, M.do.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (fun_getRoleAdmin_1340 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hgra | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__checkRole_1305 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hckr | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_grantRole_1359_inner _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
   (** ----- Task #234, Phase 1 — OZ AccessControl mutator equivalence ----- *)
 
   (** ===== Bridging the Guardian sim to the AccessControl mock =====
