@@ -2492,7 +2492,59 @@ shallow form doesn't exist OR compresses the modifier into a helper.
   [nonReentrant_exit] semantics.
 - `proofs/equivalence/ReentrancyGuard.v` — `with_nonReentrant` symbolic
   wrapper + 5 headline lemmas.
-- Future: `mocks/Pausable.v` (whenNotPaused / whenPaused), `mocks/AccessControlEnumerable.v`'s onlyRole expansion.
+- `mocks/Nonces.v` — replay-protection mock; precondition shape,
+  not a wrapping modifier. See "Variant: precondition shape" below.
+- `proofs/equivalence/Nonces.v` — `with_useCheckedNonce` symbolic
+  wrapper + 5 headline lemmas (task #236).
+- Future: `mocks/Pausable.v` (whenNotPaused / whenPaused),
+  `mocks/AccessControlEnumerable.v`'s onlyRole expansion.
+
+### Variant: precondition shape (not a wrapping modifier)
+
+Some OZ helpers expand as a precondition check followed by the body
+— no post-call cleanup. The canonical example is `_useCheckedNonce`:
+
+```
+_useCheckedNonce(owner, nonce);  // can revert, mutates state on success
+<body>;                          // user code, sees mutated state
+```
+
+For this shape the wrapper drops the exit pair from R045's basic
+template and threads the mutated state straight into the body:
+
+```coq
+Definition with_X {A : Set}
+    (s : State.t) (args ...) (body : State.t -> Result.t (State.t * A)) :
+    Result.t (State.t * A) :=
+  match X_check s args ... with
+  | Result.Revert p q => Result.Revert p q
+  | Result.Success s' => body s'
+  end.
+```
+
+The five-lemma template still applies, but the lemmas shift focus
+from enter/exit invariants to "body sees the mutated state" /
+"replay-attempt reverts inside the precondition". Concrete shapes
+demonstrated by `proofs/equivalence/Nonces.v`:
+
+- `with_X_match_runs_body` — when precondition holds, body executes
+  with the mutated state (analogue of `with_X_body_sees_X`).
+- `with_X_replay_reverts` — when precondition fails, the wrapper
+  short-circuits and the body never runs (analogue of
+  `with_X_already_X_short_circuits`).
+- `with_X_increments_target_account` (mock-specific) — the
+  per-entity mutation respects isolation properties of the
+  underlying mock.
+- `with_X_monotone` (mock-specific) — the mutation is directional
+  (here, strictly increasing).
+- `with_X_replay_protection` — two-step composition: a successful
+  call followed by a second call with stale arguments reverts.
+
+This subclass arises whenever the helper is a state-mutating
+precondition rather than a pre/post bracket. Pausable's
+`whenNotPaused` still fits the wrapping-modifier shape (no
+mutation); `_useCheckedNonce` and most `_consume*` helpers fit the
+precondition shape.
 
 ### Catalog reference
 
