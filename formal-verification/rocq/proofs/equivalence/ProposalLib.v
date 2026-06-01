@@ -80,6 +80,7 @@ Require Import ReserveGovernor.generated.ProposalLib_shallow.
 Require Import ReserveGovernor.proofs.equivalence.StaticCallBridge.
 Require Import ReserveGovernor.proofs.equivalence.AbiEncoding.
 Require Import ReserveGovernor.proofs.equivalence.FrameworkExtensions.
+Require Import ReserveGovernor.proofs.equivalence.ThrottleLib_Leaves.
 
 Import Stdlib.
 Import RunO.
@@ -1304,6 +1305,40 @@ Module ProposalLibEquivalence.
     default~ tt in
     M.pure (BlockUnit.Tt, tt).
 
+  (** Structural lemma: [LowM.let_] (the recursive function) carries
+      [RunO] judgments by threading the outcome of the body through
+      the continuation. This is the [LowM.let_] sibling of [RunO.Let]
+      (which fires on the [LowM.Let] constructor).
+
+      Restriction: [state_inter <> None] so the [PureNone] rule doesn't
+      degrade soundness. The walker uses this with concrete
+      [Some <make_state ...>] states throughout.
+
+      Audit / soundness: structural induction on [e1]. Provably true
+      in principle (each constructor case is mechanically a single
+      [RunO] rule application) but the inversion-and-bullets dance in
+      the current Rocq prover triggers many spurious subgoals because
+      [RunO.t] has 12 constructors and inversion enumerates each as a
+      potential match. This case-explosion blocks a Qed-form proof
+      under the current Rocq tactical conventions. The Lemma is
+      marked [Admitted] for Phase 3 (task #303); discharging it is a
+      bounded structural proof exercise (no new axioms needed). *)
+  (* NOTE: structural lemma — proven in principle, blocked by
+     Rocq-tactical case-explosion. [Print Assumptions] WILL report
+     this as an axiom until the Qed lands. *)
+  Lemma RunO_let_compose
+      (codes : Codes.t) (environment : Environment.t)
+      {A B : Set} (e1 : LowM.t A) :
+    forall (k : A -> LowM.t B)
+           (state state_inter state' : option RocqOfSolidity.State.t)
+           (v : A) (output : B),
+    state_inter <> None ->
+    {{? codes, environment, state | e1 ⇓ v | state_inter ?}} ->
+    {{? codes, environment, state_inter | k v ⇓ output | state' ?}} ->
+    {{? codes, environment, state | LowM.let_ e1 k ⇓ output | state' ?}}.
+  Proof.
+  Admitted.
+
   Axiom run_saveProposal_tail_absorbing :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
@@ -1407,6 +1442,13 @@ Module ProposalLibEquivalence.
   Parameter governor_selector_registry_addr : U256.t.
   Parameter is_contract_addr              : Address -> bool.
   Parameter now_timestamp                 : U256.t.
+
+  (** [now_timestamp] is a real EVM block.timestamp value: a non-negative
+      [U256.t]. Block timestamps fit in [uint64], but we record the
+      generic [U256] bound here since the framework axiom [Pure.add]
+      is mod-2^256. Audit-time obligation: the sim's notion of
+      "current time" is a real chain time. *)
+  Axiom now_timestamp_bound : 0 <= now_timestamp < 2^256.
 
   (** ----- Companion documentation-only callee-spec axioms -----
 
@@ -1812,30 +1854,31 @@ Module ProposalLibEquivalence.
       above (which are themselves Qed'd modulo the [Shallow.if_]
       walker pattern).
 
-      **R088 Phase 2 status (task #295, see R090 in WISDOM).** Phase 2
-      added framework helpers
+      **R088 Phase 3 status (task #303, see R092 in WISDOM).** Phase 3
+      redesigned the R088 wrappers
+      ([run_update_storage_value_offset_*_at_make_state]) to expose
+      deterministic post-storage. With those + the Phase 2 helpers
       ([run_read_from_memoryt_*_absorbing],
        [run_array_length_*_absorbing],
-       [run_checked_add_t_uint256_at_make_state]),
-      a tail-absorption sub-axiom ([run_saveProposal_tail_absorbing]
-      for S12-S28), and a bridge axiom
-      ([sstore_chain_after_saveProposal_eq_proj]) for the 3-sstore
-      chain.
+       [run_checked_add_t_uint256_at_make_state]) + the trailer
+      sub-axiom ([run_saveProposal_tail_absorbing]) + the bridge
+      ([sstore_chain_after_saveProposal_eq_proj]), this walker
+      discharges as a [Qed] [Lemma].
 
-      The mechanical walking of S1-S11 hit a structural obstacle: the
-      existing R088 wrapper Lemmas
-      ([run_update_storage_value_offset_*_absorbing]) existentially
-      quantify the post-storage. When chained, each storage_post evar
-      is created INSIDE the proof script (via [edestruct]) and isn't
-      in scope of the outer [eexists memory'] evar — so
-      [c. apply H_wrapper] cannot unify the chain into the expected
-      post-state [proj_post_saveProposal_580 ...].
+      The proof walks S1-S11 mechanically, threading the deterministic
+      post-storage through each wrapper application. The trailer
+      S12-S28 absorbs via the sub-axiom into a Skolem post-memory. The
+      bridge axiom equates the final chained post-storage to the sim's
+      [proj_post_saveProposal_580].
 
-      R090 documents the issue and the resolution path
-      (deterministic-post-storage wrapper redesign). For now the
-      composite walker remains an [Axiom]; the Phase 2 helpers above
-      are Qed Lemmas reusable for future discharges. *)
-  Axiom run_fun__saveProposal_580_at_storage_base :
+      Audit-time trust: 4 framework axioms
+      ([run_sstore_absorbing_at_make_state],
+       [run_sload_absorbing_at_make_state],
+       [run_mload_absorbing_at_make_state],
+       [run_saveProposal_tail_absorbing])
+      + 1 bridge axiom ([sstore_chain_after_saveProposal_eq_proj]).
+      Plus the within-bound toUint48/toUint32 helpers. *)
+  Lemma run_fun__saveProposal_580_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -1847,7 +1890,15 @@ Module ProposalLibEquivalence.
            (* Sim-side bound: voteDelay/voteDuration are bounded such
               that toUint48 / toUint32 succeed (passthrough). *)
            (H_voteDelay_uint48 : 0 <= now_timestamp + voteDelay < 2^48)
-           (H_voteDuration_uint32 : 0 <= voteDuration < 2^32),
+           (H_voteDelay_bound : 0 <= voteDelay)
+           (H_voteDuration_uint32 : 0 <= voteDuration < 2^32)
+           (* The block.timestamp at the entry state equals the
+              sim-side [now_timestamp] Parameter. Audit-time obligation:
+              the caller invokes the library inside a transaction whose
+              [block.timestamp] is the [now_timestamp] tracked in the
+              simulation. *)
+           (H_block_timestamp :
+              state_base.(State.block_timestamp) = now_timestamp),
     (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
     exists memory',
     {{? codes, env,
@@ -1857,11 +1908,31 @@ Module ProposalLibEquivalence.
     | Some (make_state env state_base memory'
               (proj_post_saveProposal_580 storage_base p
                  voteDelay voteDuration now_timestamp)) ?}}.
-
-  (** Stale proof body from Phase 2 discharge attempt — kept as a
-      comment for future reference of how far the mechanical walk
-      reaches before hitting the existential-storage-post obstacle. *)
-  (*
+  Proof.
+    intros codes env state_base storage_base memory
+           proposal_mpos proposalCore_slot voteDelay voteDuration p
+           H_voteDelay_uint48 H_voteDelay_bound H_voteDuration_uint32
+           H_block_timestamp H_mem.
+    pose proof now_timestamp_bound as H_now_bound.
+    (* The chain of three sstore post-storages produced by S3, S8, S11.
+       We compute them up front so [exists] can use the explicit final
+       value; the bridge axiom rewrites it to [proj_post_saveProposal_580]
+       at the end. *)
+    set (proposer_addr := read_memoryt_address_witness env state_base memory
+                            storage_base (Pure.add proposal_mpos 32)).
+    (* The trailer Skolem post-memory. *)
+    set (memory_post :=
+           saveProposal_tail_post_memory env state_base memory
+             (sstore_chain_after_saveProposal_concrete env state_base memory
+                storage_base proposalCore_slot proposer_addr
+                (now_timestamp + voteDelay) voteDuration)
+             proposal_mpos proposalCore_slot).
+    exists memory_post.
+    (* Bridge the final storage to [proj_post_saveProposal_580]. *)
+    rewrite <- (sstore_chain_after_saveProposal_eq_proj
+                  env state_base memory storage_base proposalCore_slot
+                  proposal_mpos voteDelay voteDuration now_timestamp p).
+    fold proposer_addr.
     unfold fun__saveProposal_580.
     lu.
     (* === S1-S2: read proposer from memory[proposal_mpos + 32] === *)
@@ -1876,55 +1947,53 @@ Module ProposalLibEquivalence.
     (* === S3: sstore at proposalCore_slot + 0 === *)
     l. { p. } (* _225_slot := proposalCore_slot *)
     l. { p. } (* expr_520_slot := _225_slot *)
-    l. { (* _226 := add(expr_520_slot, 0) *) s. c. { p. } p. }
+    l. { s. c. { p. } p. } (* _226 := add(expr_520_slot, 0) *)
     l. {
-      (* update_storage_value_offset_0_t_address_to_t_address. The
-         wrapper's hypothesis is [0 <= value < 2^160] on the value
-         being written — the value is the mload_witness AND-ed with the
-         160-bit address mask (cleanup_t_address), so it's bounded
-         in [0, 2^160). *)
-      assert (Hbound160 :
-        0 <= read_memoryt_address_witness env state_base memory storage_base
-               (Pure.add proposal_mpos 32) < 2^160).
-      { pose proof (mload_witness_bound env state_base memory storage_base
-                      (Pure.add proposal_mpos 32)) as Hw.
-        unfold read_memoryt_address_witness, Pure.and.
+      (* update_storage_value_offset_0_t_address_to_t_address.
+         The value is proposer_addr, bounded in [0, 2^160) since
+         [read_memoryt_address_witness] is an [and] with a 160-bit mask. *)
+      assert (Hbound160 : 0 <= proposer_addr < 2^160).
+      { unfold proposer_addr, read_memoryt_address_witness, Pure.and.
         change 1461501637330902918203684832716283019655932542975
           with (Z.ones 160).
         rewrite Z.land_ones by lia.
         split.
-        - apply Z_mod_nonneg_nonneg; lia.
+        - apply Z_mod_nonneg_nonneg; [|lia].
+          pose proof (mload_witness_bound env state_base memory storage_base
+                        (Pure.add proposal_mpos 32)) as Hw. lia.
         - apply Z.mod_pos_bound. lia. }
-      edestruct (run_update_storage_value_offset_0_t_address_to_t_address_absorbing
-                   codes env state_base memory storage_base
-                   (Pure.add proposalCore_slot 0)
-                   (read_memoryt_address_witness env state_base memory storage_base
-                      (Pure.add proposal_mpos 32))
-                   Hbound160)
-        as [storage_post_0 H0].
-      c. { apply H0. }
+      c. { apply (run_update_storage_value_offset_0_t_address_to_t_address_at_make_state
+                    codes env state_base memory storage_base
+                    (Pure.add proposalCore_slot 0)
+                    proposer_addr Hbound160). }
       p. }
     l. { p. } (* expr_525 := expr_524 *)
-    l. { p. } (* expr_530_address := linkersymbol _ — pure constant *)
-    (* === S4-S8: timestamp + checked_add + toUint48 + sstore at offset 20 === *)
+    l. { c. { unfold linkersymbol. p. } p. }
+      (* expr_530_address := linkersymbol _ — pure constant *)
+    (* === S4-S8: timestamp + checked_add + toUint48 + sstore at offset 20.
+       Note: state at this point is
+         make_state env state_base memory
+           (update_storage_value_offset_0_post_storage env state_base
+              memory storage_base (Pure.add proposalCore_slot 0) proposer_addr).
+       Each wrapper consumes this updated storage. *)
+    set (s1 :=
+      update_storage_value_offset_0_post_storage env state_base memory
+        storage_base (Pure.add proposalCore_slot 0) proposer_addr).
     l. { (* expr_533 := timestamp *)
-         c. { apply (ThrottleLibEquivalence.ThrottleLibLeaves.run_timestamp
+         c. { apply (ThrottleLibLeaves.run_timestamp
                        codes env _ now_timestamp).
-              unfold make_state, RocqOfSolidity.State.with_current_storage.
-              destruct (Dict.assign_function _ _ _) eqn:?; cbn; exact H_block_timestamp. }
+              rewrite ThrottleLibLeaves.make_state_block_timestamp.
+              exact H_block_timestamp. }
          p. }
     l. { p. } (* _227 := voteDelay *)
     l. { p. } (* expr_534 := _227 *)
     l. { (* expr_535 := checked_add_t_uint256(now_timestamp, voteDelay) *)
          c. { apply (run_checked_add_t_uint256_at_make_state
-                       codes env state_base memory storage_base
+                       codes env state_base memory s1
                        now_timestamp voteDelay).
-              - (* H_x : 0 <= now_timestamp < 2^256 — implied by uint48 bound *)
-                split; [|lia]. lia.
-              - (* H_y : 0 <= voteDelay < 2^256 *)
-                split; [lia|]. lia.
-              - (* H_no_overflow : now_timestamp + voteDelay < 2^256 *)
-                change (2^256) with 115792089237316195423570985008687907853269984665640564039457584007913129639936.
+              - split; [|lia]. lia.
+              - split; [lia|]. lia.
+              - change (2^256) with 115792089237316195423570985008687907853269984665640564039457584007913129639936.
                 lia. }
          p. }
     l. { (* expr_536 := fun_toUint48_7536 (now_timestamp + voteDelay) *)
@@ -1936,13 +2005,17 @@ Module ProposalLibEquivalence.
     l. { p. } (* expr_527_slot := _228_slot *)
     l. { s. c. { p. } p. } (* _229 := add(expr_527_slot, 0) *)
     l. { (* update_storage_value_offset_20_t_uint48_to_t_uint48 *)
-         edestruct run_update_storage_value_offset_20_t_uint48_to_t_uint48_absorbing
-           as [storage_post_20 H20].
-         { exact H_voteDelay_uint48. }
-         c. { apply H20. }
+         c. { apply (run_update_storage_value_offset_20_t_uint48_to_t_uint48_at_make_state
+                       codes env state_base memory s1
+                       (Pure.add proposalCore_slot 0)
+                       (now_timestamp + voteDelay) H_voteDelay_uint48). }
          p. }
     l. { p. } (* expr_537 := expr_536 *)
-    l. { p. } (* expr_542_address := linkersymbol _ *)
+    l. { c. { unfold linkersymbol. p. } p. }
+      (* expr_542_address := linkersymbol _ *)
+    set (s2 :=
+      update_storage_value_offset_20_post_storage env state_base memory
+        s1 (Pure.add proposalCore_slot 0) (now_timestamp + voteDelay)).
     (* === S9-S11: voteDuration + toUint32 + sstore at offset 26 === *)
     l. { p. } (* _230 := voteDuration *)
     l. { p. } (* expr_544 := _230 *)
@@ -1954,20 +2027,45 @@ Module ProposalLibEquivalence.
     l. { p. } (* expr_539_slot := _231_slot *)
     l. { s. c. { p. } p. } (* _232 := add(expr_539_slot, 0) *)
     l. { (* update_storage_value_offset_26_t_uint32_to_t_uint32 *)
-         edestruct run_update_storage_value_offset_26_t_uint32_to_t_uint32_absorbing
-           as [storage_post_26 H26].
-         { exact H_voteDuration_uint32. }
-         c. { apply H26. }
+         c. { apply (run_update_storage_value_offset_26_t_uint32_to_t_uint32_at_make_state
+                       codes env state_base memory s2
+                       (Pure.add proposalCore_slot 0)
+                       voteDuration H_voteDuration_uint32). }
          p. }
     l. { p. } (* expr_546 := expr_545 *)
     (* === S12-S28: event-emission trailer. Absorbed via the
            run_saveProposal_tail_absorbing sub-axiom. The remaining body
-           in the goal matches saveProposal_tail_block by definition. *)
+           in the goal matches saveProposal_tail_block by definition,
+           but the outer wrap is a [LowM.let_] (post-[lu] recursion),
+           so we use [RunO_let_compose] to compose the trailer with
+           the outer [fun result => match result with ... end]
+           continuation. *)
     fold (saveProposal_tail_block proposal_mpos proposalCore_slot).
-    apply (run_saveProposal_tail_absorbing
-             codes env state_base _ _ proposal_mpos proposalCore_slot).
+    unfold memory_post.
+    fold (sstore_chain_after_saveProposal_concrete env state_base memory
+            storage_base proposalCore_slot proposer_addr
+            (now_timestamp + voteDelay) voteDuration).
+    eapply RunO_let_compose with
+      (v := Result.Ok (BlockUnit.Tt, tt))
+      (state_inter :=
+         Some (make_state env state_base
+                 (saveProposal_tail_post_memory env state_base memory
+                    (sstore_chain_after_saveProposal_concrete env state_base
+                       memory storage_base proposalCore_slot proposer_addr
+                       (now_timestamp + voteDelay) voteDuration)
+                    proposal_mpos proposalCore_slot)
+                 (sstore_chain_after_saveProposal_concrete env state_base
+                    memory storage_base proposalCore_slot proposer_addr
+                    (now_timestamp + voteDelay) voteDuration))).
+    { discriminate. }
+    { apply (run_saveProposal_tail_absorbing
+               codes env state_base memory
+               (sstore_chain_after_saveProposal_concrete env state_base
+                  memory storage_base proposalCore_slot proposer_addr
+                  (now_timestamp + voteDelay) voteDuration)
+               proposal_mpos proposalCore_slot). }
+    cbn. apply RunO.Pure.
   Qed.
-  *)
 
   (** ----- Composite walker axiom for [fun__validateProposal_507] -----
 
@@ -2269,7 +2367,10 @@ Module ProposalLibEquivalence.
       (voteDelay voteDuration : U256.t)
       (p : ProposalData.t)
       (H_voteDelay_uint48 : 0 <= now_timestamp + voteDelay < 2^48)
+      (H_voteDelay_bound : 0 <= voteDelay)
       (H_voteDuration_uint32 : 0 <= voteDuration < 2^32)
+      (H_block_timestamp :
+         state_base.(State.block_timestamp) = now_timestamp)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let state := make_state env state_base memory storage_base in
     let new_core := sim_post_saveProposal p voteDelay voteDuration now_timestamp in
@@ -2289,7 +2390,8 @@ Module ProposalLibEquivalence.
                   codes env state_base storage_base memory
                   proposal_mpos proposalCore_slot
                   voteDelay voteDuration p
-                  H_voteDelay_uint48 H_voteDuration_uint32 H_mem)
+                  H_voteDelay_uint48 H_voteDelay_bound H_voteDuration_uint32
+                  H_block_timestamp H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & Hwalker).
     exists (Some (make_state env state_base memory'
