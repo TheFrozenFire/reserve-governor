@@ -3587,7 +3587,7 @@ See also: R082 (staticcall absorption), R083 (memory absorption + namespace
 anchors), R088 (arbitrary-U256-slot storage absorption Phase 1),
 R089 (TimelockControllerOptimistic per-helper sub-axiom decomposition).
 
-## R094: R088 Phase 3 — deterministic-post-storage wrappers + _saveProposal discharge
+## R103: R088 Phase 3 — deterministic-post-storage wrappers + _saveProposal discharge
 
 **Task #303 (T3.2-ProposalLib-Phase3, 2026-06-01)** resolved the R092
 structural obstacle by redesigning the R088 wrapper Lemmas to expose
