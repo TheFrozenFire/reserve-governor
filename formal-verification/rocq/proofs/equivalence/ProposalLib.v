@@ -547,13 +547,38 @@ Module ProposalLibEquivalence.
       repeat (lu || cu || p).
   Qed.
 
+  (** Zero-value initialiser used inside [fun_toUint32]. Same shape
+      as [run_zero_value_for_split_t_uint48] above. *)
+  Lemma run_zero_value_for_split_t_uint32 codes env state :
+    {{? codes, env, Some state |
+      zero_value_for_split_t_uint32 ⇓ Result.Ok 0
+    | Some state ?}}.
+  Proof.
+    unfold zero_value_for_split_t_uint32.
+    lu. repeat (lu || cu || p).
+  Qed.
+
   Lemma run_fun_toUint32_7592_within_bound codes env state (v : U256.t)
       (H_v : 0 <= v < 2^32) :
     {{? codes, env, Some state |
       fun_toUint32_7592 v ⇓ Result.Ok v
     | Some state ?}}.
   Proof.
-  Admitted.
+    unfold fun_toUint32_7592.
+    lu. l. { c. { apply run_zero_value_for_split_t_uint32. } p. }
+    repeat (lu || cu || p).
+    s. unfold Shallow.if_, Pure.gt.
+    destruct (v >? 4294967295) eqn:Hgt.
+    - apply Z.gtb_lt in Hgt. exfalso. lia.
+    - simpl.
+      l; [ p | ].
+      cbv match.
+      repeat (lu || cu || p).
+      unfold Pure.and.
+      rewrite <- uint32_implies_and_mask by exact H_v.
+      cbn.
+      repeat (lu || cu || p).
+  Qed.
 
   (** ====================================================================
       R070: ProposalLib public function equivalences — R065/R066/R067 recipe
