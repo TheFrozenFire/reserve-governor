@@ -6431,4 +6431,198 @@ slot storage absorption), R094 (`RunO_let_compose` Admit +
 deterministic-post-storage wrapper redesign), R103 (Phase-3
 `_saveProposal_580` discharge), R104 (rename Axiom→Lemma for
 remaining 4 walkers + this entry's prerequisites catalogue).
+## R106: StakingVaultExchange Phase B sim widening — 3 → 4 primary fields, OZ-base mechanization gap surfaced
+
+**Task #310 (R101 follow-up phase A2, 2026-06-01).**  Widens
+`simulations/StakingVaultExchange.v`'s `State.t` from three fields
+(`totalSupply`, `totalDeposited`, `accumulatedNativeRewards`) to FOUR
+primary fields (`totalSupply`, `totalDeposited`,
+`nativeBalanceLastKnown`, `nativeRewardsLastPaid`).  `accumulated
+NativeRewards` is demoted to a derived getter (the saturating
+difference `max 0 (nbk - td)`).
+
+### What landed
+
+  - **`State.t` extended.** `nativeBalanceLastKnown` (slot 13 / 0x0d)
+    and `nativeRewardsLastPaid` (slot 14 / 0x0e) are now primary
+    `uint256` fields.  `accumulatedNativeRewards` becomes the
+    `Definition accumulatedNativeRewards (s : State.t) : U256.t`
+    getter.  Convenience constructor `make supply td anr` rebuilds a
+    sim with the headline 3-field shape (sets `nbk := td + anr`,
+    `nrlp := 0`).
+  - **`Valid.state` widened.** Two new fields:
+    `balance_nn` (raw balance is non-negative) and
+    `balance_covers_deposited` (balance >= totalDeposited).  Headline
+    consumer `accumulatedNativeRewards_nn` ties the old "rewards_nn"
+    obligation to the widened invariant via Lemma.
+  - **Sim mutators updated.**  `deposit` / `withdraw` mutate `nbk`
+    by `+/- assets` (matching the contract's `_deposit_inner` /
+    `_withdraw_inner` writes to slot 0x0d).  `accrue` mutates `nbk`
+    by `+delta` and resets `nrlp := now_` (matching the modifier's
+    final-slot pattern).  Sister Lemma
+    `accrue_increases_rewards` updated to derive monotonicity via
+    the four-way case split on the saturating getter.
+  - **Equivalence-side lens widened.**  `project_exchange` and
+    `project_exchange_module` now read FOUR slots (4 / 12 / 13 / 14).
+    `storage_with_sim` writes the FOUR lens slots via stacked
+    `sve_set_nth`.  The new module-level constant
+    `slot_nativeRewardsLastPaid_const := 14` joins the existing 4 /
+    12 / 13 trio; a sibling `_neq_roles` Lemma closes by
+    `discriminate`.
+  - **All five sim-side proof files updated.**  Record literals,
+    field projections, and proof scripts threaded through the new
+    Valid shape and the getter (~400 LOC delta).  Build green.
+  - **Print Assumptions baseline unchanged.**  Per-milestone diffs
+    are line-number-only (the sim extension didn't alter any
+    `Print Assumptions` set; the four R101 modifier-wrapper Axioms
+    remain Axioms with identical content).
+
+### Why no walker Qed delta this commit
+
+The widening is the **necessary prerequisite** for discharging the
+two R100 modifier-wrapper Axioms
+(`run_modifier_accrueRewards_610_at_storage_base` and `_647_`).
+With four lens slots, the post-state `proj_post_deposit_4312
+storage_base ...` now matches the modifier walker's chain on slots
+4, 12, 13, and 14.
+
+However, the modifier body ALSO writes:
+
+  - **Per-token reward tracker mapping** (`rewardTrackers` at slot
+    11, written by `fun__accrueRewards_1192`'s inner for-loop
+    iteration over `rewardTokens.values()`).  Each iteration emits
+    sub-mapping `sstore`s at `keccak256(...)`-derived anchors.
+  - **`userRewardTrackers` mapping** (slot 8 in the OZ layout,
+    per-user / per-token).  Similar iteration shape.
+  - **ERC20 balances mapping** (the OZ ERC4626 base's `_mint` writes
+    `balances[receiver] += shares`).  The balances mapping anchor
+    is ERC-7201-derived.
+  - **ERC20 totalSupply** (slot 4 in the abstract model; in
+    reality the ERC-7201 anchor + offset).  The `_mint` updates
+    `totalSupply += shares`.
+  - **ERC20Votes delegate checkpoint mapping** (Votes.transferVoting
+    Units → `_moveVotes` pushes new checkpoints).
+  - **Optimistic delegate checkpoint mapping** (slot 22, the
+    StakingVault's `_moveOptimisticDelegateVotes` call).
+  - **log3 / log4 event emissions** (`Deposit` event in
+    `super._deposit`).
+
+The walker produces `sstore_post_storage` Skolems on ALL these
+slots/mappings.  Our 4-slot lens covers only the four scalar slots;
+the mapping-style slots remain unmodeled.  Reflexivity between the
+walker's chain and `proj_post_deposit_4312` therefore still fails:
+the chain is strictly larger than the Definition's 4-slot update.
+
+### The OZ-base mechanization gap
+
+Closing the gap requires either:
+
+  - **(A) Continued sim widening with opaque map fields.**  Add
+    `balances : Dict.t U256.t U256.t`, `voteCheckpoints : ...`,
+    `optimisticVoteCheckpoints : ...`, `rewardTrackers : Dict.t (token,
+    field) U256.t`, `userRewardTrackers : Dict.t (token, user, field)
+    U256.t`.  Update the four Dict fields in `deposit` / `withdraw`
+    consistent with the contract's behavior.  This is a substantial
+    sim refactor (~600-1000 LOC) and the per-mapping update logic
+    has to mirror the OZ ERC4626 base + the StakingVault
+    `_update` override.
+
+  - **(B) OZ-base equivalence files mechanization upstream.**  The
+    Wave-2 `proofs/equivalence/ERC4626.v` and `ERC20Votes.v` are
+    currently placeholders; they need full per-mutator walker
+    discharge.  Once those land, the modifier wrapper can dispatch
+    `fun__deposit_4546` (OZ super._deposit) and the `_mint` /
+    `_burn` chains via composite walker Lemmas instead of inline
+    Skolem chains.
+
+Option B is the cleaner long-term path but requires the OZ-base
+mechanization workstream (separate, large).  Option A is locally
+achievable in the SVE sim but couples the SVE sim tightly to the OZ
+ERC4626 / ERC20Votes / AccessControlEnumerable semantics — bordering
+on re-implementing the OZ contracts in the sim.
+
+### Decision: STOP, document the gap
+
+Per the Task #310 brief's "honest failure modes" clause: "If you
+find that the unmodeled slots require ERC4626 or ERC20Votes
+mechanization upstream, STOP and report."  The gap is precisely
+that.  This entry surfaces:
+
+  1. **The achievable Phase A2 widening landed.**  Four-slot lens
+     in place; sim invariants tightened; build green.
+  2. **Phase B walker discharge remains blocked.**  Two modifier-
+     wrapper Axioms unchanged in `Print Assumptions`.
+  3. **The two follow-up paths.**  Option A (sim-internal map
+     widening) and Option B (OZ-base mechanization) are now both
+     documented; Option B is the strongly-preferred long-term
+     trajectory.
+
+### Net Print Assumptions delta per milestone Theorem
+
+```
+Before R106 (R101 baseline):        After R106 (this commit):
+  - run_modifier_accrueRewards_610  (unchanged — Phase B blocked)
+  - run_modifier_accrueRewards_647  (unchanged — Phase B blocked)
+  - proj_post_mint_4356_eq_deposit  (unchanged)
+  - proj_post_redeem_4450_eq_withdraw (unchanged)
+```
+
+Per-milestone `Print Assumptions` content is byte-identical to the
+baseline (line-number drifts only).  Trust delta: **0 axiom-
+equivalent assumptions retired this commit**.
+
+The audit value is in the tighter SHAPE of the sim:
+`balance_covers_deposited` makes `totalAssets s >= totalDeposited s`
+an in-Valid claim rather than a derived corollary; the
+`accumulatedNativeRewards` getter forces every consumer to commit
+to the saturating semantics explicitly; the lens now covers the
+slot the modifier writes (`nrlp` at 14) so an *adversarial*
+inheritor cannot supply a `proj_post_<X>` Definition that
+SILENTLY drops the timestamp update.
+
+### Phase B forward work (NOT closed by this commit)
+
+  - **Sim-internal map widening (Option A path).**  Add the four
+    Dict fields, propagate through deposit/withdraw, define the
+    per-map post-state computations.  Estimated 600-1000 LOC.
+    Couples SVE sim tightly to OZ base semantics; defers the
+    cleaner option but unblocks the Qed discharge locally.
+
+  - **OZ-base equivalence files mechanization (Option B path).**
+    `proofs/equivalence/ERC4626.v` and `ERC20Votes.v`
+    per-mutator walker discharge.  This unblocks the SVE
+    modifier-wrapper Axiom discharge AND every other ERC4626-
+    derived contract.  Estimated multi-task; sized in
+    `notes/equivalence_phase4_decision.md`.
+
+  - **Inner-body walker discharge for `fun__accrueRewards_1192`.**
+    Even with Option A, the inner for-loop iterating over
+    `rewardTokens.values()` is a ~300-LOC body with multiple
+    `staticcall`s (RewardTokenRegistry.isRegistered) per
+    iteration.  StaticCallBridge primitives (R093 et seq.) cover
+    the per-call discharge but the iteration walker is novel.
+
+### Validation
+
+  - Build: green (`OPAM_SWITCH=rocq820 bash formal-verification/
+    scripts/rocq-build` exits 0).
+  - `Print Assumptions` per milestone Theorem: line-number-only
+    drifts (the four R100 Axioms unchanged in content).
+  - File deltas: ~398 / -107 LOC across 6 files
+    (sim + 5 proof files).
+
+### See also
+
+R099 (UnstakingManager Option A — applied cleanly because that
+sim's State.t IS the full storage; SVE's State.t is a strict
+sub-state, hence the partial-closure landing here).  R100 (the
+modifier-wrapper sub-axiom decomposition this entry's prerequisite).
+R101 (the sub-storage barrier diagnosis — this entry is the
+foundation-laying response that R101 explicitly forecast).  R085
+(the broader Parameter→Definition pattern across all equivalence-
+tier files; SVE is one of the "partial sim" cases that R085's
+methodology-finding flagged).  R094 (UnstakingManager Phase B —
+the sister Phase B forward-work entry showing parallel structural
+gaps).  Wave-2 ERC4626 / ERC20Votes equivalence files (Option B
+upstream dependency).
 
