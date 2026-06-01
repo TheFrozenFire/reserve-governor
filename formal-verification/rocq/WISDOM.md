@@ -2673,6 +2673,7 @@ template), R065-R071 (per-mutator composite walker recipe), R070
 (ProposalLib walker structure), R086 (concurrent UnstakingManager
 SafeERC20/linkersymbol gap).
 
+<<<<<<< HEAD
 ## R088: Arbitrary-U256-slot storage absorption — ProposalLib framework gap
 
 **Task #293 (T3.2-ProposalLib, 2026-06-01)** attempted to extend the
@@ -2861,6 +2862,196 @@ See also: R040 (wrapper-shape sstore), R082 (staticcall absorption),
 R083 (memory absorption + namespace anchors), R067 (composite-walker
 template), R070 (ProposalLib walker structure), R087 (ROG composite
 walker — depends on ProposalLib walkers closing first).
+=======
+## R089: TimelockControllerOptimistic walker per-helper sub-axiom decomposition
+
+**Task #294 (T3.2-TLC-finish, 2026-06-01)** extends the R082 composite-walker
+discharge methodology to four of TimelockControllerOptimistic's five
+composite walker [Axiom]s
+(`run_fun_revokeOptimisticProposer_136_at_proj_sim`,
+`run_fun_cancel_1394_at_proj_sim`,
+`run_fun_scheduleBatch_1295_at_proj_sim`,
+`run_fun_executeBatchBypass_201_at_proj_sim`). All four were promoted
+from [Axiom] to [Qed] [Lemma] via per-helper sub-axiom decomposition.
+The fifth (`run_fun_executeBatch_1552_at_proj_sim`) was deliberately
+left axiomatic due to its load-bearing delegatecall (R087 Blocker 2).
+
+### The R088 decomposition
+
+Unlike R082's deprecateVersion (a single deep monolithic 21-step Yul
+body), the TimelockControllerOptimistic mutators are each layered as
+[outer] → [modifier_onlyRole] → [gate + inner-body]. Specifically:
+
+  - `fun_revokeOptimisticProposer_136` → `modifier_onlyRole_128` →
+    [`fun__checkRole_2033`(CANCELLER_ROLE)] + `fun_revokeOptimisticProposer_136_inner`
+  - `fun_cancel_1394` → `modifier_onlyRole_1356` →
+    [`fun__checkRole_2033`(CANCELLER_ROLE)] + `fun_cancel_1394_inner`
+  - `fun_scheduleBatch_1295` → `modifier_onlyRole_1213` →
+    [`fun__checkRole_2033`(PROPOSER_ROLE)] + `fun_scheduleBatch_1295_inner`
+  - `fun_executeBatchBypass_201` → `modifier_onlyRole_154` →
+    [`fun__checkRole_2033`(PROPOSER_ROLE)] + `fun_executeBatchBypass_201_inner`
+
+R088 introduces:
+
+1. **`run_fun__checkRole_2033_under_role`** — a single shared gate
+   sub-axiom parametric over the [role : U256.t] and the
+   [role_pred : Address -> bool] (instantiated at each call site with
+   `has_CANCELLER_ROLE` or `has_PROPOSER_ROLE`). The gate preserves
+   storage; memory may transform (it absorbs the scratch reads/writes
+   inside the OZ AccessControl walk through the ERC-7201 anchored
+   sload — R083). Cons-shape preserved on the output to thread into
+   the inner-body sub-axiom.
+
+2. **Per-mutator inner-body sub-axioms** —
+   `run_fun__revokeRole_121_at_storage_base`,
+   `run_fun_cancel_1394_inner_at_storage_base`,
+   `run_fun_scheduleBatch_1295_inner_at_storage_base`,
+   `run_fun_executeBatchBypass_201_inner_at_storage_base`. Each
+   encapsulates the post-modifier body of its mutator and lands at
+   the corresponding `proj_post_<fn>` Skolem post-storage.
+
+3. **Outer walker [Qed] [Lemma]s** — each composes Phase 1 (gate) +
+   Phase 2 (inner body) + Phase 3 (mechanical assembly walk over the
+   outer modifier + return). The mechanical walk is small (~10-20
+   tactic lines) because the gate and body do all the load-bearing work.
+
+### Trust budget impact (per Print Assumptions)
+
+- **Before R088 (after R082)**: 5 monolithic walker [Axiom]s
+  (`run_fun_<fn>_at_proj_sim` for revoke / cancel / schedule /
+  executeBatch / executeBatchBypass).
+- **After R088**: 4 walker [Qed] [Lemma]s + 1 shared gate sub-[Axiom]
+  + 4 per-mutator body sub-[Axiom]s + 1 unchanged walker [Axiom]
+  (executeBatch) = 6 axioms net.
+
+NET: **+1 axiom**. This is the trust-redistribution outcome that R087
+Blocker 1 predicted (and named the R087 critique pattern): per-helper
+sub-axiom decomposition of inheritor walkers does NOT achieve net
+trust reduction; it redistributes one opaque Hoare triple into
+multiple smaller ones. However, R088 SHARPENS the audit-time
+signatures in three concrete ways:
+
+  - **Shared gate.** The single
+    `run_fun__checkRole_2033_under_role` sub-axiom amortizes across
+    all four discharged mutators (and is structurally ready to amortize
+    across executeBatch when that walker is eventually discharged).
+    Auditing the gate axiom once covers all five mutators.
+
+  - **Body axioms have narrower signatures.** No modifier wrapper, no
+    [`has_<ROLE> caller = true`] precondition (absorbed into the gate),
+    no Skolem post-storage [Parameter] inside the gate. Each body
+    sub-axiom focuses on a single contract function's post-storage
+    transition.
+
+  - **Per-call-graph audit boundary.** The gate sub-axiom corresponds
+    to a SINGLE Yul function (`fun__checkRole_2033`); auditors review
+    its body once. The body sub-axioms correspond to per-mutator inner
+    Yul functions, each auditable in isolation. The original walker
+    axioms each bundled BOTH gate and body opaquely; R088 separates
+    them.
+
+### Why executeBatch is NOT discharged
+
+`fun_executeBatch_1552` → `fun_executeBatch_1552_inner` →
+`fun__execute_1581` performs a DELEGATECALL (NOT staticcall) into the
+target contract under the timelock's storage context. Per R087
+Blocker 2, there is no `delegatecall_make_state_bridge` framework
+primitive in `AbiEncoding.v` / `StaticCallBridge.v` /
+`FrameworkExtensions.v`. Even constructing a body sub-axiom for
+`fun_executeBatch_1552_inner` would push the delegatecall opacity
+into the sub-axiom — but the sub-axiom would still need a callee-side
+post-state shape that the framework doesn't yet model. Audit
+effectively cannot bound the sub-axiom's trust beyond "delegatecall
+can do anything to the timelock's storage".
+
+The `executeBatchBypass` walker IS discharged because its body
+sub-axiom encapsulates the inner `fun_executeBatch_1552` dispatch
+ATOMICALLY — auditors verify the bypass body's pre/post-condition
+without unpacking the executeBatch internals. This is the
+trust-budget-aware boundary: where R087 Blocker 2 prevents further
+decomposition, R088 stops at the composite-walker boundary.
+
+### Composition with R082 / R083 / R084 / R087
+
+- **R082** validates the methodology when the body is a single deep
+  monolithic walk (`deprecateVersion`); R088 adapts it for inheritor
+  bodies that decompose as gate + inner-body.
+- **R083** (ERC-7201 anchor + memory absorption) is the audit-time
+  basis for what the gate sub-axiom's storage-unchanged claim
+  represents internally; future Qed discharge of
+  `run_fun__checkRole_2033_under_role` would use R083 primitives
+  directly. Tracked as R088 residual work.
+- **R084** (T3.3 trust-redistribution) is the prior art for the
+  decomposition methodology. R088 is the inheritor-shaped sibling:
+  R084 redistributed an EnumerableSet `_remove` walker into 1
+  walker-shape + 1 property-bridge + 3 framework-inverse-op axioms;
+  R088 redistributes 4 modifier-shaped mutator walkers into 1
+  shared-gate + 4 inner-body axioms.
+- **R087** Blocker 1's criticism applies verbatim — net trust does
+  not decrease. R088's contribution is the trust-redistribution
+  PATTERN for inheritor bodies, not net trust reduction.
+
+### Path to full Qed discharge (R088 residual)
+
+For the next agent who wants to retire the new sub-axioms:
+
+1. **Discharge `run_fun__checkRole_2033_under_role`** as a Qed Lemma
+   using R083's `run_sload_map2_u256_at_anchor` framework primitive +
+   an `accessControl_namespace_binding` per-projection audit fact (the
+   ERC-7201 anchor for OZ AccessControl is
+   `0x02dd7bc7dec4dceedda775e58dd541e08a116c6c53815c0bd028192f7b626800`).
+   Pattern: mirror StakingVaultAdmin's `run_fun__checkRole_13513_succeeds_under_admin`
+   (already a Qed Lemma there); cite that one as the methodological
+   template. Estimated ~200-400 LOC.
+
+2. **Discharge each body sub-axiom** as a Qed Lemma:
+   - `run_fun__revokeRole_121_at_storage_base`: ~400-600 LOC walker
+     using R084's three EnumerableSet inverse-op axioms +
+     R083's namespace-anchored sstore. The body chains
+     `_revokeRole_2265` (slot-0 role-flag flip) +
+     conditional `fun_remove_3127` (R084 swap-and-pop).
+   - `run_fun_cancel_1394_inner_at_storage_base`: ~300-500 LOC walker.
+     The body is the simplest of the four (no EnumerableSet, no
+     external call): `isOperationPending` + slot-0 sstore +
+     log2. Mostly R040 wrapper-shape sstore + R083 absorbing memory
+     primitives.
+   - `run_fun_scheduleBatch_1295_inner_at_storage_base`: ~800-1200 LOC.
+     The body has the array-length triple-check + revert (which the
+     mechanical walker dispatches via `require_helper` arms) +
+     `hashOperationBatch` (keccak256-on-abi-tuple) + `_schedule`
+     (load minDelay + sstore timestamps[id]) + `Shallow.for_` loop
+     over targets emitting `CallScheduled` events. The loop is the
+     load-bearing complexity; needs `Shallow.for_` walker template
+     (see `Guardian.v::run_fun_revokeMany_*` for the loop pattern).
+   - `run_fun_executeBatchBypass_201_inner_at_storage_base`: blocked
+     pending R087 Blocker 2 (delegatecall framework primitive).
+
+3. **Discharge `executeBatch`** by introducing
+   `run_fun_executeBatch_1552_inner_at_storage_base` + R087 Blocker 2's
+   delegatecall bridge. Out of scope for R088.
+
+### Methodology finding
+
+R088 confirms R087's prognosis: inheritor walkers (TimelockController,
+ROG) require trust REDISTRIBUTION rather than REDUCTION via the
+per-helper sub-axiom pattern. The methodology value is in the
+SHARPER audit-time signatures and SHARED sub-axioms across multiple
+outer walkers — not in axiom count reduction. The R082 "single deep
+monolithic body" template does NOT generalize.
+
+The right path to NET trust reduction for inheritor walkers is
+either:
+  (a) Closing the per-helper sub-axioms as Qed Lemmas (as outlined
+      in the residual work above); the shared gate sub-axiom in
+      particular pays off five times when closed.
+  (b) Lifting the abstract-base-class template (R078/R079 for
+      Governor, hypothetical Timelock template for TLC) — instantiate
+      once per inheritor instead of per-walker per-inheritor.
+
+See also: R082 (deprecateVersion discharge — monolithic), R083
+(ERC-7201 framework), R084 (T3.3 trust-redistribution), R087 (ROG
+structural blockers).
+>>>>>>> 0f2126e (docs(wisdom): R088 — TimelockControllerOptimistic walker per-helper sub-axiom decomposition)
 
 ## R065-R071: Per-mutator composite-walker recipe
 
