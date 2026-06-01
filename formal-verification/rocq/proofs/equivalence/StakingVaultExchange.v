@@ -114,7 +114,14 @@
     Trust budget:
       - 4 composite walker [Axiom]s (one per entry point).
       - 4 Skolemized post-storage [Parameter]s.
-      - 4 per-target observational bridge [Axiom]s.
+      - 4 per-target slot-indexed observational bridge [Axiom]s
+        (per the 2026-05-31 adversarial-review skolemization-
+        soundness audit (CCV-1 / CCV-2 / CRIT-V), promoted from
+        reflexive [storage_equiv (X) (X)] tautologies to
+        content-bearing [eq_at_roles (proj_post_<fn> ...)
+        storage_base] claims; an empty-storage adversarial
+        instantiation of [proj_post_<fn>] no longer satisfies
+        them).
       - 1 sim-environment [Parameter] (now_timestamp).
       - 4 callee-spec [Axiom]s (documentation-only, [True] conclusion).
 
@@ -878,13 +885,24 @@ Module StakingVaultExchangeEquivalence.
       Section 7 — Per-target observational bridge [Axiom]s (R051 shape)
       ====================================================================
 
-      Each Axiom states the audit-time obligation: under the
-      function's Success-branch preconditions, the walker's
-      Skolemized post-storage is observationally equal to a
-      reference shape derived from the sim's post-state.
+      Per the 2026-05-31 adversarial-review skolemization-soundness
+      audit (CCV-1 / CCV-2 / CRIT-V), the four [_observes] bridges
+      below were previously reflexive [storage_equiv (X) (X)]
+      tautologies on the Skolem -- the same opaque [proj_post_<fn>]
+      appeared on both sides, constraining nothing. An adversarial
+      inheritor could pick [proj_post_<fn> := fun _ _ _ _ _ => empty]
+      without contradicting the bridges, leaving the milestone
+      theorems content-free at the slot level. The bridges were
+      also unused by any milestone proof (Phase 2 closed via
+      [storage_equiv_refl] directly), so [Print Assumptions] did
+      not flag them at all.
 
-      For exchange-rate operations the reference shape is the
-      storage_base with the four exchange-rate slots updated:
+      Promote each bridge to a content-bearing claim relating the
+      walker's Skolemized post-storage to [storage_base] at a
+      slot-indexed position of [SimulatedStorage.t =
+      list StorableValue.t] that the function does NOT touch.
+
+      For exchange-rate operations the slots WRITTEN are:
 
         deposit / mint:
           totalSupply             += shares
@@ -911,36 +929,103 @@ Module StakingVaultExchangeEquivalence.
                                           now + unstakingDelay)
           + Votes checkpoints push at owner (via _update)
 
-      The audit-time obligation is the slot-by-slot mapping_index_
-      access + sstore composition. *)
+      All four operations LEAVE UNCHANGED the AccessControl roles
+      aggregate (the [AccessControlStorage] ERC7201 anchor): none
+      of deposit/mint/withdraw/redeem are role-gated, and none of
+      the OZ ERC4626 / Votes / ReentrancyGuard / StakingVault
+      override code touches the roles map on the success path.
+      We therefore pin the observational bridge to "the roles
+      slot is preserved".
+
+      The slot-index choice is abstract (mirrors the T2.4
+      [TimelockControllerOptimistic.slot_roles] template); the
+      concrete keccak256-derived value is supplied at the
+      inheritor instantiation site. We hard-code
+      [slot_AccessControl_roles := 1] here because [List.nth_error]
+      needs a [nat] index and the abstract list shape supports
+      any consistent assignment -- what matters is that the
+      predicate now carries real content (an empty-storage
+      adversarial instantiation of [proj_post_<fn>] no longer
+      satisfies "slot 1 equals slot 1 of storage_base").
+
+      Mirrors the T2.4 (TimelockControllerOptimistic) and T2.6
+      (StakingVaultRewards) templates. *)
+
+  Definition slot_AccessControl_roles : nat := 1.
+
+  Definition eq_at_roles (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_AccessControl_roles
+    = List.nth_error s2 slot_AccessControl_roles.
+
+  Lemma eq_at_roles_refl s : eq_at_roles s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_roles_sym s1 s2 :
+    eq_at_roles s1 s2 -> eq_at_roles s2 s1.
+  Proof. unfold eq_at_roles. intros H. symmetry. exact H. Qed.
+
+  Lemma eq_at_roles_trans s1 s2 s3 :
+    eq_at_roles s1 s2 ->
+    eq_at_roles s2 s3 ->
+    eq_at_roles s1 s3.
+  Proof.
+    unfold eq_at_roles. intros H12 H23.
+    rewrite H12. exact H23.
+  Qed.
+
+  (** Each [_observes] axiom asserts that the Skolemized post-storage
+      agrees with [storage_base] at [slot_AccessControl_roles].
+      An adversarial instantiation that returns garbage at the
+      untouched slot now contradicts these bridges. The full
+      slot-by-slot equality (including the WRITTEN slots' new
+      values) is left to a stronger lens-correctness obligation at
+      the inheritor's instantiation site; the CURRENT bridges are
+      content-bearing on the unchanged-slot side -- enough to
+      defeat the [proj_post := fun _ _ _ _ _ => empty] adversarial
+      instantiation that previously closed all four milestones via
+      [True]-degeneracy. *)
 
   Axiom proj_post_deposit_4312_observes :
     forall (storage_base : SimulatedStorage.t)
            (caller assets receiver now_ : U256.t),
-    storage_equiv
+    (* deposit writes to ERC20.totalSupply / balances /
+       StakingVault.totalDeposited / nativeBalanceLastKnown /
+       nativeRewardsLastPaid / Votes checkpoints. The
+       AccessControl roles aggregate at [slot_AccessControl_roles]
+       is untouched. *)
+    eq_at_roles
       (proj_post_deposit_4312 storage_base caller assets receiver now_)
-      (proj_post_deposit_4312 storage_base caller assets receiver now_).
+      storage_base.
 
   Axiom proj_post_mint_4356_observes :
     forall (storage_base : SimulatedStorage.t)
            (caller shares receiver now_ : U256.t),
-    storage_equiv
+    (* mint shares the deposit's [_deposit] internal path; same
+       untouched-slot story as deposit. *)
+    eq_at_roles
       (proj_post_mint_4356 storage_base caller shares receiver now_)
-      (proj_post_mint_4356 storage_base caller shares receiver now_).
+      storage_base.
 
   Axiom proj_post_withdraw_4403_observes :
     forall (storage_base : SimulatedStorage.t)
            (caller assets receiver owner now_ : U256.t),
-    storage_equiv
+    (* withdraw writes to ERC20.totalSupply / balances /
+       StakingVault.totalDeposited / nativeBalanceLastKnown /
+       Votes checkpoints (both branches of the unstakingDelay
+       dispatch). The AccessControl roles aggregate is
+       untouched on either branch. *)
+    eq_at_roles
       (proj_post_withdraw_4403 storage_base caller assets receiver owner now_)
-      (proj_post_withdraw_4403 storage_base caller assets receiver owner now_).
+      storage_base.
 
   Axiom proj_post_redeem_4450_observes :
     forall (storage_base : SimulatedStorage.t)
            (caller shares receiver owner now_ : U256.t),
-    storage_equiv
+    (* redeem shares withdraw's [_withdraw] internal path; same
+       untouched-slot story. *)
+    eq_at_roles
       (proj_post_redeem_4450 storage_base caller shares receiver owner now_)
-      (proj_post_redeem_4450 storage_base caller shares receiver owner now_).
+      storage_base.
 
   (** ====================================================================
       Section 8 — Audit-time callee specs (documentation-only)
@@ -1292,7 +1377,14 @@ Module StakingVaultExchangeEquivalence.
                  shape — the case for this scaffold).
         Phase 3: witness the post-storage. *)
 
-  (** ----- run_deposit_equivalent ----- *)
+  (** ----- run_deposit_equivalent -----
+
+      Conclusion includes [eq_at_roles storage_post storage_base]:
+      deposit writes only to ERC20 / StakingVault exchange-rate
+      slots / Votes checkpoints, so the [slot_AccessControl_roles]
+      slot is preserved. This clause makes the bridge axiom
+      [proj_post_deposit_4312_observes] load-bearing (it appears
+      in [Print Assumptions] of this milestone). *)
   Theorem run_deposit_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -1313,7 +1405,8 @@ Module StakingVaultExchangeEquivalence.
         state' = Some (make_state env state_base memory' storage_post) /\
         storage_equiv storage_post
           (proj_post_deposit_4312 storage_base
-             env.(Environment.caller) assets receiver now_timestamp)).
+             env.(Environment.caller) assets receiver now_timestamp) /\
+        eq_at_roles storage_post storage_base).
   Proof.
     cbv zeta.
     (* Phase 1: dispatch the composite walker axiom. *)
@@ -1324,6 +1417,10 @@ Module StakingVaultExchangeEquivalence.
                   H_assets_u256 H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & shares & Hwalker).
+    (* Phase 2: dispatch the slot-unchanged observational bridge. *)
+    pose proof (proj_post_deposit_4312_observes
+                  storage_base env.(Environment.caller)
+                  assets receiver now_timestamp) as Hobs.
     (* Phase 3: witness post-storage. *)
     exists (Some (make_state env state_base memory'
                     (proj_post_deposit_4312 storage_base
@@ -1332,12 +1429,16 @@ Module StakingVaultExchangeEquivalence.
     exists (proj_post_deposit_4312 storage_base
               env.(Environment.caller) assets receiver now_timestamp).
     exists shares.
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'. split; [reflexivity|].
+    split; [apply storage_equiv_refl|exact Hobs].
   Qed.
 
-  (** ----- run_mint_equivalent ----- *)
+  (** ----- run_mint_equivalent -----
+
+      Conclusion includes [eq_at_roles storage_post storage_base]:
+      mint shares deposit's [_deposit] internal path, so the
+      [slot_AccessControl_roles] slot is preserved. *)
   Theorem run_mint_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -1358,7 +1459,8 @@ Module StakingVaultExchangeEquivalence.
         state' = Some (make_state env state_base memory' storage_post) /\
         storage_equiv storage_post
           (proj_post_mint_4356 storage_base
-             env.(Environment.caller) shares receiver now_timestamp)).
+             env.(Environment.caller) shares receiver now_timestamp) /\
+        eq_at_roles storage_post storage_base).
   Proof.
     cbv zeta.
     pose proof (run_fun_mint_4356_at_storage_base
@@ -1368,6 +1470,9 @@ Module StakingVaultExchangeEquivalence.
                   H_shares_u256 H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & assets & Hwalker).
+    pose proof (proj_post_mint_4356_observes
+                  storage_base env.(Environment.caller)
+                  shares receiver now_timestamp) as Hobs.
     exists (Some (make_state env state_base memory'
                     (proj_post_mint_4356 storage_base
                        env.(Environment.caller) shares receiver
@@ -1375,12 +1480,18 @@ Module StakingVaultExchangeEquivalence.
     exists (proj_post_mint_4356 storage_base
               env.(Environment.caller) shares receiver now_timestamp).
     exists assets.
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'. split; [reflexivity|].
+    split; [apply storage_equiv_refl|exact Hobs].
   Qed.
 
-  (** ----- run_withdraw_equivalent ----- *)
+  (** ----- run_withdraw_equivalent -----
+
+      Conclusion includes [eq_at_roles storage_post storage_base]:
+      withdraw (both unstakingDelay branches) writes only to
+      ERC20 / StakingVault exchange-rate slots / Votes
+      checkpoints, so the [slot_AccessControl_roles] slot is
+      preserved. *)
   Theorem run_withdraw_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -1402,7 +1513,8 @@ Module StakingVaultExchangeEquivalence.
         state' = Some (make_state env state_base memory' storage_post) /\
         storage_equiv storage_post
           (proj_post_withdraw_4403 storage_base
-             env.(Environment.caller) assets receiver owner now_timestamp)).
+             env.(Environment.caller) assets receiver owner now_timestamp) /\
+        eq_at_roles storage_post storage_base).
   Proof.
     cbv zeta.
     pose proof (run_fun_withdraw_4403_at_storage_base
@@ -1412,6 +1524,9 @@ Module StakingVaultExchangeEquivalence.
                   H_owner_bound H_assets_u256 H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & shares & Hwalker).
+    pose proof (proj_post_withdraw_4403_observes
+                  storage_base env.(Environment.caller)
+                  assets receiver owner now_timestamp) as Hobs.
     exists (Some (make_state env state_base memory'
                     (proj_post_withdraw_4403 storage_base
                        env.(Environment.caller) assets receiver owner
@@ -1419,12 +1534,16 @@ Module StakingVaultExchangeEquivalence.
     exists (proj_post_withdraw_4403 storage_base
               env.(Environment.caller) assets receiver owner now_timestamp).
     exists shares.
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'. split; [reflexivity|].
+    split; [apply storage_equiv_refl|exact Hobs].
   Qed.
 
-  (** ----- run_redeem_equivalent ----- *)
+  (** ----- run_redeem_equivalent -----
+
+      Conclusion includes [eq_at_roles storage_post storage_base]:
+      redeem shares withdraw's [_withdraw] internal path, so the
+      [slot_AccessControl_roles] slot is preserved. *)
   Theorem run_redeem_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -1446,7 +1565,8 @@ Module StakingVaultExchangeEquivalence.
         state' = Some (make_state env state_base memory' storage_post) /\
         storage_equiv storage_post
           (proj_post_redeem_4450 storage_base
-             env.(Environment.caller) shares receiver owner now_timestamp)).
+             env.(Environment.caller) shares receiver owner now_timestamp) /\
+        eq_at_roles storage_post storage_base).
   Proof.
     cbv zeta.
     pose proof (run_fun_redeem_4450_at_storage_base
@@ -1456,6 +1576,9 @@ Module StakingVaultExchangeEquivalence.
                   H_owner_bound H_shares_u256 H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & assets & Hwalker).
+    pose proof (proj_post_redeem_4450_observes
+                  storage_base env.(Environment.caller)
+                  shares receiver owner now_timestamp) as Hobs.
     exists (Some (make_state env state_base memory'
                     (proj_post_redeem_4450 storage_base
                        env.(Environment.caller) shares receiver owner
@@ -1463,9 +1586,9 @@ Module StakingVaultExchangeEquivalence.
     exists (proj_post_redeem_4450 storage_base
               env.(Environment.caller) shares receiver owner now_timestamp).
     exists assets.
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'. split; [reflexivity|].
+    split; [apply storage_equiv_refl|exact Hobs].
   Qed.
 
   (** ====================================================================
@@ -1818,6 +1941,10 @@ Module StakingVaultExchangeEquivalence.
       Each milestone Qed in Section 10 closes via:
         - the corresponding [run_fun_<op>_at_storage_base] axiom
           (Section 9);
+        - the corresponding [proj_post_<fn>_observes] bridge axiom
+          (Section 7) — load-bearing post the 2026-05-31 CCV-2
+          remediation (promoted from reflexive tautology to a
+          slot-indexed [eq_at_roles ... storage_base] claim);
         - [storage_equiv_refl] (Qed lemma in Section 5).
 
       No additional axioms beyond Section 5/6/7/8/9 declarations.
