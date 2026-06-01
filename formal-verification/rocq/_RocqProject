@@ -281,3 +281,4 @@ proofs/equivalence/ECDSA.v
 proofs/equivalence/ProposalLib.v
 proofs/equivalence/SelectorRegistry.v
 proofs/equivalence/TimelockControllerOptimistic.v
+proofs/equivalence/StakingVaultExchange.v
