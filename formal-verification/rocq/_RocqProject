@@ -268,4 +268,5 @@ proofs/equivalence/Votes.v
 proofs/equivalence/ECDSA.v
 proofs/equivalence/ProposalLib.v
 proofs/equivalence/SelectorRegistry.v
+proofs/equivalence/TimelockControllerBase.v
 proofs/equivalence/TimelockControllerOptimistic.v
