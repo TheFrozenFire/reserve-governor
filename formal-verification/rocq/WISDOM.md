@@ -4763,3 +4763,197 @@ decomposition — direct template for this task), R089 (concurrent
 R088 sub-axiom decomposition for Timelock walkers), R070
 (per-mutator composite walker recipe).
 
+## R097: StakingVaultExchange Phase 2 — 4 walker Axioms discharged to Qed Lemmas
+
+**Task #301 (R096 closure, 2026-06-01).**  Completes the R096
+scaffolding by converting the four composite walker `Axiom`s
+(`fun_deposit_4312`, `fun_mint_4356`, `fun_withdraw_4403`,
+`fun_redeem_4450`) into Qed `Lemma`s.  Reuses the helper
+sub-axioms landed in R096 Phase 1.
+
+### What landed
+
+Each of the four walker `Axiom run_fun_X_at_storage_base` from
+R096 is now a `Lemma run_fun_X_at_storage_base ... Qed.`.  The
+discharge proof script per walker is ~120 LOC of Ltac following
+this template:
+
+  1. **Phase 1 (Hypotheses).**  `pose proof` the four helper
+     sub-axioms:
+       - `Hmax` = `run_fun_maxX_returns ...`
+       - `Hprev` = `run_fun_previewX_returns ...`
+       - `Hms` = `run_fun__msgSender_14384 ...` (Qed Lemma)
+       - `Hbody` = `run_fun__deposit_630_at_storage_base ...`
+                   (or `_withdraw_736_at_storage_base`)
+     For redeem/mint the body sub-axiom call uses
+     `preview_X_value_nn` + `preview_X_value_valid` to discharge
+     the body's `0 <= assets` + `U256.Valid.t assets` preconditions.
+
+  2. **Phase 2 (cap-revert audit).**  Assert
+     `Hgt_zero : Pure.gt X cap = 0`:
+       - For withdraw/redeem: from `H_within_max : assets <= max`,
+         destruct `assets >? max` eqn:Hgtb; the [true] arm contradicts
+         `H_within_max` via `Z.gtb_lt`.
+       - For deposit/mint: from `U256.Valid.t assets`, the cap is
+         `0xff..ff = 2^256-1`, so `assets >? (2^256-1)` is false.
+
+  3. **Phase 3 (mechanical assembly walk).**  `unfold fun_X_op,
+     fun_X` + `unfold M.strong_let_, M.let_, M.generic_let, M.pure,
+     M.call` then `repeat (lazymatch goal with ...)` dispatching
+     each `LowM.Call` to its sub-axiom (Hmax / Hprev / Hms / Hbody)
+     or to a generic walker tactic (`cu` / `c; [...]` for
+     `zero_value_for_split_t_uint256`, `cleanup_t_uint256`,
+     `Stdlib.gt`).
+
+  4. **Phase 4 (cap-revert dispatch).**  The lazymatch lands inside
+     the `Shallow.if_ (Pure.gt assets max) revert default` (R096
+     blocker).  Discharge as:
+
+        rewrite Hgt_zero.
+        unfold Shallow.if_; cbn.
+        unfold Shallow.let_state, M.strong_let_; cbn.
+
+     This reduces the `if 0 =? 0 then default else success` to
+     `default = M.pure (Tt, var__X)`, and the let_state's
+     strong_let_ takes the success continuation.  Then a second
+     lazymatch round walks the post-cap continuation (preview /
+     msgSender / inner-body / Pure).
+
+  5. **Phase 5 (outer wrapper).**  The outermost `let~ '(_, var__X) :=
+     ... in M.pure var__X` resolves to `LowM.Pure (Result.Ok
+     (preview_X_value storage_base ...))`; close with `unfold X;
+     apply RunO.Pure`.
+
+### Witness instantiation pattern
+
+The Lemma's `exists memory' shares` is instantiated with:
+  - `memory'` from `destruct Hbody as (memory' & Hbody)`.
+  - `shares` = `preview_X_value storage_base assets` (or
+    `preview_X_value storage_base shares` for mint/redeem) via a
+    local `set (shares := preview_X_value ...)` definition.
+
+### Bridge axioms (new, +2)
+
+The body sub-axioms `run_fun__deposit_630_at_storage_base` and
+`run_fun__withdraw_736_at_storage_base` produce the deposit /
+withdraw post-storage Skolems (`proj_post_deposit_4312` /
+`proj_post_withdraw_4403`), but the mint / redeem milestone
+Theorems reference different Skolems (`proj_post_mint_4356` /
+`proj_post_redeem_4450`).  R097 adds two bridge axioms:
+
+```coq
+Axiom proj_post_mint_4356_eq_deposit :
+  forall storage_base caller shares receiver now_,
+    proj_post_mint_4356 storage_base caller shares receiver now_
+    = proj_post_deposit_4312 storage_base caller
+        (preview_mint_value storage_base shares) receiver now_.
+
+Axiom proj_post_redeem_4450_eq_withdraw :
+  forall storage_base caller shares receiver owner now_,
+    proj_post_redeem_4450 storage_base caller shares receiver owner now_
+    = proj_post_withdraw_4403 storage_base caller
+        (preview_redeem_value storage_base shares) receiver owner now_.
+```
+
+These pin the sister-walker post-states to the deposit/withdraw
+counterparts under the preview transform.  Audit obligation: the
+two equalities are mechanically true under the sim
+(`mint(shares) = deposit(previewMint(shares))`,
+`redeem(shares) = withdraw(previewRedeem(shares))`).
+
+### Preview validity axioms (new, +4)
+
+The body sub-axioms require `U256.Valid.t assets`.  For mint/redeem
+the `assets` argument is `preview_X_value storage_base ...`, which
+the R096 `preview_X_value_nn` axioms only proved non-negative.
+R097 adds:
+
+```coq
+Axiom preview_deposit_value_valid : forall sb a, U256.Valid.t (preview_deposit_value sb a).
+Axiom preview_mint_value_valid    : forall sb s, U256.Valid.t (preview_mint_value sb s).
+Axiom preview_withdraw_value_valid: forall sb a, U256.Valid.t (preview_withdraw_value sb a).
+Axiom preview_redeem_value_valid  : forall sb s, U256.Valid.t (preview_redeem_value sb s).
+```
+
+These are audit-obligation siblings of the `_nn` axioms (preview
+values are uint256-bounded by construction — they're the result
+of `mulDiv` on two uint256-bounded inputs).
+
+### Net trust redistribution (R094 + R097, end-to-end)
+
+Before R094 (commit 5f57e30):
+  - 4 monolithic composite walker `Axiom`s
+    (`run_fun_X_at_storage_base`).
+
+After R097 (this task):
+  - 4 composite walker `Lemma`s (Qed).
+  - 4 cap-view return `Axiom`s + 4 preview return `Axiom`s
+    (`run_fun_maxX_returns`, `run_fun_previewX_returns`).
+  - 4 preview value `Parameter`s (`preview_X_value`) +
+    4 preview-non-neg `Axiom`s (`preview_X_value_nn`) +
+    4 preview-validity `Axiom`s (`preview_X_value_valid`)  [new].
+  - 2 max value `Parameter`s (`max_withdraw_value`,
+    `max_redeem_value`).
+  - 2 inner-helper body `Axiom`s
+    (`run_fun__deposit_630_at_storage_base`,
+    `run_fun__withdraw_736_at_storage_base`).
+  - 2 post-storage bridge `Axiom`s
+    (`proj_post_mint_4356_eq_deposit`,
+    `proj_post_redeem_4450_eq_withdraw`) [new].
+  - 1 Qed `Lemma` `run_fun__msgSender_14384` (Qed against `caller`).
+
+Net axiom count change: -4 composite walker axioms, +6 new
+audit-time axioms (4 preview-validity + 2 post-storage bridges).
+The redistribution makes each composite walker discharge stand
+on narrower, named obligations rather than a single opaque blob.
+
+### Where R093 primitives consume
+
+R093's `call_make_state_bridge_absorbing` +
+`StaticCallBridge.run_linkersymbol` continue to consume INSIDE
+the `run_fun__deposit_630_at_storage_base` and
+`run_fun__withdraw_736_at_storage_base` axioms — exactly as R096
+documented.  When those two inner-helper axioms are themselves
+discharged to Lemmas in a future task, R093's primitives become
+load-bearing framework leaves.
+
+### Validation
+
+  - Build: green (`rocq-build` exits 0; all 4 milestone Theorems
+    now Qed against the new walker `Lemma`s).
+  - `Print Assumptions run_X_equivalent`: the four monolithic
+    walker `Axiom`s have been removed; the milestone Theorems
+    now depend on the per-helper sub-axiom split (max + preview
+    + msgSender Qed Lemma + inner-helper body axiom + bridge
+    axiom for mint/redeem).
+  - Section 10 milestone Theorems are unchanged (their proof
+    bodies still `pose proof` the now-renamed walker, but the
+    walker shape is unchanged — what was an `Axiom run_fun_X` is
+    now a `Lemma run_fun_X` with the same signature).
+  - File delta: +464 / -20 LOC = +444 LOC net (480 LOC of proof
+    work split across 4 walkers).
+
+### Structural blocker for the next phase (R098 candidate)
+
+The body inner-helper axioms
+`run_fun__deposit_630_at_storage_base` and
+`run_fun__withdraw_736_at_storage_base` remain `Axiom`s.  Their
+discharge to Lemmas would consume R093's SafeERC20 primitives
+on the inlined `fun_safeTransferFrom_4949` /
+`fun_safeTransfer_4922` / `fun_forceApprove_5125` wrappers.
+Each body is the heavy mutator: ~120 (deposit) / ~190 (withdraw)
+shallow-form lines, including the accrueRewards modifier,
+super._deposit/._withdraw, the SafeERC20 call sites, and (for
+withdraw) the conditional unstakingDelay branch.  Estimated
+discharge: 400-600 LOC per body (4-6 hours each).  Audit
+obligation: equivalent to one R094-style trust redistribution
+per body.
+
+### See also
+
+R094 (the original Phase 1 scaffolding — this task's prerequisite),
+R096 (Phase 1 helper sub-axioms + lazymatch dispatch template),
+R088 (TimelockControllerOptimistic walker template), R093
+(SafeERC20 + linkersymbol primitives consumed inside the body
+axioms), R070 (per-mutator composite walker recipe).
+

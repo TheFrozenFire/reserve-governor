@@ -1304,6 +1304,22 @@ Module StakingVaultExchangeEquivalence.
     forall storage_base shares,
       0 <= preview_redeem_value storage_base shares.
 
+  (** Preview values fit in uint256 (the result of [mulDiv] of two
+      uint256-bounded inputs).  Audit obligation paired with the _nn
+      axioms above; see [proofs/StakingVaultExchange_validity.v]. *)
+  Axiom preview_deposit_value_valid :
+    forall storage_base assets,
+      U256.Valid.t (preview_deposit_value storage_base assets).
+  Axiom preview_mint_value_valid :
+    forall storage_base shares,
+      U256.Valid.t (preview_mint_value storage_base shares).
+  Axiom preview_withdraw_value_valid :
+    forall storage_base assets,
+      U256.Valid.t (preview_withdraw_value storage_base assets).
+  Axiom preview_redeem_value_valid :
+    forall storage_base shares,
+      U256.Valid.t (preview_redeem_value storage_base shares).
+
   Axiom run_fun_previewDeposit_4220_returns :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
@@ -1410,6 +1426,33 @@ Module StakingVaultExchangeEquivalence.
               (proj_post_withdraw_4403 storage_base
                  caller assets receiver owner now_timestamp)) ?}}.
 
+  (** ===== Post-storage bridge axioms (R094 / R096) =====
+
+      The [mint] and [redeem] composite walkers reduce to the same
+      internal helpers as [deposit] and [withdraw] (respectively),
+      modulo the [preview_X] argument transformation:
+        - [mint shares] = [deposit (previewMint shares) shares]
+                          via internal [_deposit_630] body.
+        - [redeem shares] = [withdraw (previewRedeem shares) shares]
+                            via internal [_withdraw_736] body.
+
+      These bridge axioms equate the sister-walker post-storages with
+      their deposit/withdraw counterparts under the preview transform.
+      Audit obligation: the Skolem post-states are pinned by these
+      equalities so that one bridge axiom (e.g.,
+      [proj_post_redeem_4450_observes]) suffices for both mutators. *)
+  Axiom proj_post_mint_4356_eq_deposit :
+    forall storage_base caller shares receiver now_,
+      proj_post_mint_4356 storage_base caller shares receiver now_
+      = proj_post_deposit_4312 storage_base caller
+          (preview_mint_value storage_base shares) receiver now_.
+
+  Axiom proj_post_redeem_4450_eq_withdraw :
+    forall storage_base caller shares receiver owner now_,
+      proj_post_redeem_4450 storage_base caller shares receiver owner now_
+      = proj_post_withdraw_4403 storage_base caller
+          (preview_redeem_value storage_base shares) receiver owner now_.
+
   (** ----- Composite walker axiom for [fun_deposit_4312] -----
 
       Body shape (StakingVault_shallow.v:10625-10676):
@@ -1481,13 +1524,20 @@ Module StakingVaultExchangeEquivalence.
       shape and the post-storage; the milestone theorem in Section
       10 consumes it and bridges to the sim-side [deposit] result.
 
-      Task #299 / R094: this Axiom is slated for discharge to a Qed
-      Lemma via the Section 8b helper sub-axioms.  For deposit,
+      Task #301 (R096 closure, 2026-06-01): promoted to Qed [Lemma]
+      via the R088 trust-redistribution split.  For deposit,
       [fun_maxDeposit_4158] returns the uint256-max constant
       (0xff..ff), so the cap-revert branch is automatically bypassed
-      for any valid uint256 assets — no extra precondition needed
-      beyond [U256.Valid.t assets]. *)
-  Axiom run_fun_deposit_4312_at_storage_base :
+      for any valid uint256 assets — no extra precondition beyond
+      [U256.Valid.t assets].
+
+      The proof dispatches:
+        - [run_fun_maxDeposit_4158_returns] (Hmax — uint256 max).
+        - [run_fun_previewDeposit_4220_returns] (Hprev — share preview).
+        - [run_fun__msgSender_14384] (Hms — Qed Lemma, caller).
+        - [run_fun__deposit_630_at_storage_base] (Hbody — inner _deposit
+          composite; R093 SafeERC20.safeTransferFrom consumer inside). *)
+  Lemma run_fun_deposit_4312_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -1510,6 +1560,103 @@ Module StakingVaultExchangeEquivalence.
               (proj_post_deposit_4312 storage_base
                  env.(Environment.caller) assets receiver
                  now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory
+           assets receiver
+           H_caller_bound H_assets_nn H_receiver_bound
+           H_assets_u256 H_mem.
+    (** Phase 1: dispatch the helper sub-axioms. *)
+    pose proof (run_fun_maxDeposit_4158_returns
+                  codes env state_base storage_base memory receiver)
+      as Hmax.
+    pose proof (run_fun_previewDeposit_4220_returns
+                  codes env state_base storage_base memory assets)
+      as Hprev.
+    pose proof (run_fun__msgSender_14384
+                  codes env
+                  (make_state env state_base memory storage_base))
+      as Hms.
+    set (shares := preview_deposit_value storage_base assets).
+    pose proof (run_fun__deposit_630_at_storage_base
+                  codes env state_base storage_base memory
+                  env.(Environment.caller) receiver assets shares
+                  H_caller_bound H_receiver_bound
+                  H_assets_nn
+                  ltac:(unfold shares; apply preview_deposit_value_nn)
+                  H_assets_u256
+                  H_mem)
+      as Hbody.
+    destruct Hbody as (memory' & Hbody).
+    exists memory', shares.
+    (** Phase 2: prove the cap-revert is bypassed.  Under
+        [H_assets_u256 : U256.Valid.t assets],
+        [Pure.gt assets (2^256-1) = 0]. *)
+    assert (Hgt_zero :
+              Pure.gt assets 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff = 0).
+    { unfold Pure.gt.
+      destruct (assets >? 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff) eqn:Hgtb.
+      - exfalso. apply Z.gtb_lt in Hgtb.
+        unfold U256.Valid.t in H_assets_u256. lia.
+      - reflexivity. }
+    (** Phase 3: walk the outer body's mechanical assembly. *)
+    unfold fun_deposit_4312_op, fun_deposit_4312.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_uint256 _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_uint256;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_maxDeposit_4158 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hmax | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold cleanup_t_uint256;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.gt _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.gt, M.pure; p | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_previewDeposit_4220 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hprev | ]
+      | |- {{? _, _, _ | LowM.Call fun__msgSender_14384 _ ⇓ _ | _ ?}} =>
+          c; [ exact Hms | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__deposit_630 _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+    (** Phase 4: cap-revert if-branch — dispatch via [Hgt_zero]. *)
+    1: {
+      rewrite Hgt_zero.
+      unfold Shallow.if_; cbn.
+      unfold Shallow.let_state, M.strong_let_; cbn.
+      repeat (lazymatch goal with
+        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+        | |- {{? _, _, _ |
+              LowM.Call (fun_previewDeposit_4220 _) _ ⇓ _ | _ ?}} =>
+            c; [ exact Hprev | ]
+        | |- {{? _, _, _ | LowM.Call fun__msgSender_14384 _ ⇓ _ | _ ?}} =>
+            c; [ exact Hms | ]
+        | |- {{? _, _, _ |
+              LowM.Call (fun__deposit_630 _ _ _ _) _ ⇓ _ | _ ?}} =>
+            c; [ exact Hbody | ]
+        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+        | |- _ => s
+        end).
+      all: cbn match.
+      all: try apply RunO.Pure.
+    }
+    (** Phase 6: outer wrapper — return [shares]. *)
+    unfold shares.
+    apply RunO.Pure.
+  Qed.
 
   (** ----- Composite walker axiom for [fun_mint_4356] -----
 
@@ -1536,11 +1683,11 @@ Module StakingVaultExchangeEquivalence.
       Post-storage shape: same fields touched as deposit, with
       [assets] = [previewMint s shares].
 
-      Task #299 / R094: slated for Lemma discharge.  As with
-      deposit, [fun_maxMint_4173] returns the uint256-max constant,
-      so the cap-revert branch is bypassed for any valid uint256
-      shares — no extra precondition. *)
-  Axiom run_fun_mint_4356_at_storage_base :
+      Task #301 (R096 closure, 2026-06-01): promoted to Qed [Lemma]
+      via the R088 trust-redistribution split.  Same shape as deposit
+      (sister walker).  [assets = preview_mint_value storage_base shares]
+      via the [proj_post_mint_4356_eq_deposit] bridge axiom. *)
+  Lemma run_fun_mint_4356_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -1560,6 +1707,106 @@ Module StakingVaultExchangeEquivalence.
               (proj_post_mint_4356 storage_base
                  env.(Environment.caller) shares receiver
                  now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory
+           shares receiver
+           H_caller_bound H_shares_nn H_receiver_bound
+           H_shares_u256 H_mem.
+    (** Phase 1: dispatch the helper sub-axioms. *)
+    pose proof (run_fun_maxMint_4173_returns
+                  codes env state_base storage_base memory receiver)
+      as Hmax.
+    pose proof (run_fun_previewMint_4236_returns
+                  codes env state_base storage_base memory shares)
+      as Hprev.
+    pose proof (run_fun__msgSender_14384
+                  codes env
+                  (make_state env state_base memory storage_base))
+      as Hms.
+    set (assets := preview_mint_value storage_base shares).
+    pose proof (run_fun__deposit_630_at_storage_base
+                  codes env state_base storage_base memory
+                  env.(Environment.caller) receiver assets shares
+                  H_caller_bound H_receiver_bound
+                  ltac:(unfold assets; apply preview_mint_value_nn)
+                  H_shares_nn
+                  ltac:(unfold assets; apply preview_mint_value_valid)
+                  H_mem)
+      as Hbody.
+    destruct Hbody as (memory' & Hbody).
+    (** Bridge: [proj_post_mint_4356 = proj_post_deposit_4312 ◦ preview]. *)
+    rewrite proj_post_mint_4356_eq_deposit.
+    fold assets.
+    exists memory', assets.
+    (** Phase 2: prove the cap-revert is bypassed.  Under
+        [H_shares_u256 : U256.Valid.t shares],
+        [Pure.gt shares (2^256-1) = 0]. *)
+    assert (Hgt_zero :
+              Pure.gt shares 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff = 0).
+    { unfold Pure.gt.
+      destruct (shares >? 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff) eqn:Hgtb.
+      - exfalso. apply Z.gtb_lt in Hgtb.
+        unfold U256.Valid.t in H_shares_u256. lia.
+      - reflexivity. }
+    (** Phase 3: walk the outer body's mechanical assembly. *)
+    unfold fun_mint_4356_op, fun_mint_4356.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_uint256 _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_uint256;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_maxMint_4173 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hmax | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold cleanup_t_uint256;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.gt _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.gt, M.pure; p | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_previewMint_4236 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hprev | ]
+      | |- {{? _, _, _ | LowM.Call fun__msgSender_14384 _ ⇓ _ | _ ?}} =>
+          c; [ exact Hms | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__deposit_630 _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+    (** Phase 4: cap-revert if-branch — dispatch via [Hgt_zero]. *)
+    1: {
+      rewrite Hgt_zero.
+      unfold Shallow.if_; cbn.
+      unfold Shallow.let_state, M.strong_let_; cbn.
+      repeat (lazymatch goal with
+        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+        | |- {{? _, _, _ |
+              LowM.Call (fun_previewMint_4236 _) _ ⇓ _ | _ ?}} =>
+            c; [ exact Hprev | ]
+        | |- {{? _, _, _ | LowM.Call fun__msgSender_14384 _ ⇓ _ | _ ?}} =>
+            c; [ exact Hms | ]
+        | |- {{? _, _, _ |
+              LowM.Call (fun__deposit_630 _ _ _ _) _ ⇓ _ | _ ?}} =>
+            c; [ exact Hbody | ]
+        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+        | |- _ => s
+        end).
+      all: cbn match.
+      all: try apply RunO.Pure.
+    }
+    (** Phase 6: outer wrapper — return [assets]. *)
+    unfold assets.
+    apply RunO.Pure.
+  Qed.
 
   (** ----- Composite walker axiom for [fun_withdraw_4403] -----
 
@@ -1635,10 +1882,21 @@ Module StakingVaultExchangeEquivalence.
       sub-axiom catalogue, and the structural blocker preventing the
       mechanical Qed completion in this task.
 
-      The discharge is unblocked but mechanical-LOC bound — every
-      cleanup_t_uint256 / abi_decode / arithmetic Yul step needs
-      explicit walker tactics. *)
-  Axiom run_fun_withdraw_4403_at_storage_base :
+      Task #301 (R096 closure, 2026-06-01): promoted to Qed [Lemma]
+      via the R088 trust-redistribution split.  The proof script
+      dispatches:
+        - [run_fun_maxWithdraw_4191_returns] (Hmax — cap-view return).
+        - [run_fun_previewWithdraw_4252_returns] (Hprev — share preview).
+        - [run_fun__msgSender_14384] (Hms — Qed Lemma, caller).
+        - [run_fun__withdraw_736_at_storage_base] (Hbody — inner _withdraw
+          composite; R093 SafeERC20.safeTransfer consumer lives inside).
+
+      The [Shallow.if_] cap-revert branch is dispatched via explicit
+      [destruct (Pure.gt assets max ...)] under [H_within_max]; the
+      lazymatch walker dispatch from TimelockControllerOptimistic does
+      NOT walk past this gt-check automatically because the test
+      depends on the if's reduction (R096). *)
+  Lemma run_fun_withdraw_4403_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -1661,6 +1919,98 @@ Module StakingVaultExchangeEquivalence.
               (proj_post_withdraw_4403 storage_base
                  env.(Environment.caller) assets receiver owner
                  now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory
+           assets receiver owner
+           H_caller_bound H_assets_nn H_receiver_bound H_owner_bound
+           H_assets_u256 H_within_max H_mem.
+    (** Phase 1: dispatch the helper sub-axioms. *)
+    pose proof (run_fun_maxWithdraw_4191_returns
+                  codes env state_base storage_base memory owner)
+      as Hmax.
+    pose proof (run_fun_previewWithdraw_4252_returns
+                  codes env state_base storage_base memory assets)
+      as Hprev.
+    pose proof (run_fun__msgSender_14384
+                  codes env
+                  (make_state env state_base memory storage_base))
+      as Hms.
+    set (shares := preview_withdraw_value storage_base assets).
+    pose proof (run_fun__withdraw_736_at_storage_base
+                  codes env state_base storage_base memory
+                  env.(Environment.caller) receiver owner assets shares
+                  H_caller_bound H_receiver_bound H_owner_bound
+                  H_assets_nn ltac:(unfold shares; apply preview_withdraw_value_nn)
+                  H_assets_u256 H_mem)
+      as Hbody.
+    destruct Hbody as (memory' & Hbody).
+    exists memory', shares.
+    (** Phase 2: prove the cap-revert is bypassed.  Under
+        [H_within_max : assets <= max], [Pure.gt assets max = 0]. *)
+    assert (Hgt_zero : Pure.gt assets (max_withdraw_value storage_base owner) = 0).
+    { unfold Pure.gt. destruct (assets >? max_withdraw_value storage_base owner) eqn:Hgtb.
+      - exfalso. apply Z.gtb_lt in Hgtb. lia.
+      - reflexivity. }
+    (** Phase 3: walk the outer body's mechanical assembly. *)
+    unfold fun_withdraw_4403_op, fun_withdraw_4403.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_uint256 _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_uint256;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_maxWithdraw_4191 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hmax | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold cleanup_t_uint256;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.gt _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.gt, M.pure; p | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_previewWithdraw_4252 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hprev | ]
+      | |- {{? _, _, _ | LowM.Call fun__msgSender_14384 _ ⇓ _ | _ ?}} =>
+          c; [ exact Hms | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__withdraw_736 _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+    (** Phase 4: cap-revert if-branch — dispatch via [Hgt_zero]. *)
+    1: {
+      rewrite Hgt_zero.
+      unfold Shallow.if_; cbn.
+      unfold Shallow.let_state, M.strong_let_; cbn.
+      (** Phase 5: walk the post-cap continuation. *)
+      repeat (lazymatch goal with
+        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+        | |- {{? _, _, _ |
+              LowM.Call (fun_previewWithdraw_4252 _) _ ⇓ _ | _ ?}} =>
+            c; [ exact Hprev | ]
+        | |- {{? _, _, _ | LowM.Call fun__msgSender_14384 _ ⇓ _ | _ ?}} =>
+            c; [ exact Hms | ]
+        | |- {{? _, _, _ |
+              LowM.Call (fun__withdraw_736 _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+            c; [ exact Hbody | ]
+        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+        | |- _ => s
+        end).
+      all: cbn match.
+      all: try apply RunO.Pure.
+    }
+    (** Phase 6: outer wrapper — return [shares]. *)
+    unfold shares.
+    apply RunO.Pure.
+  Qed.
 
   (** ----- Composite walker axiom for [fun_redeem_4450] -----
 
@@ -1681,12 +2031,10 @@ Module StakingVaultExchangeEquivalence.
 
       Same as withdraw, with [assets] = [previewRedeem s shares].
 
-      Task #299 / R094: slated for Lemma discharge.  The
-      [H_within_max : shares <= max_redeem_value storage_base owner]
-      precondition gates the [ERC4626ExceededMaxRedeem] revert path
-      (since [fun_maxRedeem_4204] returns the owner's balance —
-      non-constant). *)
-  Axiom run_fun_redeem_4450_at_storage_base :
+      Task #301 (R096 closure, 2026-06-01): promoted to Qed [Lemma]
+      via the R088 trust-redistribution split.  Same shape as withdraw,
+      sister walker. *)
+  Lemma run_fun_redeem_4450_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -1709,6 +2057,102 @@ Module StakingVaultExchangeEquivalence.
               (proj_post_redeem_4450 storage_base
                  env.(Environment.caller) shares receiver owner
                  now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory
+           shares receiver owner
+           H_caller_bound H_shares_nn H_receiver_bound H_owner_bound
+           H_shares_u256 H_within_max H_mem.
+    (** Phase 1: dispatch the helper sub-axioms. *)
+    pose proof (run_fun_maxRedeem_4204_returns
+                  codes env state_base storage_base memory owner)
+      as Hmax.
+    pose proof (run_fun_previewRedeem_4268_returns
+                  codes env state_base storage_base memory shares)
+      as Hprev.
+    pose proof (run_fun__msgSender_14384
+                  codes env
+                  (make_state env state_base memory storage_base))
+      as Hms.
+    set (assets := preview_redeem_value storage_base shares).
+    pose proof (run_fun__withdraw_736_at_storage_base
+                  codes env state_base storage_base memory
+                  env.(Environment.caller) receiver owner assets shares
+                  H_caller_bound H_receiver_bound H_owner_bound
+                  ltac:(unfold assets; apply preview_redeem_value_nn)
+                  H_shares_nn
+                  ltac:(unfold assets; apply preview_redeem_value_valid)
+                  H_mem)
+      as Hbody.
+    destruct Hbody as (memory' & Hbody).
+    (** Bridge: [proj_post_redeem_4450 = proj_post_withdraw_4403 ◦ preview]. *)
+    rewrite proj_post_redeem_4450_eq_withdraw.
+    fold assets.
+    exists memory', assets.
+    (** Phase 2: prove the cap-revert is bypassed.  Under
+        [H_within_max : shares <= max], [Pure.gt shares max = 0]. *)
+    assert (Hgt_zero : Pure.gt shares (max_redeem_value storage_base owner) = 0).
+    { unfold Pure.gt. destruct (shares >? max_redeem_value storage_base owner) eqn:Hgtb.
+      - exfalso. apply Z.gtb_lt in Hgtb. lia.
+      - reflexivity. }
+    (** Phase 3: walk the outer body's mechanical assembly. *)
+    unfold fun_redeem_4450_op, fun_redeem_4450.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_uint256 _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_uint256;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_maxRedeem_4204 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hmax | ]
+      | |- {{? _, _, _ |
+            LowM.Call (cleanup_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold cleanup_t_uint256;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.gt _ _) _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.gt, M.pure; p | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun_previewRedeem_4268 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hprev | ]
+      | |- {{? _, _, _ | LowM.Call fun__msgSender_14384 _ ⇓ _ | _ ?}} =>
+          c; [ exact Hms | ]
+      | |- {{? _, _, _ |
+            LowM.Call (fun__withdraw_736 _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+    (** Phase 4: cap-revert if-branch — dispatch via [Hgt_zero]. *)
+    1: {
+      rewrite Hgt_zero.
+      unfold Shallow.if_; cbn.
+      unfold Shallow.let_state, M.strong_let_; cbn.
+      repeat (lazymatch goal with
+        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+        | |- {{? _, _, _ |
+              LowM.Call (fun_previewRedeem_4268 _) _ ⇓ _ | _ ?}} =>
+            c; [ exact Hprev | ]
+        | |- {{? _, _, _ | LowM.Call fun__msgSender_14384 _ ⇓ _ | _ ?}} =>
+            c; [ exact Hms | ]
+        | |- {{? _, _, _ |
+              LowM.Call (fun__withdraw_736 _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+            c; [ exact Hbody | ]
+        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+        | |- _ => s
+        end).
+      all: cbn match.
+      all: try apply RunO.Pure.
+    }
+    (** Phase 6: outer wrapper — return [assets]. *)
+    unfold assets.
+    apply RunO.Pure.
+  Qed.
 
   (** ====================================================================
       Section 10 — Milestone equivalence theorems (Qed)
