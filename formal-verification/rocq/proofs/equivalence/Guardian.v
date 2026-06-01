@@ -10205,7 +10205,22 @@ Module GuardianEquivalence.
       Trust justification: every per-step piece is either proved
       (R055 internal hasRole) or stated as a R063/R064 trust axiom
       (the four external calls). The composite axiom records the
-      assembly as a single Hoare triple. *)
+      assembly as a single Hoare triple.
+
+      ===== CRIT-Q fix (adversarial review 2026-05-31, CRIT-1) =====
+
+      The walker is deterministic under [RunO] semantics, so its
+      return [proposalId] is determined by the staticcall to
+      [governor.getProposalId(targets, values, calldatas, descHash)].
+      A previous form universally quantified [proposalId] in the
+      axiom's signature, which postulated non-determinism in the
+      output — admitting a proof that the walker returns *any* value
+      a future consumer cared to specialize. That shape was unsound.
+
+      The corrected shape binds the return to [getProposalId_oracle
+      key], pinning it to the sim's oracle for that proposal key.
+      Callers instantiate [key] and [getProposalId_oracle] from the
+      surrounding context (the milestone has both as Variables). *)
   Axiom run_fun_cancel_238_at_proj_sim_admin :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
@@ -10216,7 +10231,8 @@ Module GuardianEquivalence.
            (values_offset values_length : U256.t)
            (calldatas_offset calldatas_length : U256.t)
            (descriptionHash : U256.t)
-           (proposalId : U256.t),
+           (key : ProposalKey.t)
+           (getProposalId_oracle : ProposalKey.t -> U256.t),
     has_admin sim env.(Environment.caller) = true ->
     0 <= env.(Environment.caller) < 2^160 ->
     0 <= governor < 2^160 ->
@@ -10230,7 +10246,7 @@ Module GuardianEquivalence.
         values_offset values_length
         calldatas_offset calldatas_length
         descriptionHash ⇓
-      Result.Ok proposalId
+      Result.Ok (getProposalId_oracle key)
     | Some (make_state env state_base memory' (proj_sim sim)) ?}}.
 
   (** ===== Composite walker axiom: guardian (non-admin) path =====
@@ -10262,7 +10278,14 @@ Module GuardianEquivalence.
         S44. Leave (return proposalId).
 
       Trust justification: same as admin path, plus the two
-      additional callee-spec axioms for isOptimistic + state. *)
+      additional callee-spec axioms for isOptimistic + state.
+
+      ===== CRIT-Q fix (adversarial review 2026-05-31, CRIT-1) =====
+
+      Same shape correction as the admin axiom above: the return
+      [proposalId] is pinned to [getProposalId_oracle key] rather than
+      universally quantified, matching the walker's deterministic
+      behaviour under [RunO] semantics. *)
   Axiom run_fun_cancel_238_at_proj_sim_guardian :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
@@ -10273,7 +10296,8 @@ Module GuardianEquivalence.
            (values_offset values_length : U256.t)
            (calldatas_offset calldatas_length : U256.t)
            (descriptionHash : U256.t)
-           (proposalId : U256.t),
+           (key : ProposalKey.t)
+           (getProposalId_oracle : ProposalKey.t -> U256.t),
     has_admin sim env.(Environment.caller) = false ->
     has_guardian sim env.(Environment.caller) = true ->
     0 <= env.(Environment.caller) < 2^160 ->
@@ -10288,7 +10312,7 @@ Module GuardianEquivalence.
         values_offset values_length
         calldatas_offset calldatas_length
         descriptionHash ⇓
-      Result.Ok proposalId
+      Result.Ok (getProposalId_oracle key)
     | Some (make_state env state_base memory' (proj_sim sim)) ?}}.
 
   (** ===== R068 milestone: [run_cancel_equivalent_make_state] =====
@@ -10399,14 +10423,17 @@ Module GuardianEquivalence.
       [|destruct H_guard_pair as (H_not_admin & H_guardian)].
     - (** ----- Admin path ----- *)
       rewrite H_admin. cbn match.
-      (* Dispatch via the admin composite walker axiom. *)
+      (* Dispatch via the admin composite walker axiom. Pass [key] and
+         [getProposalId_oracle] so the axiom's pinned return value
+         [getProposalId_oracle key] matches the CancelEvent's proposalId
+         on the admin Success branch. *)
       pose proof (run_fun_cancel_238_at_proj_sim_admin
                     codes env state_base sim memory governor
                     targets_offset targets_length
                     values_offset values_length
                     calldatas_offset calldatas_length
                     descriptionHash
-                    (getProposalId_oracle key)
+                    key getProposalId_oracle
                     H_admin H_caller_bound
                     H_governor_bound H_governor_nonzero H_mem)
         as Hwalker.
@@ -10442,7 +10469,7 @@ Module GuardianEquivalence.
                     values_offset values_length
                     calldatas_offset calldatas_length
                     descriptionHash
-                    (getProposalId_oracle key)
+                    key getProposalId_oracle
                     H_not_admin H_guardian H_caller_bound
                     H_governor_bound H_governor_nonzero H_mem)
         as Hwalker.
