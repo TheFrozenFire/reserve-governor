@@ -1,9 +1,9 @@
 file,module,theorem,lineno,axioms_total,axioms_load_bearing,status
 AccessControlEnumerable.v,AccessControlEnumerableEquivalence,run_fun_getRoleMemberCount_656_equivalent,250,22,10,OK
 AccessControlEnumerable.v,AccessControlEnumerableEquivalence,run_fun_getRoleMember_641_equivalent,612,22,10,OK
-ERC20.v,ERC20Equivalence,run_fun__mint_3368_equivalent,762,14,2,OK
-ERC20.v,ERC20Equivalence,run_fun__burn_3401_equivalent,872,14,2,OK
-ERC20.v,ERC20Equivalence,run_fun__transfer_3243_equivalent,959,14,2,OK
+ERC20.v,ERC20Equivalence,run_fun__mint_3368_equivalent,2865,28,16,OK
+ERC20.v,ERC20Equivalence,run_fun__burn_3401_equivalent,2975,28,16,OK
+ERC20.v,ERC20Equivalence,run_fun__transfer_3243_equivalent,3062,25,13,OK
 Guardian.v,GuardianEquivalence,run_hasRole_equivalent,3252,22,10,OK
 Guardian.v,GuardianEquivalence,run_grantRole_1468_observed_behavior,5554,1,1,OK
 Guardian.v,GuardianEquivalence,run_grantRole_1359_equivalent,6452,40,28,OK

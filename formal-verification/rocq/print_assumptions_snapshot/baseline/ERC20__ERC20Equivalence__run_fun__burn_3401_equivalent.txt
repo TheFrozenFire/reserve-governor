@@ -1,46 +1,150 @@
 # Theorem: ERC20Equivalence.run_fun__burn_3401_equivalent
-# Source:  ERC20.v:872
+# Source:  ERC20.v:2975
 # Module:  ERC20Equivalence
 #
 Axioms:
+RocqOfSolidity.CanonizeState.update_storage_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (new_storage : list RocqOfSolidity.StorableValue.t),
+  RocqOfSolidity.State.with_current_storage environment
+    (RocqOfSolidity.make_state environment state memory storage)
+    (RocqOfSolidity.Storage.of_storable_values new_storage) =
+  RocqOfSolidity.make_state environment state memory new_storage
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-ERC20Equivalence.run_fun__update_3335_at_proj_sim_burn :
-  forall (proj_sim : ERC20.ERC20.State -> RocqOfSolidity.SimulatedStorage.t)
-    (codes : RocqOfSolidity.Codes.t) (env : RocqOfSolidity.Environment.t)
+FrameworkExtensions.FrameworkExtensions.run_sstore_u256_at_anchor_offset :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (values : list RocqOfSolidity.StorableValue.t) 
+    (supply_index : nat) (anchor offset value : RocqOfSolidity.U256.t),
+  FrameworkExtensions.FrameworkExtensions.IsAnchorOffsetSlot values
+    supply_index anchor offset ->
+  RocqOfSolidity.State.get_current_storage environment state =
+  Some (RocqOfSolidity.Storage.of_storable_values values) ->
+  match
+    RocqOfSolidity.List.update_nth values supply_index
+      (RocqOfSolidity.StorableValue.U256 value)
+  with
+  | Some values' =>
+      let state' :=
+        RocqOfSolidity.State.with_current_storage environment state
+          (RocqOfSolidity.Storage.of_storable_values values') in
+      RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok tt)
+        (Some state)
+        (RocqOfSolidity.Stdlib.sstore (BinInt.Z.add anchor offset) value)
+        (Some state')
+  | None => True
+  end
+FrameworkExtensions.FrameworkExtensions.run_sstore_map_u256_at_anchor :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (values : list RocqOfSolidity.StorableValue.t) 
+    (index : nat) (anchor key value : RocqOfSolidity.U256.t),
+  FrameworkExtensions.FrameworkExtensions.IsNamespaceAnchor values index
+    anchor ->
+  RocqOfSolidity.State.get_current_storage environment state =
+  Some (RocqOfSolidity.Storage.of_storable_values values) ->
+  match List.nth_error values index with
+  | Some (RocqOfSolidity.StorableValue.Map map) =>
+      let map' := RocqOfSolidity.Dict.declare_or_assign map key value in
+      match
+        RocqOfSolidity.List.update_nth values index
+          (RocqOfSolidity.StorableValue.Map map')
+      with
+      | Some values' =>
+          let state' :=
+            RocqOfSolidity.State.with_current_storage environment state
+              (RocqOfSolidity.Storage.of_storable_values values') in
+          RocqOfSolidity.RunO.t codes environment
+            (RocqOfSolidity.Result.Ok tt) (Some state)
+            (RocqOfSolidity.Stdlib.sstore
+               (RocqOfSolidity.keccak256_tuple2 key anchor) value)
+            (Some state')
+      | None => True
+      end
+  | _ => True
+  end
+FrameworkExtensions.FrameworkExtensions.run_sload_u256_at_anchor_offset :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (values : list RocqOfSolidity.StorableValue.t) 
+    (supply_index : nat) (anchor offset value : RocqOfSolidity.U256.t),
+  FrameworkExtensions.FrameworkExtensions.IsAnchorOffsetSlot values
+    supply_index anchor offset ->
+  RocqOfSolidity.State.get_current_storage environment state =
+  Some (RocqOfSolidity.Storage.of_storable_values values) ->
+  List.nth_error values supply_index =
+  Some (RocqOfSolidity.StorableValue.U256 value) ->
+  RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok value)
+    (Some state) (RocqOfSolidity.Stdlib.sload (BinInt.Z.add anchor offset))
+    (Some state)
+FrameworkExtensions.FrameworkExtensions.run_sload_map_u256_at_anchor :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (values : list RocqOfSolidity.StorableValue.t) 
+    (index : nat) (anchor : RocqOfSolidity.U256.t)
+    (map : RocqOfSolidity.Dict.t RocqOfSolidity.U256.t RocqOfSolidity.U256.t)
+    (key : RocqOfSolidity.U256.t),
+  FrameworkExtensions.FrameworkExtensions.IsNamespaceAnchor values index
+    anchor ->
+  List.nth_error values index = Some (RocqOfSolidity.StorableValue.Map map) ->
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok
+       (RocqOfSolidity.StorableValue.map_get_u256 map key)) 
+    (Some state)
+    (RocqOfSolidity.Stdlib.sload (RocqOfSolidity.keccak256_tuple2 key anchor))
+    (Some state)
+FrameworkExtensions.FrameworkExtensions.run_mstore_absorbing_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
-    (memory : RocqOfSolidity.SimulatedMemory.t) (sim : ERC20.ERC20.State)
-    (account value : RocqOfSolidity.U256.t),
-  account <> BinNums.Z0 ->
-  BinInt.Z.le BinNums.Z0 account /\
-  BinInt.Z.lt account
-    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
-       (BinNums.Zpos
-          (BinNums.xO
-             (BinNums.xO
-                (BinNums.xO
-                   (BinNums.xO
-                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
-  BinInt.Z.le BinNums.Z0 value /\
-  BinInt.Z.lt value
-    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
-       (BinNums.Zpos
-          (BinNums.xO
-             (BinNums.xO
-                (BinNums.xO
-                   (BinNums.xO
-                      (BinNums.xO
-                         (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))))))) ->
-  ERC20.ERC20.Valid.t sim ->
-  BinInt.Z.le value (ERC20.ERC20.balanceOf sim account) ->
-  exists
-    (memory' : RocqOfSolidity.SimulatedMemory.t) (storage' : RocqOfSolidity.SimulatedStorage.t),
-    ERC20Equivalence.proj_sim_post_burn proj_sim sim account value =
-    Some storage' /\
-    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
-      (Some (RocqOfSolidity.make_state env state_base memory (proj_sim sim)))
-      (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun__update_3335
-         account BinNums.Z0 value)
-      (Some (RocqOfSolidity.make_state env state_base memory' storage'))
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (offset value : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok tt)
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+    (RocqOfSolidity.Stdlib.mstore offset value)
+    (Some
+       (RocqOfSolidity.make_state environment state_base
+          (FrameworkExtensions.FrameworkExtensions.mstore_post_memory
+             environment state_base memory storage offset value) storage))
+FrameworkExtensions.FrameworkExtensions.run_mload_absorbing_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (offset : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok
+       (FrameworkExtensions.FrameworkExtensions.mload_witness environment
+          state_base memory storage offset))
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+    (RocqOfSolidity.Stdlib.mload offset)
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+ERC20Equivalence.run_mapping_index_access_t_address_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (slot key : RocqOfSolidity.U256.t),
+  RocqOfSolidity.Address.Valid.t key ->
+  RocqOfSolidity.RunO.t codes env
+    (RocqOfSolidity.Result.Ok (RocqOfSolidity.keccak256_tuple2 key slot))
+    (Some (RocqOfSolidity.make_state env state_base memory storage))
+    (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.mapping_index_access_t_mappingₓ_t_address_ₓ_t_uint256_ₓ_of_t_address
+       slot key)
+    (Some
+       (RocqOfSolidity.make_state env state_base
+          (ERC20Equivalence.mapping_index_access_address_post_memory env
+             state_base memory storage slot key) storage))
 ERC20Equivalence.run_fun__update_1459_wraps_fun__update_3335 :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
@@ -64,14 +168,47 @@ RocqOfSolidity.Memory.of_u256_list :
   list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
 RocqOfSolidity.Storage.of_storable_values :
   list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+FrameworkExtensions.FrameworkExtensions.mstore_post_memory :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedMemory.t
+FrameworkExtensions.FrameworkExtensions.mload_witness :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
+ERC20Equivalence.mapping_index_access_address_post_memory :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedMemory.t
 PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
 PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+RocqOfSolidity.keccak256_tuple2 :
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
 PrimInt63.int : Set
+RocqOfSolidity.State.get_current_storage_with_current_storage_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t) (storage : RocqOfSolidity.Storage.t),
+  RocqOfSolidity.State.get_current_storage environment
+    (RocqOfSolidity.State.with_current_storage environment state storage) =
+  Some storage
 PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
 PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+FrameworkExtensions.FrameworkExtensions.IsNamespaceAnchor :
+  list RocqOfSolidity.StorableValue.t -> nat -> RocqOfSolidity.U256.t -> Prop
+FrameworkExtensions.FrameworkExtensions.IsAnchorOffsetSlot :
+  list RocqOfSolidity.StorableValue.t ->
+  nat -> RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t -> Prop
 Theory:
 Set is impredicative

@@ -111,6 +111,8 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R110: OZ ERC20 _update body — Section bridges + Yul-switch absorber + Axiom→Lemma
 - R111: OZ ERC20 _update mint body Qed closure — lens hypotheses + relaxed switch absorbers
 - R112: OZ ERC20 _update burn body Qed closure — second mapping_index_access + Shallow.if_ lt absorber
+- R113: OZ ERC20 _update transfer body Qed closure — three-mia / two-balance-map writes shape
+- R114: Wrapper-bridge axiom shape — STRUCTURAL barrier (raw-storage equality unprovable, needs projection-quotient restate + missing wrapper primitives)
 
 ### Common pitfalls and resolved issues
 - R020/R021/R035/R041/R042/R046/R073/R074: shallow_embed.py + framework bugs (RESOLVED upstream)
@@ -2339,6 +2341,218 @@ that gate every branch:
 
 All Section hypotheses are per-inheritor structural obligations
 (reflexivity + induction on the projection's concrete shape).
+
+## R114: Wrapper-bridge axiom — raw-storage shape is unprovable (task #321)
+
+Task #321 was charged with discharging `run_fun__update_1459_wraps_fun__update_3335`
+from Axiom to Qed Lemma.  Outcome: **not closed.**  The axiom, as
+stated at ERC20.v:2690, is mathematically false in the framework's
+current semantics — closure requires both a signature restate AND
+new framework primitives.  This entry names the barrier and the
+specific missing pieces, so the next pass can plan against them.
+
+### Why the axiom as stated is not provable
+
+The axiom signature:
+
+```coq
+Axiom run_fun__update_1459_wraps_fun__update_3335 :
+  forall codes env state_base memory from to value
+         (storage_pre storage_post : SimulatedStorage.t) memory',
+  {{? .. (make_state .. memory storage_pre) |
+    fun__update_3335 from to value ⇓ Result.Ok tt
+  | (make_state .. memory' storage_post) ?}} ->
+  exists memory'',
+  {{? .. (make_state .. memory storage_pre) |
+    fun__update_1459 from to value ⇓ Result.Ok tt
+  | (make_state .. memory'' storage_post) ?}}.
+```
+
+claims: if `fun__update_3335` (OZ base) takes `storage_pre` to
+`storage_post`, then `fun__update_1459` (StakingVault wrapper)
+takes the **same** `storage_pre` to the **same** `storage_post`.
+
+The wrapper chain
+`fun__update_1459 → modifier_accrueRewards_1438 → fun__update_1459_inner
+ → fun__update_3808 → fun__update_3335
+ + fun__transferVotingUnits_15355 + fun__moveOptimisticDelegateVotes_1720`
+executes — between the entry of `fun__update_1459` and the entry of
+`fun__update_3335` and after `fun__update_3335` returns — a sequence
+of `Primitive.SStore` calls into:
+- `accrueRewards` per-token state slots
+  (`fun__accrueRewards_1192` loops over `_rewardTokens` and writes
+  per-token reward bookkeeping; also makes a `staticcall` to the
+  reward-token registry, which by `StaticCallBridge.run_staticcall_general`
+  is storage-pure — that part is fine).
+- ERC20Votes checkpoint slots
+  (`fun__transferVotingUnits_15355 → fun__push_15527 → fun_push_9640
+   → fun__insert_10012`, the Trace208 dynamic-array push, sstores
+   to the checkpoint array tail).
+- ERC20Capped cap check
+  (`fun__update_3808`'s `fun_totalSupply_3072 > fun__maxSupply_3754`
+  is storage-read-only — no sstore, so this is fine).
+- Optimistic-delegate state slots
+  (`fun__moveOptimisticDelegateVotes_1720`, slot family 0x0a and
+  associated delegate-checkpoint Trace208 arrays).
+
+Each of these `Primitive.SStore`s changes a different cell of the
+`SimulatedStorage.t` list relative to `storage_pre` and relative to
+the post-`fun__update_3335` interim storage.  So at the end of
+`fun__update_1459` execution, the storage list is
+`storage_post` plus a set of non-trivial modifications at non-base
+slot indices.  It is NOT raw-equal to `storage_post`.
+
+The framework's `RunO.t` semantics tracks raw storage equality —
+it does NOT quotient by projection.  Therefore the existential
+post-state in the axiom conclusion (raw-equal to `storage_post`)
+cannot be witnessed.  The axiom is **false at the framework's
+semantic level.**
+
+The composite walker call sites (`run_fun__update_1459_at_proj_sim_<branch>`
+at lines 2721, 2759, 2793) instantiate the axiom at
+`storage_pre := proj_sim sim` and `storage_post := proj_sim_post_<branch> sim ..`.
+Those concrete instantiations inherit the same falsity — the
+projection-image lists do not contain the checkpoint / reward
+slots, so the wrapper sstores write OUTSIDE the list bounds or
+to indices not present in `proj_sim`'s shape.  Either way, the
+wrapper's storage observable doesn't match `proj_sim_post_<branch> sim`.
+
+### What's actually needed (the missing pieces, named)
+
+Closing this axiom to a Qed Lemma requires THREE coupled changes:
+
+**1. Restate the axiom signature with a richer projection.**
+
+The projection `proj_sim : ERC20.State → SimulatedStorage.t`
+must be widened to a `proj_full : StakingVault.State →
+SimulatedStorage.t` that includes the non-base slots the wrapper
+chain touches (accrueRewards bookkeeping, ERC20Votes checkpoint
+trees, optimistic-delegate state).  The bridge axiom then asserts:
+
+```coq
+forall (sv : StakingVault.State) (from to value : U256.t),
+  -- preconditions binding sv's OZ-base view to sim --
+  exists sv' memory',
+    -- wrapper-only effects on sv's non-base view --
+    storage' = proj_full sv' /\
+    fun__update_1459 takes proj_full sv → storage'  /\
+    proj_sim sv.(erc20_view) = corresponding storage_pre
+    ...
+```
+
+This is a structural refactor of ~3 composite walker lemmas at
+ERC20.v:2721, 2759, 2793 plus the entire ERC20BaseEquivalence
+Section hypothesis set (which currently parameterizes over
+`proj_sim : ERC20.State → ..` only).  Estimated scope: ~400 LOC
+of Section restructure + the three composite walker lemmas
+rewritten against the new shape.
+
+**2. Per-wrapper "OZ-base invariance" lemmas.**
+
+For each wrapper layer, prove that its execution does NOT modify
+the `proj_sim` slot indices (`slot_balances` and `slot_totalSupply`).
+Three lemmas needed:
+
+- `fun__accrueRewards_1192_invariant_on_proj_sim`:
+  the for-loop over `_rewardTokens` writes to slot 0x01 (the
+  AddressSet) read-only, and to per-token reward-balance slots
+  derived from `slot 0x07` + keccak (NOT to the OZ ERC20 slots at
+  `keccak("openzeppelin.storage.ERC20")` and `+2`).  Discharges
+  by structural induction over the loop, using the staticcall
+  storage-purity from `StaticCallBridge.run_staticcall_general`
+  and the disjointness of slot 0x01 / 0x07 derived slots from
+  the ERC20 namespace anchor.
+
+- `fun__transferVotingUnits_15355_invariant_on_proj_sim`:
+  the two `fun__push_15527` calls (one for from, one for to)
+  + the `fun__moveDelegateVotes_15441` call all target slots
+  derived from `fun__getVotesStorage_14984` (the ERC20Votes
+  namespace anchor, an ERC-7201 different from the ERC20 anchor).
+  Discharges by namespace-anchor disjointness + Trace208 push
+  storage layout.
+
+- `fun__moveOptimisticDelegateVotes_1720_invariant_on_proj_sim`:
+  similar, against the optimistic-delegate namespace slot 0x0a.
+
+Each lemma is in the ~150-200 LOC range under suitable supporting
+primitives, BUT requires...
+
+**3. New framework primitives for disjoint-slot sstore preservation.**
+
+The framework currently has:
+- `run_sstore_map_u256_at_anchor` / `_at_anchor_offset` — write
+  to a specific anchor-derived slot.
+- `run_sload_map_u256_at_anchor` / `_at_anchor_offset` — read
+  from a specific anchor-derived slot.
+
+What it lacks:
+- `sstore_at_unrelated_slot_preserves_namespace_anchor` —
+  if we sstore at slot `s_other ≠ slot_balances ∧ s_other ≠ slot_totalSupply`,
+  then the namespace-anchor and offset-slot lens facts at
+  `slot_balances` / `slot_totalSupply` are preserved.
+- `sstore_at_unrelated_slot_preserves_map_value` — for sloads
+  at keccak(account, anchor), the value is preserved across
+  sstores at any slot whose keccak preimage is different.
+- A **keccak-preimage disjointness primitive** — two keccak-derived
+  slots `keccak(k1, anchor1)` and `keccak(k2, anchor2)` are equal
+  iff (k1, anchor1) = (k2, anchor2).  Currently the framework
+  hashes keccak abstractly; injectivity is implicit-assumed.
+  For the wrapper-invariance lemmas, we need this injectivity
+  as an axiom (sound under standard cryptographic assumptions).
+- **Trace208 push storage-layout primitive** — `fun__insert_10012`'s
+  effect on storage is to extend a dynamic-array struct at a
+  specific anchor-derived slot.  Currently no high-level lemma
+  captures this — the walker would need to unfold into raw sstores,
+  ~200 LOC per push site.
+
+Estimated framework-primitive scope: ~300 LOC, ALL in the upstream
+`rocq-of-solidity` framework (not in this repo).  Upstream changes
+require coordination via `TheFrozenFire/rocq-of-solidity` branch.
+
+### Concrete recommendation
+
+The bridge axiom is correctly labeled "R070 / R080 per-target audit
+obligation" in the WISDOM (R108 entry).  Vanilla OZ ERC20 deployments
+WOULD discharge it trivially (no wrapper chain → axiom reduces to
+identity).  For the StakingVault-specific deployment, the
+audit-claim shape is:
+
+> the wrapper chain's writes are confined to NAMESPACE-DISJOINT
+> ERC-7201 anchors (`accrueRewards` storage namespace, ERC20Votes
+> storage namespace, optimistic-delegate storage namespace) from
+> the OZ ERC20 base namespace.
+
+This is a **mechanical** audit obligation — anyone reading the
+StakingVault source can confirm the namespace declarations and
+the disjointness.  Promoting it to a Qed Lemma requires the
+three-pronged plan above.
+
+### What was NOT done in task #321
+
+- No commits to ERC20.v (the axiom signature wasn't refactored
+  because that would cascade into the headline theorems and the
+  Section hypothesis set without the supporting primitives).
+- No new framework primitives drafted (out of repo scope —
+  belongs upstream).
+- No partial Qed attempted (the axiom is false at the framework
+  level; partial closure would mask the underlying issue rather
+  than reduce trust).
+
+### What WAS done in task #321
+
+- Audited `fun__update_1459`'s full call chain
+  (`StakingVault_shallow.v` lines 10388-10443) and confirmed the
+  five storage-mutating layers.
+- Confirmed `StaticCallBridge.run_staticcall_general` is
+  storage-pure (the rewards-registry staticcall doesn't break
+  things — the OTHER wrapper layers do).
+- Documented the precise three-pronged plan to actually close
+  the bridge.  Recorded as this WISDOM entry.
+- Build remains green: `OPAM_SWITCH=rocq820 bash
+  formal-verification/scripts/rocq-build` clean at HEAD.
+- `Print Assumptions ERC20Equivalence.run_fun__mint_3368_equivalent`
+  STILL lists `run_fun__update_1459_wraps_fun__update_3335` — the
+  trust footprint is unchanged from R113 (task #320).
 
 ---
 
