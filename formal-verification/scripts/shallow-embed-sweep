@@ -71,6 +71,12 @@ SHALLOW_TARGETS=(
   "contracts/governance/OptimisticSelectorRegistry.sol:OptimisticSelectorRegistry"
   # Phase 5: TimelockControllerOptimistic (last OZ-4 single-contract target).
   "contracts/governance/TimelockControllerOptimistic.sol:TimelockControllerOptimistic"
+  # Phase 6: heavyweight contracts. Unblocked by R073 + R074 fixes in
+  # shallow_embed.py (Yul `fun` parameter rename + tuple-arity
+  # zero-init). Each output is ~700 KB / ~18 K lines and takes ~3 min
+  # to coqc, so do not regenerate casually.
+  "contracts/staking/StakingVault.sol:StakingVault"
+  "contracts/governance/ReserveOptimisticGovernor.sol:ReserveOptimisticGovernor"
 )
 
 keep_json=0

@@ -248,6 +248,19 @@ generated/UnstakingManager_shallow.v
 generated/ProposalLib_shallow.v
 generated/OptimisticSelectorRegistry_shallow.v
 generated/TimelockControllerOptimistic_shallow.v
+# StakingVault_shallow.v and ReserveOptimisticGovernor_shallow.v are
+# the two heavyweight shallow forms. Each compiles cleanly with the
+# R073 (Yul `fun` parameter rename) + R074 (tuple-arity zero-init)
+# fixes landed on the rocq-of-solidity `integration` branch via
+# TheFrozenFire/rocq-of-solidity:fix/r073-r074-shallow-embed.
+# They are NOT activated by default because compilation costs ~3 min
+# each and the binary blobs slow editor / LSP rebuilds. Downstream
+# equivalence proofs `Require` them directly via
+# `From ReserveGovernor Require Import generated.StakingVault_shallow`
+# (or ReserveOptimisticGovernor_shallow). Uncomment the lines below
+# to make them part of the default full-tree build:
+# generated/StakingVault_shallow.v
+# generated/ReserveOptimisticGovernor_shallow.v
 proofs/equivalence/Common.v
 proofs/equivalence/StaticCallBridge.v
 proofs/equivalence/AbiEncoding.v

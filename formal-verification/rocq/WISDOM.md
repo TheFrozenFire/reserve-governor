@@ -89,6 +89,8 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R046: `shallow_embed.py` drops sstore in `_grantRole` (RESOLVED)
 - R048: R045 variant for pure-function libraries
 - R060: Verify contract surface against actual source
+- R073: `shallow_embed.py` emits Rocq keyword `fun` as a Yul ident (RESOLVED)
+- R074: `shallow_embed.py` zero-inits a tuple binder as scalar `0` (RESOLVED)
 
 ---
 
@@ -720,6 +722,46 @@ per mutator).
 - `proofs/equivalence/Checkpoints.v` — 7 sanity lemmas (Trace208)
 - `proofs/equivalence/Votes.v` — 17 sim-level lemmas + Section
   template + walker documentation
+
+## R073: `shallow_embed.py` emits Rocq keyword `fun` as a Yul ident (RESOLVED)
+
+`name_to_rocq` only rewrote `end`, `mod`, `return`. Solc emits an
+internal-function-pointer dispatcher
+`function dispatch_internal_in_N_out_M(fun, ...)` whose first
+parameter is literally named `fun`. The shallow output became
+`Definition dispatch_internal_in_2_out_1 (fun : U256.t) ...` which
+fails parsing because `fun` is Rocq's lambda keyword. Manifests on
+StakingVault (its internal-function-pointer use creates the
+dispatcher) and any future contract that takes
+`function (...) internal returns (...)` as a callback.
+
+**Fix:** broaden the `reserved_names` list in `name_to_rocq` to include
+`fun` (plus a defensive set of other Rocq keywords). Names in the list
+are suffixed with `_`, so the dispatcher becomes
+`Definition dispatch_internal_in_2_out_1 (fun_ : U256.t) ...`.
+References inside the body (`let δ := [[ fun ]]`) follow the same
+rename.
+
+Pushed on `TheFrozenFire/rocq-of-solidity:fix/r073-r074-shallow-embed`.
+
+## R074: `shallow_embed.py` zero-inits a tuple binder as scalar `0` (RESOLVED)
+
+`YulVariableDeclaration` with no initializer falls back to the literal
+string `"0"`, ignoring the binder arity. For a single binder this is
+fine; for an N-tuple binder it becomes
+`let~ '(a, b, c, d) := [[ 0 ]] in`, which Rocq rejects with
+"Found a constructor of inductive type prod while a constructor of Z
+is expected." Manifests on StakingVault (Yul lowering of
+`(bytes32, string memory, address, bool)` ABI-decode-into-tuple
+destructurings) — and on any contract that returns a struct from an
+external view.
+
+**Fix:** fan out the implicit zero across the binder arity. For an N-
+tuple binder, emit `(0, 0, ..., 0)` with N zeros, mirroring the
+already-correct `function_definition_to_rocq` path for returnVariables.
+
+Pushed on `TheFrozenFire/rocq-of-solidity:fix/r073-r074-shallow-embed`
+in the same commit as R073.
 
 ---
 
