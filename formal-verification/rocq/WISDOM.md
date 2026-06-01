@@ -76,6 +76,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R075: OZ TimelockController equivalence methodology — timestamp-as-state-encoding + AccessControl interaction
 - R076: ERC4626 equivalence — share-asset arithmetic + inflation defense
 - R078: ERC20Votes equivalence — multi-base composition (ERC20 + Votes)
+- R079: OZ Governor abstract base equivalence (virtual functions as explicit args)
 
 ### The R050 staticcall recipe
 - R063: `staticcall` as composite of existing primitives
@@ -1087,6 +1088,107 @@ StakingVault inherits ERC20Votes.  To instantiate the methodology:
    `_update` for slashing accounting), compose the standard walker
    recipe (R040 + R047 + R033) against the StakingVault's own Yul
    body, citing this file's lemmas as the post-state predicates.
+
+---
+
+## R079: OZ Governor abstract base equivalence — virtual functions as explicit args
+
+The OZ `Governor` base (governance/Governor.sol, OZ v5.4.0, ~820
+lines) is the largest abstract base in this corpus. It carries TWO
+storage slots (`_proposals` map, `_governanceCall` queue) and has
+~15 `virtual` functions an inheriting governor overrides. The
+equivalence methodology is the same Option 2 / Section-parameterized
+shape as Votes, but the `virtual` surface deserves its own pattern
+entry.
+
+**Handling virtual functions — three buckets:**
+
+(A) **Explicit arguments to mock entry points.** The view-only /
+    state-extending virtuals (`votingDelay`, `votingPeriod`,
+    `quorum`, `_quorumReached`, `_voteSucceeded`, `_getVotes`,
+    `_queueOperations`, `_executor`) are passed as `Z` / `bool` /
+    `U256.t` arguments to the relevant mock functions. This keeps
+    each lemma a closed function of `(state × hook_outputs)` without
+    committing to a concrete inheritor's schedule.
+
+    Example: `propose s a proposer votingDelay votingPeriod` takes
+    `votingDelay` and `votingPeriod` as values, not as functions of
+    `s`. The OZ source reads them at call time via `votingDelay()` /
+    `votingPeriod()`; the mock sees only the evaluation.
+
+(B) **Section parameters at the equivalence layer.** The
+    `GovernorBaseEquivalenceTemplate` Section in
+    `proofs/equivalence/GovernorBase.v` declares `votingDelay_fn`,
+    `votingPeriod_fn`, `getVotes_fn`, etc. as `Variable`s.
+    Inheritor walker proofs supply concrete witnesses (e.g.
+    `ReserveOptimisticGovernor`'s `votingDelay` is `1 day`).
+
+(C) **Out of scope.** `_tallyUpdated` (empty default in OZ), the
+    receive() / onERC1155Received() token-receiver surface, and
+    the EIP-712 / SignatureChecker path are not modeled at the
+    abstract level. They compose orthogonally: signature paths
+    layer through `Nonces.v` + `ECDSA.v`; `_tallyUpdated` overrides
+    chain as a post-state predicate.
+
+**Tally surface for `_countVote`:** carried as an opaque
+`VoteTally` record (`voters`, `against_w`, `for_w`, `abstain_w`).
+Concrete inheritors with richer counting modules (e.g.
+GovernorCountingSimple's `ProposalVote` struct, or
+ReserveOptimisticGovernor's `vetoVotes` aggregate) extend / project
+through this surface. The `castVote_records_vote` + `_replay_reverts`
++ `_preserves_valid` triad already captures the
+"no-double-voting" property at the base level.
+
+**Re-entrancy queue (`_governanceCall`):** modeled as a
+`Bytes32Set` (consumed by `_checkGovernance` via `governance_call_contains`).
+OZ uses a `Bytes32Deque` but the FIFO ordering is observationally
+irrelevant for the equivalence theorems — only membership matters
+for the revert condition.
+
+**The `state` 8-state cascade:** lifted as
+`state_unfold` (definitional fold) plus 7 per-phase
+characterizing lemmas (`state_executed_terminal`,
+`state_canceled_terminal`, `state_nonexistent_reverts`,
+`state_pending_when_snapshot_ge_now`, `state_active_when_in_window`,
+`state_defeated_when_quorum_or_vote_fails`,
+`state_succeeded_when_no_eta`, `state_queued_when_eta_set`).
+Once-executed-stays-executed is a downstream theorem
+(`execute_leads_to_executed_state`); once-canceled-stays-canceled
+similarly (`cancel_leads_to_canceled_state`).
+
+**Inheritor handoff (ReserveOptimisticGovernor):**
+
+1. Open the `GovernorBaseEquivalenceTemplate` Section in the
+   inheritor's `proofs/equivalence/ReserveOptimisticGovernor.v`.
+2. Supply the inheritor's concrete `proj_sim` lens to
+   `project_base : SimulatedStorage.t -> GovernorBase.State.t`.
+3. Discharge the three lens-correctness hypotheses
+   (`lens_proposals_correct`, `lens_governance_call_correct`,
+   `lens_clock_correct`) — typically by `reflexivity` after the
+   `proj_sim` slot indices are fixed.
+4. For each public Governor entry point, the walker arms decompose
+   as documented in Section 12 of `proofs/equivalence/GovernorBase.v`
+   (one comment block per entry point — propose / castVote / queue /
+   execute / cancel / relay).
+5. Where ReserveOptimisticGovernor overrides a virtual function (e.g.
+   `_quorumReached` checks `vetoVotes >= vetoThresholdTok`), the
+   override's Z-level value is fed into the corresponding mock entry
+   point's `quorum_reached` argument. The walker proof shows the
+   Yul-level call to the override evaluates to the same `bool`.
+
+**Trust:** zero new framework axioms; the existing
+`hashProposal_fn` declared `Parameter` in `mocks/GovernorBase.v`
+is the same pattern as keccak in upstream `Common.v`.
+`Print Assumptions` on every closed lemma shows only
+`Set is impredicative` and `hashProposal_fn` (the latter only when
+the lemma directly references `hashProposal`; pure
+`State`-arithmetic lemmas like `state_unfold` show only the theory
+primitive).
+
+**Sizing:** `mocks/GovernorBase.v` ~600 LOC,
+`proofs/equivalence/GovernorBase.v` ~1600 LOC. Total ~2200 LOC,
+within the 3000-5000 budget allocated to the largest abstract base
+in the corpus.
 
 ---
 
