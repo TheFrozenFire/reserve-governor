@@ -80,7 +80,8 @@ Lemma convertToShares_nonneg (s : State.t) (assets : U256.t) :
   0 <= convertToShares s assets.
 Proof.
   intros Hv Ha.
-  destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+  pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+  destruct Hv as [Hsup_u256 Htd_nn Hb_nn Hcov Hbacked].
   unfold convertToShares.
   assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
   assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
@@ -93,6 +94,7 @@ Proof.
   unfold empty_state.
   constructor; simpl.
   - unfold U256.Valid.t. split; [lia|]. lia.
+  - lia.
   - lia.
   - lia.
   - intros H. lia.
@@ -120,7 +122,8 @@ Lemma deposit_preserves_validity (s : State.t) (assets : U256.t) :
   Valid.state (fst (deposit s assets)).
 Proof.
   intros Hv Hassets_u256 Hsupply_bound Htd_bound.
-  destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+  pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+  destruct Hv as [Hsup_u256 Htd_nn Hb_nn Hcov Hbacked].
   unfold deposit. simpl.
   set (shares := convertToShares s assets).
   assert (Hassets_nn : 0 <= assets) by (destruct Hassets_u256; lia).
@@ -133,7 +136,11 @@ Proof.
   constructor; simpl.
   - exact Hsupply_bound.
   - lia.
-  - exact Har_nn.
+  - (* balance_nn: post nbk = pre nbk + assets, both non-neg *)
+    lia.
+  - (* balance_covers_deposited: post nbk = pre nbk + assets;
+       post td = pre td + assets; pre nbk >= pre td so add same on both. *)
+    lia.
   - (* backed: if post-supply > 0, then post-deposited > 0.
        Two cases on pre-supply. *)
     intros Hpost_sup_pos.
@@ -192,7 +199,8 @@ Lemma withdraw_preserves_validity
 Proof.
   intros Hv Hsup_pos Hassets Hok Hdrain.
   pose proof Hv as Hv_orig.
-  destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+  pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+  destruct Hv as [Hsup_u256 Htd_nn Hb_nn Hcov Hbacked].
   assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; exact Hsup_pos).
   unfold withdraw in Hok.
   cbv zeta in Hok.
@@ -237,8 +245,12 @@ Proof.
     split; [lia|]. fold Sv. lia.
   - (* deposited_nn *)
     lia.
-  - (* rewards_nn *)
-    exact Har_nn.
+  - (* balance_nn: post nbk = pre nbk - assets.
+       Under [Hassets : 0 <= assets <= pre td] and [Hcov : pre td <= pre nbk],
+       we have assets <= pre nbk, so pre nbk - assets >= 0. *)
+    lia.
+  - (* balance_covers_deposited: post nbk - post td = pre nbk - pre td >= 0. *)
+    lia.
   - (* backed *)
     intros Hpost_sup_pos.
     (* Need: totalDeposited - assets > 0, i.e. assets < totalDeposited. *)
@@ -255,20 +267,23 @@ Proof.
 Qed.
 
 (** ----- accrue preserves Valid.state. -----
-    [accrue] only bumps [accumulatedNativeRewards] upward by a
-    non-negative delta; supply, totalDeposited, and [backed] are
-    untouched. Requires the post-rewards-sum stays in uint256. *)
-Lemma accrue_preserves_validity (s : State.t) (delta : U256.t) :
+    Phase B sim: [accrue] bumps [nativeBalanceLastKnown] by [delta]
+    (the raw asset balance grows) and resets [nativeRewardsLastPaid].
+    The derived [accumulatedNativeRewards] therefore grows by [delta]
+    (under [balance_covers_deposited]); supply, totalDeposited, and
+    [backed] are untouched. *)
+Lemma accrue_preserves_validity (s : State.t) (delta now_ : U256.t) :
   Valid.state s ->
   0 <= delta ->
-  Valid.state (accrue s delta).
+  Valid.state (accrue s delta now_).
 Proof.
   intros Hv Hd.
-  destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+  destruct Hv as [Hsup_u256 Htd_nn Hb_nn Hcov Hbacked].
   unfold accrue.
   constructor; simpl.
   - exact Hsup_u256.
   - exact Htd_nn.
+  - lia.
   - lia.
   - exact Hbacked.
 Qed.
@@ -283,7 +298,8 @@ Theorem never_underwater (s : State.t) :
   totalAssets s >= s.(State.totalDeposited) /\ s.(State.totalDeposited) > 0.
 Proof.
   intros Hv Hsup_pos.
-  destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+  pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+  destruct Hv as [Hsup_u256 Htd_nn Hb_nn Hcov Hbacked].
   assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; exact Hsup_pos).
   unfold totalAssets.
   split; lia.
@@ -301,7 +317,7 @@ Qed.
 
 Definition cycle_s1 : State.t := fst (deposit empty_state (10^21)).
 
-Definition cycle_s2 : State.t := accrue cycle_s1 (10^17).
+Definition cycle_s2 : State.t := accrue cycle_s1 (10^17) 0.
 
 (** The withdraw at s2 with assets = totalDeposited drains all shares.
     We extract the success projection here for the xcheck. *)
@@ -320,7 +336,7 @@ Qed.
 Lemma xcheck_cycle_s1_shape :
   cycle_s1.(State.totalSupply) = 10^21
   /\ cycle_s1.(State.totalDeposited) = 10^21
-  /\ cycle_s1.(State.accumulatedNativeRewards) = 0.
+  /\ accumulatedNativeRewards cycle_s1 = 0.
 Proof. vm_compute. split; [reflexivity|]. split; reflexivity. Qed.
 
 Lemma xcheck_cycle_s2_valid : Valid.state cycle_s2.
@@ -333,7 +349,7 @@ Qed.
 Lemma xcheck_cycle_s2_shape :
   cycle_s2.(State.totalSupply) = 10^21
   /\ cycle_s2.(State.totalDeposited) = 10^21
-  /\ cycle_s2.(State.accumulatedNativeRewards) = 10^17.
+  /\ accumulatedNativeRewards cycle_s2 = 10^17.
 Proof. vm_compute. split; [reflexivity|]. split; reflexivity. Qed.
 
 (** With rewards present (s2), the ceil-div for assets=10^21 yields
@@ -384,7 +400,8 @@ Proof.
                 Result.Success
                   ({| State.totalSupply := 0;
                       State.totalDeposited := 0;
-                      State.accumulatedNativeRewards := 0 |},
+                      State.nativeBalanceLastKnown := 0;
+                      State.nativeRewardsLastPaid := 0 |},
                    10^21)).
   { vm_compute. reflexivity. }
   rewrite Hwr.
@@ -392,7 +409,8 @@ Proof.
     (s := cycle_s1)
     (s' := {| State.totalSupply := 0;
               State.totalDeposited := 0;
-              State.accumulatedNativeRewards := 0 |})
+              State.nativeBalanceLastKnown := 0;
+              State.nativeRewardsLastPaid := 0 |})
     (assets := 10^21) (shares := 10^21).
   - exact xcheck_cycle_s1_valid.
   - rewrite Hs_sup. vm_compute. reflexivity.

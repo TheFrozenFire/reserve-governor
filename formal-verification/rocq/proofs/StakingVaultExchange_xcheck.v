@@ -22,11 +22,15 @@ Module StakingVaultExchangeXCheck.
 
 Import StakingVaultExchange.
 
-(** CAS INV-4 probe values: supply, totalAssets, then [a] with rate > 1. *)
+(** CAS INV-4 probe values: supply, totalAssets, then [a] with rate > 1.
+    Phase B sim shape: [nativeBalanceLastKnown] is the primary field;
+    [accumulatedNativeRewards] is derived as [nbk - td].  Here we set
+    [nbk = td] (no accrued rewards), [nrlp = 0] (never accrued). *)
 Definition cal_state : State.t := {|
   State.totalSupply              := 10^18;       (** 1e18 = 1 share *)
   State.totalDeposited           := 10^18 * 8;   (** 8e18 totalAssets *)
-  State.accumulatedNativeRewards := 0;
+  State.nativeBalanceLastKnown   := 10^18 * 8;   (** 0 accrued *)
+  State.nativeRewardsLastPaid    := 0;
 |}.
 
 Lemma xcheck_totalAssets_8e18 :
@@ -80,12 +84,15 @@ Lemma xcheck_initial_deposit_storage :
   /\ snd r = 10^21.
 Proof. vm_compute. split; [reflexivity|]. split; reflexivity. Qed.
 
-(** Accrue bumps native rewards without changing supply or deposited. *)
+(** Accrue bumps native rewards without changing supply or deposited.
+    Phase B: the bump now happens on [nativeBalanceLastKnown] (the raw
+    asset balance); the derived [accumulatedNativeRewards] getter
+    returns the same value as before the refactor. *)
 Lemma xcheck_accrue_native_only :
-  let s := accrue cal_state (10^17) in
+  let s := accrue cal_state (10^17) 0 in
   s.(State.totalSupply) = cal_state.(State.totalSupply)
   /\ s.(State.totalDeposited) = cal_state.(State.totalDeposited)
-  /\ s.(State.accumulatedNativeRewards) = 10^17.
+  /\ accumulatedNativeRewards s = 10^17.
 Proof. vm_compute. split; [reflexivity|]. split; reflexivity. Qed.
 
 End StakingVaultExchangeXCheck.

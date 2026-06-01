@@ -53,16 +53,35 @@ Proof.
 Qed.
 
 (** ----- accrue preserves totalSupply and totalDeposited. ----- *)
-Lemma accrue_preserves_share_book (s : State.t) (delta : U256.t) :
-  (accrue s delta).(State.totalSupply) = s.(State.totalSupply)
-  /\ (accrue s delta).(State.totalDeposited) = s.(State.totalDeposited).
+Lemma accrue_preserves_share_book (s : State.t) (delta now_ : U256.t) :
+  (accrue s delta now_).(State.totalSupply) = s.(State.totalSupply)
+  /\ (accrue s delta now_).(State.totalDeposited) = s.(State.totalDeposited).
 Proof. split; reflexivity. Qed.
 
-Lemma accrue_increases_rewards (s : State.t) (delta : U256.t) :
+(** Phase B note: [accumulatedNativeRewards] is now a derived getter
+    rather than a record field.  Accrual adds [delta] to the raw
+    [nativeBalanceLastKnown]; the derived getter therefore grows by
+    at most [delta] (and never decreases). *)
+Lemma accrue_increases_rewards (s : State.t) (delta now_ : U256.t) :
   0 <= delta ->
-  (accrue s delta).(State.accumulatedNativeRewards)
-    >= s.(State.accumulatedNativeRewards).
-Proof. simpl. intros Hd. lia. Qed.
+  accumulatedNativeRewards (accrue s delta now_)
+    >= accumulatedNativeRewards s.
+Proof.
+  intros Hd.
+  unfold accumulatedNativeRewards, accrue. simpl.
+  destruct (s.(State.nativeBalanceLastKnown) >=? s.(State.totalDeposited))
+    eqn:Hpre;
+    destruct (s.(State.nativeBalanceLastKnown) + delta >=?
+              s.(State.totalDeposited))
+    eqn:Hpost.
+  - apply Z.geb_le in Hpre. apply Z.geb_le in Hpost. lia.
+  - apply Z.geb_le in Hpre.
+    rewrite Z.geb_leb in Hpost. apply Z.leb_gt in Hpost. lia.
+  - apply Z.geb_le in Hpost.
+    rewrite Z.geb_leb in Hpre. apply Z.leb_gt in Hpre. lia.
+  - rewrite Z.geb_leb in Hpre. apply Z.leb_gt in Hpre.
+    rewrite Z.geb_leb in Hpost. apply Z.leb_gt in Hpost. lia.
+Qed.
 
 (** ----- INV-5: share-value monotonicity under accrue. -----
     Stated as: pre rate <= post rate, via cross-multiply on the
@@ -72,19 +91,20 @@ Proof. simpl. intros Hd. lia. Qed.
     which is immediate from delta >= 0 and (S + 1) > 0. No
     precondition on totalSupply is required — virtual shares keep
     the denominator positive even at supply = 0. *)
-Lemma accrue_share_rate_monotone (s : State.t) (delta : U256.t) :
+Lemma accrue_share_rate_monotone (s : State.t) (delta now_ : U256.t) :
   0 <= delta ->
   0 <= s.(State.totalSupply) ->
   (totalAssets s + 1)
     * (s.(State.totalSupply) + 1) <=
-  (totalAssets (accrue s delta) + 1)
+  (totalAssets (accrue s delta now_) + 1)
     * (s.(State.totalSupply) + 1).
 Proof.
   intros Hd Hsupply.
-  unfold totalAssets. simpl.
-  (* (td + ar + 1) * (S + 1) <= (td + ar + delta + 1) * (S + 1)
-     because delta >= 0 and (S + 1) > 0. *)
-  nia.
+  unfold totalAssets.
+  pose proof (accrue_increases_rewards s delta now_ Hd) as Hgrow.
+  assert (Htd_eq : (accrue s delta now_).(State.totalDeposited) = s.(State.totalDeposited)).
+  { reflexivity. }
+  rewrite Htd_eq. nia.
 Qed.
 
 (** ----- INV-4: round-trip rounding bound.

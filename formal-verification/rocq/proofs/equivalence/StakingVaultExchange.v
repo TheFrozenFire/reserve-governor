@@ -193,9 +193,24 @@ Module StakingVaultExchangeEquivalence.
   Proof. unfold deposit. reflexivity. Qed.
 
   Lemma deposit_rewards_preserved (s : State.t) (assets : U256.t) :
-    (fst (deposit s assets)).(State.accumulatedNativeRewards)
-    = s.(State.accumulatedNativeRewards).
-  Proof. unfold deposit. reflexivity. Qed.
+    accumulatedNativeRewards (fst (deposit s assets))
+    = accumulatedNativeRewards s.
+  Proof.
+    (* Phase B: [accumulatedNativeRewards] is now derived from
+       [nativeBalanceLastKnown - totalDeposited].  Deposit increments
+       both fields by [assets], so the difference is preserved. *)
+    unfold deposit, accumulatedNativeRewards. simpl.
+    destruct (s.(State.nativeBalanceLastKnown) + assets >=?
+              s.(State.totalDeposited) + assets) eqn:Hpost;
+      destruct (s.(State.nativeBalanceLastKnown) >=?
+                s.(State.totalDeposited)) eqn:Hpre.
+    - apply Z.geb_le in Hpost. apply Z.geb_le in Hpre. lia.
+    - apply Z.geb_le in Hpost.
+      rewrite Z.geb_leb in Hpre. apply Z.leb_gt in Hpre. lia.
+    - apply Z.geb_le in Hpre.
+      rewrite Z.geb_leb in Hpost. apply Z.leb_gt in Hpost. lia.
+    - reflexivity.
+  Qed.
 
   Lemma deposit_returns_shares (s : State.t) (assets : U256.t) :
     snd (deposit s assets) = convertToShares s assets.
@@ -232,14 +247,27 @@ Module StakingVaultExchangeEquivalence.
   Lemma withdraw_success_rewards_preserved
       (s s' : State.t) (assets shares : U256.t) :
     withdraw s assets = Result.Success (s', shares) ->
-    s'.(State.accumulatedNativeRewards) = s.(State.accumulatedNativeRewards).
+    accumulatedNativeRewards s' = accumulatedNativeRewards s.
   Proof.
     unfold withdraw. intros H.
     destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
     destruct ((assets * (s.(State.totalSupply) + 1) + totalAssets s)
               / (totalAssets s + 1)
               >? s.(State.totalSupply)) eqn:Hguard; [discriminate|].
-    injection H as <- <-. reflexivity.
+    injection H as <- <-.
+    (* Same shape as deposit: both fields shrink by [assets]; the
+       getter's conditional flips together pre/post. *)
+    unfold accumulatedNativeRewards. simpl.
+    destruct (s.(State.nativeBalanceLastKnown) - assets >=?
+              s.(State.totalDeposited) - assets) eqn:Hpost;
+      destruct (s.(State.nativeBalanceLastKnown) >=?
+                s.(State.totalDeposited)) eqn:Hpre.
+    - apply Z.geb_le in Hpost. apply Z.geb_le in Hpre. lia.
+    - apply Z.geb_le in Hpost.
+      rewrite Z.geb_leb in Hpre. apply Z.leb_gt in Hpre. lia.
+    - apply Z.geb_le in Hpre.
+      rewrite Z.geb_leb in Hpost. apply Z.leb_gt in Hpost. lia.
+    - reflexivity.
   Qed.
 
   (** ---- 1.3 Pre-condition characterisation: withdraw success iff
@@ -343,17 +371,26 @@ Module StakingVaultExchangeEquivalence.
       Cross-multiplication form. With supply > 0, post.totalAssets *
       pre.supply >= pre.totalAssets * post.supply. Lifted from
       [proofs/StakingVaultExchange.v::accrue_share_rate_monotone]. *)
-  Lemma accrue_share_rate_monotone (s : State.t) (delta : U256.t) :
+  Lemma accrue_share_rate_monotone (s : State.t) (delta now_ : U256.t) :
     0 <= delta ->
     0 <= s.(State.totalSupply) ->
     (totalAssets s + 1)
       * (s.(State.totalSupply) + 1) <=
-    (totalAssets (accrue s delta) + 1)
+    (totalAssets (accrue s delta now_) + 1)
       * (s.(State.totalSupply) + 1).
   Proof.
     intros Hd Hsupply.
-    unfold totalAssets. simpl.
-    nia.
+    unfold totalAssets, accumulatedNativeRewards, accrue. simpl.
+    destruct (s.(State.nativeBalanceLastKnown) + delta >=?
+              s.(State.totalDeposited)) eqn:Hpost;
+      destruct (s.(State.nativeBalanceLastKnown) >=?
+                s.(State.totalDeposited)) eqn:Hpre.
+    - apply Z.geb_le in Hpost. apply Z.geb_le in Hpre. nia.
+    - apply Z.geb_le in Hpost.
+      rewrite Z.geb_leb in Hpre. apply Z.leb_gt in Hpre. nia.
+    - apply Z.geb_le in Hpre.
+      rewrite Z.geb_leb in Hpost. apply Z.leb_gt in Hpost. lia.
+    - rewrite Z.geb_leb in Hpost. apply Z.leb_gt in Hpost. nia.
   Qed.
 
   (** ---- 1.6 convertToShares non-negativity (lift from
@@ -364,7 +401,8 @@ Module StakingVaultExchangeEquivalence.
     0 <= convertToShares s assets.
   Proof.
     intros Hv Ha.
-    destruct Hv as [Hsup_u256 Htd_nn Har_nn _].
+    pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+    destruct Hv as [Hsup_u256 Htd_nn _ _ _].
     unfold convertToShares.
     assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
     assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
@@ -377,7 +415,8 @@ Module StakingVaultExchangeEquivalence.
     0 <= convertToAssets s shares.
   Proof.
     intros Hv Hs.
-    destruct Hv as [Hsup_u256 Htd_nn Har_nn _].
+    pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+    destruct Hv as [Hsup_u256 Htd_nn _ _ _].
     unfold convertToAssets.
     assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
     assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
@@ -389,7 +428,9 @@ Module StakingVaultExchangeEquivalence.
     Valid.state s ->
     0 <= totalAssets s.
   Proof.
-    intros [_ Htd Har _]. unfold totalAssets. lia.
+    intros Hv.
+    pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+    destruct Hv as [_ Htd _ _ _]. unfold totalAssets. lia.
   Qed.
 
   (** ---- 1.8 Empty-state initial mint: 1:1 share-to-asset.
@@ -487,7 +528,8 @@ Module StakingVaultExchangeEquivalence.
     0 <= previewMint s shares.
   Proof.
     intros Hv Hs.
-    destruct Hv as [Hsup_u256 Htd_nn Har_nn _].
+    pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+    destruct Hv as [Hsup_u256 Htd_nn _ _ _].
     unfold previewMint.
     assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
     assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
@@ -501,7 +543,8 @@ Module StakingVaultExchangeEquivalence.
     0 <= previewWithdraw s assets.
   Proof.
     intros Hv Ha.
-    destruct Hv as [Hsup_u256 Htd_nn Har_nn _].
+    pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+    destruct Hv as [Hsup_u256 Htd_nn _ _ _].
     unfold previewWithdraw.
     assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
     assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
@@ -635,7 +678,18 @@ Module StakingVaultExchangeEquivalence.
 
     (** The projection lens — given the inheritor's full
         [SimulatedStorage.t], extract the exchange-rate sim's
-        [State.t]. *)
+        [State.t].
+
+        Phase B extension (Task #310 / R106): the lens now exposes
+        the FOUR primary fields of the widened sim
+        [State.t = (totalSupply, totalDeposited, nativeBalanceLastKnown,
+        nativeRewardsLastPaid)] — one Z-valued read per slot.  The old
+        derived field [accumulatedNativeRewards] is replaced by the
+        getter defined in [simulations/StakingVaultExchange.v].  The
+        lens body is now a record-literal of four reads (no
+        conditional).  Untouched-slot semantics under
+        [storage_with_sim] are preserved by the [sve_set_nth] no-
+        overlap shape (see Section 2b lemmas). *)
     Definition project_exchange (storage : SimulatedStorage.t) : State.t :=
       let supply :=
         match List.nth_error storage slot_ERC20_totalSupply with
@@ -652,14 +706,15 @@ Module StakingVaultExchangeEquivalence.
         | Some (StorableValue.U256 v) => v
         | _ => 0
         end in
+      let nrlp :=
+        match List.nth_error storage slot_nativeRewardsLastPaid with
+        | Some (StorableValue.U256 v) => v
+        | _ => 0
+        end in
       {| State.totalSupply              := supply;
          State.totalDeposited           := td;
-         (* The sim's [accumulatedNativeRewards] is computed from the
-            difference [nativeBalanceLastKnown - totalDeposited] under
-            the OZ semantics. The lens exposes the running sum
-            directly. *)
-         State.accumulatedNativeRewards :=
-           if nblk >=? td then nblk - td else 0;
+         State.nativeBalanceLastKnown   := nblk;
+         State.nativeRewardsLastPaid    := nrlp;
       |}.
 
     (** Lens correctness — each [project_exchange]'s field matches
@@ -718,6 +773,11 @@ Module StakingVaultExchangeEquivalence.
   Definition slot_ERC20_totalSupply_const      : nat := 4.
   Definition slot_totalDeposited_const         : nat := 12. (* 0x0c *)
   Definition slot_nativeBalanceLastKnown_const : nat := 13. (* 0x0d *)
+  (** Phase B extension (Task #310 / R106): the modifier wrapper
+      writes [nativeRewardsLastPaid] at slot 14.  We now include it in
+      the lens so the modifier's chain of [sstore]s can be matched
+      slot-by-slot. *)
+  Definition slot_nativeRewardsLastPaid_const  : nat := 14. (* 0x0e *)
 
   Lemma slot_ERC20_totalSupply_const_neq_roles :
     slot_ERC20_totalSupply_const <> 1%nat.
@@ -730,6 +790,10 @@ Module StakingVaultExchangeEquivalence.
   Lemma slot_nativeBalanceLastKnown_const_neq_roles :
     slot_nativeBalanceLastKnown_const <> 1%nat.
   Proof. unfold slot_nativeBalanceLastKnown_const. discriminate. Qed.
+
+  Lemma slot_nativeRewardsLastPaid_const_neq_roles :
+    slot_nativeRewardsLastPaid_const <> 1%nat.
+  Proof. unfold slot_nativeRewardsLastPaid_const. discriminate. Qed.
 
   (** In-place set at index — copy of [VersionRegistry.set_nth] kept
       local to avoid a cross-file simulation import.  Out-of-bounds
@@ -756,8 +820,10 @@ Module StakingVaultExchangeEquivalence.
   Qed.
 
   (** Concrete [project_exchange] at the module level, using the
-      [Parameter] slot anchors above.  Body identical to the
-      Section-local [project_exchange]. *)
+      [Parameter] slot anchors above.  Body mirrors the Section-local
+      [project_exchange]; under the Phase B extension the lens exposes
+      FOUR primary fields (totalSupply, totalDeposited,
+      nativeBalanceLastKnown, nativeRewardsLastPaid). *)
   Definition project_exchange_module
       (storage : SimulatedStorage.t) : State.t :=
     let supply :=
@@ -775,28 +841,40 @@ Module StakingVaultExchangeEquivalence.
       | Some (StorableValue.U256 v) => v
       | _ => 0
       end in
+    let nrlp :=
+      match List.nth_error storage slot_nativeRewardsLastPaid_const with
+      | Some (StorableValue.U256 v) => v
+      | _ => 0
+      end in
     {| State.totalSupply              := supply;
        State.totalDeposited           := td;
-       State.accumulatedNativeRewards :=
-         if nblk >=? td then nblk - td else 0;
+       State.nativeBalanceLastKnown   := nblk;
+       State.nativeRewardsLastPaid    := nrlp;
     |}.
 
   (** Lift a sim [State.t] back into the [storage_base] by writing
-      the three exchange-rate fields at the lens slots.  Per the
+      the four exchange-rate fields at the lens slots.  Per the
       adversarial-review note in Section 7, this leaves
       [slot_AccessControl_roles := 1] (and all other slots) UNCHANGED
-      — exactly what the observational bridge expects. *)
+      — exactly what the observational bridge expects.
+
+      Phase B extension: the writeback now covers FOUR slots — the
+      same set as [project_exchange_module] reads.  The new
+      [nativeRewardsLastPaid] (slot 14) is written last in the
+      [sve_set_nth] chain so the proof of slot-preservation at slot 1
+      naturally generalises. *)
   Definition storage_with_sim
       (storage_base : SimulatedStorage.t)
       (sim : State.t) : SimulatedStorage.t :=
-    sve_set_nth slot_nativeBalanceLastKnown_const
-      (StorableValue.U256
-         (sim.(State.totalDeposited) + sim.(State.accumulatedNativeRewards)))
+    sve_set_nth slot_nativeRewardsLastPaid_const
+      (StorableValue.U256 sim.(State.nativeRewardsLastPaid))
+    (sve_set_nth slot_nativeBalanceLastKnown_const
+      (StorableValue.U256 sim.(State.nativeBalanceLastKnown))
     (sve_set_nth slot_totalDeposited_const
       (StorableValue.U256 sim.(State.totalDeposited))
     (sve_set_nth slot_ERC20_totalSupply_const
       (StorableValue.U256 sim.(State.totalSupply))
-      storage_base)).
+      storage_base))).
 
   (** [storage_with_sim] preserves [nth_error] at the AccessControl
       roles slot — the basis for the observational bridge Lemmas in
@@ -807,6 +885,8 @@ Module StakingVaultExchangeEquivalence.
     = List.nth_error storage_base 1.
   Proof.
     unfold storage_with_sim.
+    rewrite sve_set_nth_nth_error_neq;
+      [|exact slot_nativeRewardsLastPaid_const_neq_roles].
     rewrite sve_set_nth_nth_error_neq;
       [|exact slot_nativeBalanceLastKnown_const_neq_roles].
     rewrite sve_set_nth_nth_error_neq;
@@ -2746,22 +2826,22 @@ Module StakingVaultExchangeEquivalence.
             field in the sim ---- *)
 
   Lemma deposit_preserves_rewards (s : State.t) (assets : U256.t) :
-    (fst (deposit s assets)).(State.accumulatedNativeRewards)
-    = s.(State.accumulatedNativeRewards).
-  Proof. unfold deposit. reflexivity. Qed.
+    accumulatedNativeRewards (fst (deposit s assets))
+    = accumulatedNativeRewards s.
+  Proof. apply deposit_rewards_preserved. Qed.
 
   Lemma deposit_via_mint_preserves_rewards
       (s : State.t) (shares : U256.t) :
-    (fst (deposit_via_mint s shares)).(State.accumulatedNativeRewards)
-    = s.(State.accumulatedNativeRewards).
-  Proof. unfold deposit_via_mint, deposit. reflexivity. Qed.
+    accumulatedNativeRewards (fst (deposit_via_mint s shares))
+    = accumulatedNativeRewards s.
+  Proof. unfold deposit_via_mint. apply deposit_rewards_preserved. Qed.
 
   (** ---- 11.2 Withdraw / redeem preserve rewards on success ---- *)
 
   Lemma withdraw_via_redeem_success_rewards_preserved
       (s s' : State.t) (shares assets : U256.t) :
     withdraw_via_redeem s shares = Result.Success (s', assets) ->
-    s'.(State.accumulatedNativeRewards) = s.(State.accumulatedNativeRewards).
+    accumulatedNativeRewards s' = accumulatedNativeRewards s.
   Proof.
     unfold withdraw_via_redeem.
     destruct (withdraw s (previewRedeem s shares))
@@ -2806,8 +2886,15 @@ Module StakingVaultExchangeEquivalence.
     { unfold s1, deposit. simpl. rewrite convertToShares_empty. lia. }
     assert (Hs1_td : s1.(State.totalDeposited) = assets).
     { unfold s1, deposit. simpl. lia. }
-    assert (Hs1_ar : s1.(State.accumulatedNativeRewards) = 0).
-    { unfold s1, deposit. simpl. lia. }
+    assert (Hs1_ar : accumulatedNativeRewards s1 = 0).
+    { unfold accumulatedNativeRewards.
+      rewrite Hs1_td.
+      assert (Hnbk : s1.(State.nativeBalanceLastKnown) = assets).
+      { unfold s1, deposit, empty_state. simpl. lia. }
+      rewrite Hnbk.
+      destruct (assets >=? assets) eqn:Hgeb.
+      - lia.
+      - rewrite Z.geb_leb in Hgeb. apply Z.leb_gt in Hgeb. lia. }
     unfold withdraw. unfold totalAssets.
     rewrite Hs1_sup, Hs1_td, Hs1_ar.
     (* Now: ta = assets + 0 = assets, supply = assets. *)
@@ -2861,7 +2948,8 @@ Module StakingVaultExchangeEquivalence.
     Valid.state (fst (deposit s assets)).
   Proof.
     intros Hv Hassets_u256 Hsupply_bound Htd_bound.
-    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    pose proof (accumulatedNativeRewards_nn s Hv) as Har_nn.
+    destruct Hv as [Hsup_u256 Htd_nn Hb_nn Hcov Hbacked].
     unfold deposit. simpl.
     set (shares := convertToShares s assets).
     assert (Hassets_nn : 0 <= assets) by (destruct Hassets_u256; lia).
@@ -2874,13 +2962,11 @@ Module StakingVaultExchangeEquivalence.
     constructor; simpl.
     - exact Hsupply_bound.
     - lia.
-    - exact Har_nn.
+    - lia.
+    - lia.
     - intros Hpost_sup_pos.
       destruct (Z.eq_dec s.(State.totalSupply) 0) as [Hs0 | Hs_ne].
-      + (* pre-supply = 0: shares = assets / (ta + 1) under the OZ form.
-           For post-supply = shares > 0, we need shares >= 1, hence
-           assets >= ta + 1 >= 1, so assets > 0 and post-td > 0. *)
-        assert (Hta1_pos : 0 < totalAssets s + 1) by lia.
+      + assert (Hta1_pos : 0 < totalAssets s + 1) by lia.
         assert (Hshares_val : shares = assets / (totalAssets s + 1)).
         { unfold shares, convertToShares. rewrite Hs0.
           f_equal. lia. }
@@ -2934,13 +3020,31 @@ Module StakingVaultExchangeEquivalence.
     0 <= assets ->
     totalAssets (fst (deposit s assets)) = totalAssets s + assets.
   Proof.
-    intros Ha. unfold deposit, totalAssets. simpl. lia.
+    intros Ha.
+    pose proof (deposit_rewards_preserved s assets) as Hpres.
+    unfold totalAssets in *. unfold deposit. simpl in *. lia.
   Qed.
 
-  Lemma totalAssets_after_accrue (s : State.t) (delta : U256.t) :
-    totalAssets (accrue s delta) = totalAssets s + delta.
+  (** [totalAssets] after [accrue] grows by [delta] under the validity
+      invariant ([balance_covers_deposited]).  Phase B: when [s] is
+      "underwater" (the contract should never reach this), the
+      saturating [accumulatedNativeRewards] getter clamps growth — but
+      [Valid.state] forbids that state. *)
+  Lemma totalAssets_after_accrue (s : State.t) (delta now_ : U256.t) :
+    Valid.state s ->
+    0 <= delta ->
+    totalAssets (accrue s delta now_) = totalAssets s + delta.
   Proof.
-    unfold accrue, totalAssets. simpl. lia.
+    intros Hv Hd.
+    destruct Hv as [_ _ _ Hcov _].
+    unfold accrue, totalAssets, accumulatedNativeRewards. simpl.
+    assert (Hpre : s.(State.nativeBalanceLastKnown) >=?
+                   s.(State.totalDeposited) = true).
+    { apply Z.geb_le. exact Hcov. }
+    assert (Hpost : s.(State.nativeBalanceLastKnown) + delta >=?
+                    s.(State.totalDeposited) = true).
+    { apply Z.geb_le. lia. }
+    rewrite Hpre, Hpost. lia.
   Qed.
 
   (** ====================================================================
@@ -2961,7 +3065,7 @@ Module StakingVaultExchangeEquivalence.
     Example xcheck_s1_shape :
       s1.(State.totalSupply) = 10^21
       /\ s1.(State.totalDeposited) = 10^21
-      /\ s1.(State.accumulatedNativeRewards) = 0.
+      /\ accumulatedNativeRewards s1 = 0.
     Proof. vm_compute. split; [reflexivity|]. split; reflexivity. Qed.
 
     Example xcheck_s1_shares_eq_assets :
@@ -2978,7 +3082,7 @@ Module StakingVaultExchangeEquivalence.
 
     (** Accrue some rewards, then check that previewMint moves
         accordingly. *)
-    Definition s2 : State.t := accrue s1 (10^17).
+    Definition s2 : State.t := accrue s1 (10^17) 0.
 
     Example xcheck_totalAssets_at_s2 :
       totalAssets s2 = 10^21 + 10^17.

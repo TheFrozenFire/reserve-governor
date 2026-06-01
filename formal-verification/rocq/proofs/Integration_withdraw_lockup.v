@@ -300,7 +300,8 @@ Qed.
 Definition cal_vault : StakingVaultExchange.State.t := {|
   StakingVaultExchange.State.totalSupply              := 10^21;
   StakingVaultExchange.State.totalDeposited           := 10^21;
-  StakingVaultExchange.State.accumulatedNativeRewards := 0;
+  StakingVaultExchange.State.nativeBalanceLastKnown   := 10^21;
+  StakingVaultExchange.State.nativeRewardsLastPaid    := 0;
 |}.
 
 Definition cal_manager : UnstakingManager.State.t :=
