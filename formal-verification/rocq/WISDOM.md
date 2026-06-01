@@ -2178,12 +2178,167 @@ The closed proof's spine (mirror of mint with swaps):
 
 ### Transfer
 
-Still `Admitted Lemma`.  Transfer's body has TWO balance writes
-(no totalSupply touched) but is otherwise structurally similar.
-The `proj_sim_independent_slots` Section hypothesis already
-exists; transfer also needs sibling lens hypotheses for the
-intermediate post-from-decrement state (analogous to burn's
-post-balance state).  ~400 LOC expected for the walker.
+Closed in R113 (task #320).  All three `_update` branch bodies
+(mint, burn, transfer) are now real Qed Lemmas.
+
+## R113: OZ ERC20 `_update` transfer body — Qed closure (task #320)
+
+Task #320 closed `run_fun__update_3335_at_proj_sim_transfer` from
+`Admitted Lemma` to real `Qed Lemma` (~440 LOC).  The methodology
+is identical to R111 (mint) / R112 (burn) with three differences
+forced by transfer's Yul body shape.
+
+### Transfer body shape (vs. mint / burn)
+
+- **Switch 1 / outer switch**: transfer takes the `δ = 0` arm
+  (balance-debit at `from`) — same as burn's switch 1.  Includes
+  the inner `lt(fromBalance, value)` revert-guard, absorbed via
+  the R107 `run_shallow_let_state_if_zero` absorber after
+  reducing `Pure.lt` to `0` using `H_balance_ge`.
+- **Switch 2 / inner switch**: transfer takes the `δ = 0` arm
+  (balance-credit at `to`) — DIFFERENT from both mint and burn,
+  which both took the `δ ≠ 0` arm in switch 2.  The walker uses
+  the same `run_let_state_match_pure_zero` absorber as switch 1
+  (and as burn's switch 1).
+- **TWO balance-map writes, NO totalSupply writes**: transfer
+  composes `update_nth slot_balances` twice (once for the
+  from-debit, once for the to-credit) and leaves
+  `slot_totalSupply` untouched.  The composition law is
+  `proj_sim_independent_slots`.
+- **Three `mapping_index_access` calls** (vs mint's one and
+  burn's two).  Switch 1 has two mia calls (one before each of
+  sload and sstore at `from`), as in burn.  Switch 2 has only
+  ONE mia call (`_1755`), reused for both sload and sstore at
+  `to` (sstore takes `_1755` by reference rather than recomputing
+  the keccak2).
+
+### Three structural pieces specific to transfer
+
+1. **Three new Section hypotheses** in `ERC20BaseEquivalence`:
+   - `namespace_binding_after_from_balance_update_transfer`: the
+     `IsNamespaceAnchor vs_bal_from slot_balances ANCHOR` fact
+     holds for the intermediate post-from-decrement list.  Parallel
+     of burn's `ts_offset_after_balances_update_burn` but at the
+     `slot_balances` lens itself (since the second write also
+     targets `slot_balances`).
+   - `nth_balances_after_from_balance_update_transfer`: the
+     `nth_error vs_bal_from slot_balances = Some (Map (declare_or_assign
+     (balances_to_dict sim.(balances)) from (Pure.sub ...)))` fact.
+     Records the from-decremented map content.
+   - `balances_to_dict_set_balance_eq`: `balances_to_dict
+     (set_balance bs k v) = Dict.declare_or_assign
+     (balances_to_dict bs) k v`.  Bridges between the sim-side
+     update (used in `proj_sim_independent_slots`'s
+     `sim_after_decrement.(balances)` form) and the dict-side
+     update produced by the first sstore.  At the inheritor this
+     discharges by definition unfolding + induction on the
+     balance assoc-list.
+
+2. **Three-mia Skolemization**: `memory_post_kc1` (first mia,
+   from-sload), `memory_post_kc2` (second mia, from-sstore),
+   `memory_post_kc3` (third mia, to-sload-and-sstore).  The
+   intermediate state witnesses use:
+   - `state_post_bal_from`: storage = vs_bal_from, memory =
+     memory_post_kc2.
+   - `state_post_bal_to`: storage = vs_bal_to, memory =
+     memory_post_kc3.
+
+3. **Skolemized `vs_bal_to`**: unlike burn's `vs_ts` (which is a
+   destruct binding from the inner nested match in
+   `proj_sim_pointwise_totalSupply_update`), transfer's
+   `vs_bal_to` is `proj_sim simq` directly — the bridge
+   hypothesis returns `update_nth ... = Some (proj_sim sim')`
+   without an extra outer match.  The proof uses
+   `pose (vs_bal_to := proj_sim simq)` and a derived `Hupd_bal_to`
+   with the `declare_or_assign (declare_or_assign ...)` form
+   (constructed from the bridge's `sim_after_decrement.(balances)`
+   form via `balances_to_dict_set_balance_eq`).
+
+### Discharge pattern for transfer body
+
+The closed proof's spine (mirror of burn with switch-2 swapped to
+δ = 0 arm and totalSupply machinery replaced by second balance
+write):
+- Upfront: derive `H_balance_diff_bound` (from-decrement bound),
+  pose `sim_after_decrement`, derive `H_balance_credit_bound`
+  (to-credit bound).  Pull `Hbridge` from `proj_sim_independent_slots`;
+  destruct outer `update_nth` to get `vs_bal_from`; destruct
+  `Hbridge` to get `simq`, `Htransfer`, `Hupd_bal_to_eq`.  Pose
+  `vs_bal_to := proj_sim simq` and derive `Hupd_bal_to` in the
+  declare-or-assign form via `balances_to_dict_set_balance_eq`.
+  Pull `Hns_after_bal_from` and `Hnth_after_bal_from`.  Skolemize
+  three mia memories and final `memory_final` (post-log3 mstore).
+  `exists memory_final, vs_bal_to`; discharge the
+  `proj_sim_post_transfer = Some vs_bal_to` half via `Htransfer`
+  + `Hproj_simq`.
+- Outer RunO.Let.  Prelude (getERC20Storage + 6 binders + eq(from, 0) = 0)
+  → first switch absorber `run_let_state_match_pure_zero` with
+  `state_after_branch := state_post_bal_from`.
+- Balance-debit subblock at `from` (mirror of burn's balance-debit):
+  2 pures + add(anchor, 0) + 4 pures + first mia + sload at
+  keccak2 + `map_get_balances_eq_balanceOf sim from` rewrite + 6
+  pures + lt(fromBalance, value) → `Pure.lt` replaced with 0 →
+  `run_shallow_let_state_if_zero` absorber + 4 pures +
+  wrapping_sub + 2 pures + add(anchor, 0) + 4 pures + second mia
+  + sstore at keccak2 (storage → vs_bal_from) + 1 pure → `M.pure (Tt, tt)`.
+- Body after switch 1: canonize; second prelude → eq(to, 0) = 0 →
+  `run_let_state_match_pure_zero` with `state_after_branch :=
+  state_post_bal_to`.
+- Balance-credit subblock at `to`: 4 pures + add(anchor, 0) + 4
+  pures + third mia (at vs_bal_from) + sload at keccak2 on
+  vs_bal_from yielding `map_get_u256 (declare_or_assign ...) to`
+  → derive `Hmap_after_dec` (= `balanceOf sim_after_decrement to`)
+  via `balances_to_dict_set_balance_eq` +
+  `map_get_balances_eq_balanceOf sim_after_decrement to` and
+  rewrite + wrapping_add + sstore at keccak2 (storage → vs_bal_to)
+  → `M.pure (Tt, tt)`.
+- Log3 tail: convert_t_address pieces (from, to); unfold the
+  log3 let_state; allocate_unbounded body walk (mload_absorbing +
+  pure); abi_encode_tuple body walk; sub; log3 = M.pure tt.
+- Final composition: already discharged by upfront `exists` and
+  `vs_bal_to = proj_sim simq`.
+
+### Trust footprint after #320
+
+- `Print Assumptions ERC20Equivalence.run_fun__transfer_3243_equivalent`
+  no longer lists `run_fun__update_3335_at_proj_sim_transfer` (the
+  body Lemma is real).  Footprint identical to mint/burn:
+  `run_fun__update_1459_wraps_fun__update_3335` (wrapper bridge,
+  R070 shape) + framework primitives (`run_sload_map_u256_at_anchor`,
+  `run_sstore_map_u256_at_anchor`, `run_mload_absorbing_at_make_state`,
+  `run_mstore_absorbing_at_make_state`, etc.) +
+  `run_mapping_index_access_t_address_at_make_state` (this file's
+  R083 anchor primitive) + `CanonizeState.update_storage_eq` +
+  PrimInt63 primitives.
+- The three new Section hypotheses
+  (`namespace_binding_after_from_balance_update_transfer`,
+  `nth_balances_after_from_balance_update_transfer`,
+  `balances_to_dict_set_balance_eq`) do not appear in `Print
+  Assumptions` because they are universally quantified outside
+  the Section.  They join the other Section hypotheses
+  (`proj_sim_independent_slots`, `map_get_balances_eq_balanceOf`,
+  the `proj_sim_pointwise_*` bridges, etc.) that already gate
+  the three headline theorems.
+
+### All three branches now closed
+
+After R111 (mint) / R112 (burn) / R113 (transfer), the OZ ERC20
+`_update` body has zero `Admitted` lemmas.  The Section bridges
+that gate every branch:
+- `map_get_balances_eq_balanceOf` (used by mint, burn, transfer)
+- `proj_sim_pointwise_balance_update` (mint)
+- `namespace_binding_after_ts_update_mint`,
+  `nth_balances_after_ts_update_mint` (mint)
+- `proj_sim_pointwise_totalSupply_update` (burn)
+- `ts_offset_after_balances_update_burn`,
+  `nth_ts_after_balances_update_burn` (burn)
+- `proj_sim_independent_slots` (transfer)
+- `namespace_binding_after_from_balance_update_transfer`,
+  `nth_balances_after_from_balance_update_transfer`,
+  `balances_to_dict_set_balance_eq` (transfer)
+
+All Section hypotheses are per-inheritor structural obligations
+(reflexivity + induction on the projection's concrete shape).
 
 ---
 
