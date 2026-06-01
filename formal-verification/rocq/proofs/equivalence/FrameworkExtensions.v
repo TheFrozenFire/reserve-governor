@@ -776,4 +776,99 @@ Module FrameworkExtensions.
              codes env state failure body output state' H).
   Qed.
 
+  (** ====================================================================
+      Yul switch absorbers (R110) — raw Coq if-then-else at the switch site
+      ====================================================================
+
+      The shallow embedding of Yul [switch] does NOT lower to
+      [Shallow.if_].  Instead, each Yul switch produces a let-binding of
+      the discriminant followed by a raw Coq-level [if δ =? 0 then else_branch
+      else if_branch], packaged inside a [Shallow.let_state]:
+
+        [Shallow.let_state
+          (let~ δ := expr in if δ =? 0 then else_branch else if_branch)
+          body]
+
+      The R107 [run_shallow_let_state_if_zero] absorber doesn't match
+      because (a) the inner shape isn't [Shallow.if_], and (b) the
+      discriminant isn't already reduced.  We need two absorbers, one
+      for each branch.
+
+      Given [{{? ... | expr ⇓ Result.Ok δ_val | state ?}}] and a
+      precondition on [δ_val] (zero or nonzero), the absorber commits
+      to the branch, then defers to [run_shallow_let_state_pure_BlockUnit_Tt]
+      to discharge the surrounding [let_state]. *)
+
+  (** Absorber: Yul switch where the discriminant evaluates to zero;
+      the [else_branch] (the [δ =? 0] arm) returns Tt mode. *)
+  Lemma run_let_state_match_pure_zero
+      (codes : Codes.t) (env : Environment.t)
+      {S1 S2 : Set}
+      (state state_after_expr : option RocqOfSolidity.State.t)
+      (expr : M.t U256.t)
+      (else_branch if_branch : M.t (BlockUnit.t * S1))
+      (failure : S1)
+      (body : S1 -> S2 * Shallow.t S2)
+      (output : Result.t (BlockUnit.t * S2))
+      (state' : option RocqOfSolidity.State.t)
+      (H_expr : {{? codes, env, state | expr ⇓ Result.Ok 0 | state_after_expr ?}})
+      (H_else : {{? codes, env, state_after_expr |
+                   else_branch ⇓ Result.Ok (BlockUnit.Tt, failure)
+                 | state_after_expr ?}})
+      (H_body : {{? codes, env, state_after_expr |
+                   snd (body failure) ⇓ output | state' ?}}) :
+    {{? codes, env, state |
+      Shallow.let_state
+        (M.strong_let_ expr
+          (fun δ => if δ =? 0 then else_branch else if_branch))
+        body ⇓ output | state' ?}}.
+  Proof.
+    unfold Shallow.let_state, M.strong_let_, M.generic_let.
+    eapply RunO.Let.
+    - eapply RunO.Let.
+      + exact H_expr.
+      + cbn match. exact H_else.
+    - cbn match. exact H_body.
+  Qed.
+
+  (** Absorber: Yul switch where the discriminant evaluates to a
+      nonzero value; the [if_branch] (the [δ <> 0] arm) returns Tt
+      mode.  Mirror of [run_let_state_match_pure_zero] for the
+      non-zero discriminant case (mint branch of [fun__update_3335]:
+      [eq(0, 0) = 1]). *)
+  Lemma run_let_state_match_pure_nonzero
+      (codes : Codes.t) (env : Environment.t)
+      {S1 S2 : Set}
+      (state state_after_expr : option RocqOfSolidity.State.t)
+      (expr : M.t U256.t)
+      (δ_val : U256.t)
+      (H_δ_nz : δ_val <> 0)
+      (else_branch if_branch : M.t (BlockUnit.t * S1))
+      (failure : S1)
+      (body : S1 -> S2 * Shallow.t S2)
+      (output : Result.t (BlockUnit.t * S2))
+      (state' : option RocqOfSolidity.State.t)
+      (H_expr : {{? codes, env, state | expr ⇓ Result.Ok δ_val | state_after_expr ?}})
+      (H_if : {{? codes, env, state_after_expr |
+                 if_branch ⇓ Result.Ok (BlockUnit.Tt, failure)
+               | state_after_expr ?}})
+      (H_body : {{? codes, env, state_after_expr |
+                   snd (body failure) ⇓ output | state' ?}}) :
+    {{? codes, env, state |
+      Shallow.let_state
+        (M.strong_let_ expr
+          (fun δ => if δ =? 0 then else_branch else if_branch))
+        body ⇓ output | state' ?}}.
+  Proof.
+    unfold Shallow.let_state, M.strong_let_, M.generic_let.
+    eapply RunO.Let.
+    - eapply RunO.Let.
+      + exact H_expr.
+      + cbn match.
+        destruct (δ_val =? 0) eqn:Heq.
+        * apply Z.eqb_eq in Heq. contradiction.
+        * exact H_if.
+    - cbn match. exact H_body.
+  Qed.
+
 End FrameworkExtensions.
