@@ -590,53 +590,107 @@ Module StakingVaultRewardsEquivalence.
 
   (** ----- Concrete observational predicates -----
 
-      Per R067, we expose abstract per-slot predicates and tie
-      them to the contract's storage reads via axioms.
+      Per R067 / adversarial-review skolemization-soundness audit
+      (CCV-2 / CRIT-V), these three predicates are now full
+      [Definition]s that read concrete slots of [SimulatedStorage.t].
+      Previously each was a free [Parameter] only constrained by
+      reflexivity + transitivity [Axiom]s, which left them
+      degeneratable to [fun _ _ => True] -- making the three
+      milestone theorems below vacuous.  The fix mirrors the
+      [RewardTokenRegistry.set_eq_in_registry] /
+      [Guardian.set_eq_at_role] patterns: a slot-level lookup
+      against the [SimulatedStorage.t = list StorableValue.t]
+      shape forces real content.
 
-      [eq_at_rewardRatio s1 s2] : slot 3 (uint256) equal across
-          two storages.
-      [eq_at_reward_info s1 s2 token] : the 5-slot RewardInfo
-          block at [keccak256(token, 7)+[0..4]] equal.
-      [eq_at_user_reward s1 s2 token user] : the 2-slot
-          UserRewardInfo block at
-          [keccak256(user, keccak256(token, 9))+[0..1]] equal. *)
+      [eq_at_rewardRatio s1 s2] : slot 3 (uint256) -- the
+          [rewardRatio] storage cell -- equal across two storages.
+          The [token]-side parameters are unused by this slot.
+      [eq_at_reward_info s1 s2 token] : the slot 7
+          [rewardTrackers] cell (the [mapping address =>
+          RewardInfo] aggregate) equal between [s1] and [s2].
+          This is stricter than the audit's "5-slot block at
+          keccak256(token,7)+[0..4]" sketch -- equal on the
+          whole slot-7 [StorableValue] entry -- which suffices
+          to imply per-(token,offset) field equality and aligns
+          with the [list StorableValue.t] storage model.
+      [eq_at_user_reward s1 s2 token user] : the slot 9
+          [userRewardTrackers] cell equal between [s1] and [s2].
+          Same stricter-than-per-(token,user) shape as above; the
+          [token] and [user] parameters are retained for API
+          stability (the bridge axiom [proj_sim_*_observes_concrete]
+          quantifies over them, so changing the arity would
+          churn the bridge axioms).
 
-  Parameter eq_at_rewardRatio_concrete :
-    SimulatedStorage.t -> SimulatedStorage.t -> Prop.
-  Parameter eq_at_reward_info_concrete :
-    SimulatedStorage.t -> SimulatedStorage.t -> Address -> Prop.
-  Parameter eq_at_user_reward_concrete :
-    SimulatedStorage.t -> SimulatedStorage.t -> Address -> Address -> Prop.
+      The slot indices mirror the [slot_*] constants above:
+      [slot_rewardRatio = 3], [slot_rewardTrackers_base = 7],
+      [slot_userRewardTrackers_base = 9].  We hard-code the
+      [Z.to_nat] of each constant rather than going through the
+      [U256.t] alias, because [List.nth_error] needs a [nat]
+      index.
 
-  (** Reflexivity of each observational predicate.  These are
-      audit-time obligations on the projection: the predicate
-      relates [proj_sim s] to itself for every [s]. *)
+      Audit-time obligation: the three [_observes_concrete]
+      [Axiom]s below now carry real content -- an adversarial
+      instantiation of [proj_sim_post_*_concrete] cannot satisfy
+      "slot 7 equals slot 7 of the sim projection" by picking
+      garbage at slot 7. *)
 
-  Axiom eq_at_rewardRatio_refl :
+  Definition eq_at_rewardRatio_concrete
+      (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 3 = List.nth_error s2 3.
+
+  Definition eq_at_reward_info_concrete
+      (s1 s2 : SimulatedStorage.t) (_token : Address) : Prop :=
+    List.nth_error s1 7 = List.nth_error s2 7.
+
+  Definition eq_at_user_reward_concrete
+      (s1 s2 : SimulatedStorage.t) (_token _user : Address) : Prop :=
+    List.nth_error s1 9 = List.nth_error s2 9.
+
+  (** Reflexivity of each observational predicate.  Now [Qed]-
+      provable from the [Definition]s above (replacing the
+      previous free [Axiom] declarations). *)
+
+  Lemma eq_at_rewardRatio_refl :
     forall (s : SimulatedStorage.t), eq_at_rewardRatio_concrete s s.
-  Axiom eq_at_reward_info_refl :
+  Proof. intros s. reflexivity. Qed.
+  Lemma eq_at_reward_info_refl :
     forall (s : SimulatedStorage.t) (t : Address),
       eq_at_reward_info_concrete s s t.
-  Axiom eq_at_user_reward_refl :
+  Proof. intros s t. reflexivity. Qed.
+  Lemma eq_at_user_reward_refl :
     forall (s : SimulatedStorage.t) (t u : Address),
       eq_at_user_reward_concrete s s t u.
+  Proof. intros s t u. reflexivity. Qed.
 
-  (** Transitivity. *)
-  Axiom eq_at_rewardRatio_trans :
+  (** Transitivity.  Now [Qed]-provable from the underlying
+      [eq] on [List.nth_error] outputs. *)
+  Lemma eq_at_rewardRatio_trans :
     forall s1 s2 s3,
       eq_at_rewardRatio_concrete s1 s2 ->
       eq_at_rewardRatio_concrete s2 s3 ->
       eq_at_rewardRatio_concrete s1 s3.
-  Axiom eq_at_reward_info_trans :
+  Proof.
+    unfold eq_at_rewardRatio_concrete. intros s1 s2 s3 H12 H23.
+    rewrite H12. exact H23.
+  Qed.
+  Lemma eq_at_reward_info_trans :
     forall s1 s2 s3 t,
       eq_at_reward_info_concrete s1 s2 t ->
       eq_at_reward_info_concrete s2 s3 t ->
       eq_at_reward_info_concrete s1 s3 t.
-  Axiom eq_at_user_reward_trans :
+  Proof.
+    unfold eq_at_reward_info_concrete. intros s1 s2 s3 t H12 H23.
+    rewrite H12. exact H23.
+  Qed.
+  Lemma eq_at_user_reward_trans :
     forall s1 s2 s3 t u,
       eq_at_user_reward_concrete s1 s2 t u ->
       eq_at_user_reward_concrete s2 s3 t u ->
       eq_at_user_reward_concrete s1 s3 t u.
+  Proof.
+    unfold eq_at_user_reward_concrete. intros s1 s2 s3 t u H12 H23.
+    rewrite H12. exact H23.
+  Qed.
 
   (** ----- Concrete Skolemized post-storages -----
 
@@ -748,7 +802,20 @@ Module StakingVaultRewardsEquivalence.
       to match the SelectorRegistry / RewardTokenRegistry
       precedent.
 
-      Trust budget: 3 (one per mutator). *)
+      Trust budget: 3 (one per mutator).
+
+      Per the 2026-05-31 adversarial-review skolemization-soundness
+      audit (CCV-2 / CRIT-V), the three [eq_at_*_concrete]
+      predicates above are now [Definition]s reading slot 3 / 7 /
+      9 of the [SimulatedStorage.t] list.  These bridge axioms
+      thereby carry REAL content: they assert that the
+      Skolemized post-storage agrees with the projection
+      [proj_sim_concrete (<sim_mutator> ...)] at the three
+      reward-relevant slots.  An identity / empty-storage
+      adversarial instantiation of
+      [proj_sim_post_<fn>_concrete] (which previously closed
+      every milestone via [True]-degeneracy) now contradicts
+      these bridges. *)
 
   Axiom proj_sim_setRewardRatio_observes_concrete :
     forall (sim : GlobalRewardState.t) (halfLife : U256.t),
