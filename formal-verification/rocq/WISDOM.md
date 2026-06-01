@@ -107,6 +107,8 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R106: Sim widening to match modifier writes (preliminary to discharge)
 - R107: Shallow.let_state / Shallow.if_ structural absorbers (Yul if-revert shape)
 - R108: OZ-base body / wrapper-chain bridge — trust decomposition for inherited overrides
+- R109: OZ ERC20 _update body — Yul-helper leaf infrastructure (25 Qed leaves)
+- R110: OZ ERC20 _update body — Section bridges + Yul-switch absorber + Axiom→Lemma
 
 ### Common pitfalls and resolved issues
 - R020/R021/R035/R041/R042/R046/R073/R074: shallow_embed.py + framework bugs (RESOLVED upstream)
@@ -1794,6 +1796,202 @@ obligation. Both are required; only the first is delivered in #316.
 **First consumers:** `run_fun__update_3335_at_proj_sim_mint` /
 `_burn` / `_transfer` discharges in `proofs/equivalence/ERC20.v`,
 when the Section bridges land.
+
+---
+
+## R110: OZ ERC20 _update body — Section bridges + Yul-switch absorber
+
+Task #317 was charged with landing the structural pieces that R109
+identified as gating the OZ ERC20 `_update` body Qed closure:
+three Section bridging hypotheses for `proj_sim` pointwise
+composition + a new Shallow absorber for Yul `switch` shapes.
+
+### Piece 1: Three Section bridging hypotheses (`ERC20BaseEquivalence`)
+
+The abstract `proj_sim : ERC20.State → SimulatedStorage.t` is a
+Section Variable.  The `_update` body writes to two slots
+(`slot_balances` map + `slot_totalSupply` U256), and the final
+post-state must equal `proj_sim sim'` for the appropriate sim
+post-state.  Without compositional hypotheses tying the abstract
+`proj_sim` to per-slot updates, the body walker can produce the
+storage trace but cannot identify it with `proj_sim_post_<branch>`.
+
+Three new `Hypothesis` declarations land in the Section:
+
+1. **`map_get_balances_eq_balanceOf`** — the helper bridge that ties
+   `StorableValue.map_get_u256 (balances_to_dict sim.balances) account`
+   to `ERC20.balanceOf sim account`.  Audit-time obligation: per
+   inheritor's concrete `balances_to_dict` definition, this holds
+   structurally on the dict representation.
+
+2. **`proj_sim_pointwise_balance_update`** — the mint composition
+   bridge.  Says: composing the two storage writes (totalSupply,
+   balances) the Yul body produces equals `proj_sim (ERC20.mint sim
+   account value)`.  Handles `value = 0` edge case via dict
+   equality (writing back same value at existing key is identity;
+   for absent keys, the projection treats the `(key, 0)` entry
+   equivalently to absence).
+
+3. **`proj_sim_pointwise_totalSupply_update`** — the burn composition
+   bridge.  Says: composing the balances-decrement + totalSupply-
+   decrement writes equals `proj_sim sim'` where `ERC20.burn sim
+   account value = Success sim'`.
+
+4. **`proj_sim_independent_slots`** — the transfer composition
+   bridge.  Says: composing the from-debit and to-credit writes
+   (both into the balances slot) equals `proj_sim sim'` where
+   `ERC20.do_transfer sim from to value = Success sim'`.  Audit
+   obligation: handles the from = to self-transfer no-op case via
+   the mock's short-circuit.
+
+(The names are inherited from the brief; the contents are
+composition-bridges per branch, not "pointwise atomic update"
+shapes.  The R109 brief's shape sketches turned out to require
+composing the two slot writes per branch into a single bridge,
+because intermediate storage states between the two writes are
+not themselves equal to any `proj_sim sim_intermediate`.)
+
+Per-hypothesis trust justification:
+- Each hypothesis is parameterized by the abstract `proj_sim`.
+- At inheritor instantiation (StakingVault), `proj_sim` is concrete
+  and the slot indices are literal nats.  The `update_nth` chain
+  reduces computationally.  The remaining content is dict equality
+  of `balances_to_dict` over `set_balance` updates, which is a
+  pure Gallina lemma.
+- Net soundness: same as the prior body axioms — the inheritor
+  discharges the hypotheses by `reflexivity`/structural reasoning.
+
+### Piece 2: New Yul-switch absorber (`FrameworkExtensions`)
+
+The Yul `switch` statement lowers in the shallow embedding to:
+
+```coq
+let_state~ 'tt :=
+  let~ δ := [[ expr ]] in
+  if δ =? 0 then else_branch else if_branch
+default~ tt in <continuation>
+```
+
+The `let~ δ := ... in if δ =? 0 then _ else _` is a raw Coq
+`M.strong_let_` over a raw Coq `if`-`then`-`else`.  R107's
+`run_shallow_let_state_if_zero` doesn't match this shape because
+its inner shape is `Shallow.if_`, not raw Coq `if`.
+
+**Two new absorbers** land in `FrameworkExtensions.v`:
+
+- **`run_let_state_match_pure_zero`** — discharges the case where
+  `expr ⇓ Result.Ok 0`: commits to the `else_branch` (since
+  `0 =? 0` is `true`).
+- **`run_let_state_match_pure_nonzero`** — discharges the case
+  where `expr ⇓ Result.Ok δ_val` with `δ_val <> 0`: commits to the
+  `if_branch` (since `δ_val =? 0` is `false`).
+
+Both Qed via [eapply RunO.Let] + reduction of the raw `if` against
+the precondition.  No new audit-time axioms.
+
+### Piece 3: Axiom→Lemma signature conversion
+
+The three body axioms in `Section ERC20BaseEquivalence`
+(`run_fun__update_3335_at_proj_sim_<mint|burn|transfer>`) convert
+from `Axiom` to `Lemma <statement>. Admitted.`  Signatures
+unchanged; the conversion preserves all consumer code (downstream
+walkers compose them identically).
+
+Net trust position vs R109:
+- 0 axioms removed from `Print Assumptions` of the headline
+  theorems (`run_fun__mint_3368_equivalent` etc.) since the
+  Admitted Lemmas surface as axioms over the Section parameters.
+- 4 new Section hypotheses added (load-bearing for the headline
+  theorems once the body Qed closes; they then replace the body
+  axiom names in `Print Assumptions`).
+- 2 new Qed Lemmas in `FrameworkExtensions` (the switch
+  absorbers) — pure structural, no audit obligation.
+
+### Status: body discharge SCAFFOLD landed; Qed closure deferred
+
+The actual walker proof through `fun__update_3335`'s 125-Yul-line
+body remains pending.  Each branch (mint, burn, transfer) requires
+~400 LOC of mechanical tactic code:
+- 12-30 prelude let-bindings each handled by `eapply RunO.Let +
+  apply RunO.Pure + cbn match` (or via call-sites for helper
+  invocations).
+- One `apply run_eq_address_zero_at_zero` or `run_eq_address_zero_check`.
+- One `apply run_let_state_match_pure_<zero|nonzero>` to commit
+  to the right switch arm.
+- Per write subblock: a sequence of `eapply RunO.Let +
+  apply Pure | apply <helper>` chains for each of:
+  `sload`, `checked_add`/`wrapping_*`, `sstore`, plus the
+  composite helpers `run_read_from_storage_split_offset_0_*_at_*`
+  and `run_update_storage_value_offset_0_*_at_*`.
+- log3 emission tail: `apply run_allocate_unbounded +
+  walk abi_encode_tuple + apply run_mstore_absorbing_at_make_state
+  + apply RunO.Pure` (log3 = `M.pure tt`).
+- Final composition: `apply proj_sim_pointwise_balance_update`
+  (or `_totalSupply` / `_independent_slots` for burn / transfer).
+
+The decision to ship the SCAFFOLD without the body Qed is
+pragmatic: the walker tactic code is ~1200 LOC across three
+branches, which exceeds a single focused agent run when combined
+with the Section bridge design + new absorber.  The infrastructure
+delivered makes the body Qed a pure mechanical exercise — no new
+lemmas, no new design decisions.
+
+**Recipe for the follow-up Qed closure:**
+
+For each branch, write the walker via this skeleton (mint example):
+
+```coq
+intros codes env state_base memory sim account value
+       H_account_nz H_account_bound H_value_bound
+       H_valid H_no_overflow.
+(* Skolemize memory' via the log3 tail's mstore_absorbing. *)
+eexists.
+unfold fun__update_3335.
+unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+cbn match.
+eapply RunO.Let.
+{ (* getERC20Storage + prelude up to eq(0,0) *)
+  c; [apply run_fun__getERC20Storage_2971_returns_anchor|].
+  cbn match.
+  walk_prelude_pure.
+  (* expr_3264: eq(cleanup_t_address 0, cleanup_t_address 0) = 1 *)
+  eapply RunO.Let.
+  { simpl LowM.let_.
+    c; [apply run_cleanup_t_address|]. cbn match.
+    c; [apply run_cleanup_t_address|]. cbn match.
+    c; [apply run_eq_address_zero_at_zero|].
+    apply RunO.Pure. }
+  cbn match.
+  (* Switch: δ = 1, take else branch (mint). *)
+  apply (run_let_state_match_pure_nonzero codes env _ _ _ 1
+           ltac:(discriminate) _ _ _ _ _ _
+           ltac:(apply RunO.Pure)
+           ltac:(...else_branch_walker...)
+           ltac:(...post_switch_continuation...)).
+  ...
+}
+cbn match.
+apply RunO.Pure.
+```
+
+The else_branch_walker walks the TS-write subblock (sload + checked_add
++ sstore at anchor+2 lens), then returns `Result.Ok (Tt, tt)`.  The
+post_switch_continuation walks the second prelude → eq(account, 0) → 0,
+applies `run_let_state_match_pure_zero` to commit to the balance-credit
+arm, walks the balance-credit subblock (keccak + sload + wrapping_add +
+sstore at balances map lens), then walks the log3 tail (allocate +
+abi_encode + mstore_absorbing + log3-as-pure).  Finally, the post-state
+matches via `proj_sim_pointwise_balance_update` applied to the
+totalSupply + balances writes.
+
+Burn and transfer follow the symmetric recipe with the appropriate
+helpers (wrapping_sub / checked_sub) and the appropriate bridging
+hypothesis.
+
+**First consumers:** `run_fun__mint_3368_equivalent` /
+`run_fun__burn_3401_equivalent` / `run_fun__transfer_3243_equivalent`
+in `proofs/equivalence/ERC20.v` — once body Qed lands, their
+`Print Assumptions` will exclude the body Lemma names entirely.
 
 ---
 
