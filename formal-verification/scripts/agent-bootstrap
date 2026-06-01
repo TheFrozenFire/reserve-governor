@@ -84,22 +84,48 @@ if [[ ! -f "$ROCQ_TREE/rocq/RocqOfSolidity/RocqOfSolidity.vo" ]]; then
   echo "      Bootstrap cannot do this automatically — ask the user." >&2
 fi
 
-# 6. Enforce that origin is pull-only. The upstream `reserve-protocol/reserve-governor`
-#    is the official repo — pushes from agent work go to `thefrozenfire` (the
-#    personal fork) instead. Origin's pushurl is set to an invalid placeholder so
-#    `git push origin <branch>` fails loudly instead of silently polluting
-#    upstream with worktree-agent-* branches.
+# 6. Enforce remote layout: `upstream` is pull-only, `thefrozenfire` is the only
+#    writable remote. There is no `origin` (deliberately removed to prevent
+#    agents from reflexively reaching for it). Any `git push origin <branch>`
+#    fails with "remote not found"; `git push upstream <branch>` fails with
+#    "does not appear to be a git repository". Both failures are loud.
 #
 #    Agent worktrees share .git config with the main checkout, so this is set
 #    once at the repo level and inherited by every worktree.
-ORIGIN_PUSHURL="$(cd "$REPO_TREE" && git config remote.origin.pushurl 2>/dev/null || echo "")"
-if [[ "$ORIGIN_PUSHURL" != *"DO_NOT_PUSH"* ]]; then
-  echo "==> setting origin to pull-only (pushurl=DO_NOT_PUSH_use_thefrozenfire_remote)"
-  (cd "$REPO_TREE" && git remote set-url --push origin "DO_NOT_PUSH_use_thefrozenfire_remote")
-else
-  echo "==> origin is already pull-only (good)"
+
+# Refuse to operate if a stray `origin` remote has been re-added — call out
+# the problem rather than working around it.
+if (cd "$REPO_TREE" && git remote get-url origin >/dev/null 2>&1); then
+  echo "ERROR: an 'origin' remote exists in this repo. Per project convention," >&2
+  echo "       there is no origin — push to 'thefrozenfire', fetch from 'upstream'." >&2
+  echo "       Remove it with: git remote remove origin" >&2
+  exit 3
 fi
-echo "    Push commands: 'git push thefrozenfire <branch>'. 'git push origin' will fail loudly."
+
+# Verify upstream exists and its pushurl is the no-push placeholder.
+if ! (cd "$REPO_TREE" && git remote get-url upstream >/dev/null 2>&1); then
+  echo "ERROR: 'upstream' remote missing. Add it with:" >&2
+  echo "       git remote add upstream git@github.com:reserve-protocol/reserve-governor.git" >&2
+  echo "       git remote set-url --push upstream DO_NOT_PUSH_use_thefrozenfire_remote" >&2
+  exit 3
+fi
+UPSTREAM_PUSHURL="$(cd "$REPO_TREE" && git config remote.upstream.pushurl 2>/dev/null || echo "")"
+if [[ "$UPSTREAM_PUSHURL" != *"DO_NOT_PUSH"* ]]; then
+  echo "==> setting upstream to pull-only (pushurl=DO_NOT_PUSH_use_thefrozenfire_remote)"
+  (cd "$REPO_TREE" && git remote set-url --push upstream "DO_NOT_PUSH_use_thefrozenfire_remote")
+else
+  echo "==> upstream is already pull-only (good)"
+fi
+
+# Verify thefrozenfire (the fork) exists — agents need it to push.
+if ! (cd "$REPO_TREE" && git remote get-url thefrozenfire >/dev/null 2>&1); then
+  echo "ERROR: 'thefrozenfire' remote missing — agents have nowhere to push." >&2
+  echo "       Add it with: git remote add thefrozenfire git@github.com:TheFrozenFire/reserve-governor.git" >&2
+  exit 3
+fi
+
+echo "    Remote layout: 'upstream' (pull-only) + 'thefrozenfire' (push/pull)."
+echo "    All pushes go to 'thefrozenfire'."
 
 # 7. Sanity build (touched-file only, fast).
 if [[ $SKIP_BUILD -eq 0 ]]; then
