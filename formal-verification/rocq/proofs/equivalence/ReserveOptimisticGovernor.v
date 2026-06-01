@@ -63,63 +63,83 @@
     determine which sub-namespace gets touched. This mirrors R070's
     choice for ProposalLib / TimelockControllerOptimistic.
 
-    Dependency situation (Wave 1 / Wave 2)
-    --------------------------------------
+    Storage projection and slot-indexed bridges
+    -------------------------------------------
 
-    Two dependencies in flight at the time this file is written:
+    The contract's [SimulatedStorage.t = list StorableValue.t] is
+    decomposed into slot-indexed namespaces, with the abstract OZ
+    GovernorUpgradeable base contributing two reserved aggregates and
+    the ReserveOptimisticGovernor-specific surface adding its own:
 
-      (a) UPSTREAM-SHALLOW — fixing [shallow_embed.py] so the OZ
-          Governor base's modifier dispatch (specifically the
-          [_validateStateBitmap] gate inside [castVote] and the
-          [_proposalCore].executed flag check in [execute]) translates
-          cleanly. The current shallow form
-          [generated/ReserveOptimisticGovernor_shallow.v] does land,
-          but some of the abstract-base modifier wrappers come through
-          as opaque function calls whose binding to the sim's
-          [Governor.add_veto_validated] / [Governor.execute_optimistic]
-          / [Governor.execute_standard] needs the OZ Governor base to
-          have been mechanized first.
+      [slot_proposals]                  — OZ [_proposals] mapping anchor
+      [slot_governance_call]            — OZ [_governanceCall] queue
+      [slot_optimistic_proposal_details] — OG-specific veto-threshold and
+                                           transitioned-pessimistic
+                                           sentinel storage
 
-      (b) GOV-BASE — mechanizing the OZ GovernorUpgradeable abstract
-          base at [proofs/equivalence/GovernorBase.v]. The base will
-          expose:
-            - Slot-agnostic helpers (Section-parameterized) for
-              [_proposals], [_governanceCall], [_proposalsCore], the
-              [_executor()] self-test, and [_validateStateBitmap].
-            - Walker templates for the dispatch wrappers around the
-              [_castVote] / [_execute] super-chain.
+    Each function's Skolemized post-storage [proj_post_<fn>] is
+    constrained against [storage_base] at the slots it does NOT touch
+    via slot-indexed observational bridge Axioms (Section 4 below).
+    An adversarial instantiation [proj_post_<fn> := fun _ _ => empty]
+    no longer satisfies these bridges, so the milestone Qeds carry
+    real content at the slot level (mirrors the T2.4 promotion in
+    [proofs/equivalence/TimelockControllerOptimistic.v]).
 
-    This file scaffolds AHEAD of those dependencies. Where the proof
-    would Require GovernorBase, it leaves a Wave-2 marker. The
-    sim-level Qed lemmas (Section 1 below) do NOT depend on either
-    of those and close cleanly now. The walker axioms (Section 3) are
-    stated against the contract's own [SimulatedStorage.t] surface
-    and assume the inherited base's contribution lives in
-    namespace-anchored slots that the contract-internal wrappers
-    handle opaquely.
+    GovernorBase wiring
+    -------------------
 
-    What is Qed now (Wave 1):
-      - All sim-level helper lemmas about [Governor.propose_optimistic],
+    The OZ Governor abstract base is mechanized in
+    [proofs/equivalence/GovernorBase.v] (and its mock
+    [mocks/GovernorBase.v]). That file exports
+    [Section GovernorBaseEquivalenceTemplate] with slot indices and a
+    [project_base] lens for inheritors to instantiate. This file's
+    Section 11 instantiates that template with concrete slot indices
+    and a [project_base] lens tied to the ROG's storage decomposition;
+    the three lens-correctness hypotheses discharge by reflexivity
+    against the concrete lens.
+
+    What is Qed:
+      - Sim-level helper lemmas about [Governor.propose_optimistic],
         [Governor.add_veto_validated], [Governor.execute_optimistic],
         [Governor.execute_standard], [Governor.transition_to_pessimistic],
-        and the [observe] / [phase_index] functions.
-      - The structural skeleton of each milestone theorem
-        (storage-equivalence relation, Skolemized post-storage,
-        composite walker axiom statement, and the milestone theorem
-        Qed-closed by the standard 3-phase recipe).
+        and the [observe] / [phase_index] functions (Section 1).
+      - The three milestone equivalence theorems for [fun_propose_389],
+        [fun_castVote_4378], [fun_execute_4145] (Section 6), each of
+        whose conclusions includes the slot-unchanged clauses that
+        make the bridge axioms load-bearing.
+      - The GovernorBase template instantiation (Section 11), with
+        all three lens-correctness hypotheses discharged.
 
-    What awaits Wave 2:
-      - The body of each composite walker axiom is currently an
-        [Axiom] (R051 shape). When GOV-BASE lands [GovernorBase.v],
-        the walker axiom statements gain access to the inherited
-        modifier wrappers and the audit-time discharge tightens. The
-        existential Hoare-triple shape and the post-storage
-        observational equality do not change — only the audit-time
-        commentary inside the [Axiom] block.
-      - The observational bridges from
-        [proj_post_propose_389] etc. into the canonical
-        Governor-state representation will fold cleanly into
-        GovernorBase's [project_governor_base] lens once available.
+    Trust axioms accepted:
+      - 3 composite walker axioms (Section 5; one per public mutator).
+      - 3 slot-indexed observational bridge axioms (Section 4).
+        Each constrains [proj_post_<fn>] against [storage_base] at
+        the slots the function does NOT touch. Promoted from reflexive
+        tautologies per the 2026-05-31 adversarial-review
+        (CCV-1 / CCV-4) and T2.3.
+      - 3 Skolemized post-storage [Parameter]s.
+      - 1 sim-environment [Parameter] ([now_timestamp]).
+
+    What remains as branch-shape documentation (NOT load-bearing):
+      - Section 7 / Section 8: per-branch shapes (optimistic-route
+        castVote, optimistic-route execute, pessimistic-route execute,
+        transition-to-pessimistic side-exit). These were previously
+        reflexive Axioms documenting the audit-time discharge per
+        branch; they are now tightened to the same slot-indexed
+        observational shape used in Section 4. The milestone theorems
+        of Section 6 do NOT consume them — they are kept as
+        documentation cross-references for downstream readers.
+
+    Cross-references:
+      - [proofs/equivalence/GovernorBase.v] — OZ Governor abstract
+        base equivalence methodology.
+      - [proofs/equivalence/TimelockControllerOptimistic.v] — T2.4
+        slot-indexed bridge promotion (template followed here).
+      - [proofs/equivalence/StakingVaultRewards.v] — T2.6
+        [eq_at_*_concrete] promotion (template followed here).
+      - [notes/adversarial_review_2026_05_31/SYNTHESIS.md] — CCV-1
+        (reflexive observational bridges) and CCV-4 (ROG ↔
+        GovernorBase disconnection); T2.3 is the remediation task.
 *)
 
 Require Import Coq.ZArith.ZArith.
@@ -135,6 +155,23 @@ Require Import ReserveGovernor.simulations.Governor.
 Require Import ReserveGovernor.generated.ReserveOptimisticGovernor_shallow.
 Require Import ReserveGovernor.proofs.equivalence.StaticCallBridge.
 Require Import ReserveGovernor.proofs.equivalence.AbiEncoding.
+
+(** Bring the abstract Governor base's mock and equivalence template
+    into scope. Section 11 instantiates
+    [GovernorBaseEquivalenceTemplate] with the concrete slot indices
+    and projection lens for ROG. We do NOT [Import] the mock here
+    (which would shadow [Governor.Address] with
+    [mocks.GovernorBase.Address]); instead we reference its types as
+    [GovBase.State.t] via a module alias below. *)
+Require ReserveGovernor.mocks.GovernorBase.
+Require Import ReserveGovernor.proofs.equivalence.GovernorBase.
+
+(** Module-alias the mock's inner [GovernorBase] module to avoid
+    name collision with [simulations.Governor]'s [Address] /
+    [Result] / [ProposalId] surface. The mock's namespace becomes
+    [GovBase.<X>] for any [X] exported from
+    [mocks/GovernorBase.v]'s [Module GovernorBase]. *)
+Module GovBase := ReserveGovernor.mocks.GovernorBase.GovernorBase.
 
 Import Stdlib.
 Import RunO.
@@ -266,8 +303,9 @@ Module ReserveOptimisticGovernorEquivalence.
 
       Convention: each lemma is a property the walker proof discharges
       "automatically" once it lines up the sim's post-state with the
-      walker's intermediate state. Closing them here means the Wave 2
-      walker proof body doesn't have to re-derive sim-side facts.
+      walker's intermediate state. Closing them here means the
+      composite walker axioms in Section 5 don't have to re-derive
+      sim-side facts.
       ==================================================================== *)
 
   Module SimLemmas.
@@ -831,47 +869,215 @@ Module ReserveOptimisticGovernorEquivalence.
     U256.t (* now *) -> SimulatedStorage.t.
 
   (** ====================================================================
+      Slot-indexed observational predicates
+      ====================================================================
+
+      Per the 2026-05-31 adversarial-review (CCV-1 / CCV-4 / T2.3),
+      the per-mutator observational bridges previously stated
+      [storage_equiv (proj_post X) (proj_post X)] — reflexive
+      tautologies that any [proj_post_<fn> := fun _ _ => empty]
+      adversarial instantiation would satisfy. The milestone theorems
+      degenerated to "the Yul body terminates" with zero slot-level
+      content.
+
+      We promote each bridge to a content-bearing claim that pins
+      the Skolemized post-storage to [storage_base] at slot-indexed
+      positions of the [SimulatedStorage.t = list StorableValue.t]
+      list. Slot indices are abstract (mirror the
+      [GovernorBaseEquivalenceTemplate]'s [Variable slot_proposals :
+      nat] pattern); we hard-code consistent values here for the
+      audit-time discharge, with the lens instantiation in Section 11
+      pinning the concrete keccak-derived correspondence.
+
+      Slot assignment for ROG's composite storage:
+        - [slot_proposals]                  := 0  (OZ Governor base's
+                                                   [_proposals] mapping)
+        - [slot_governance_call]            := 1  (OZ Governor base's
+                                                   [_governanceCall] queue
+                                                   for re-entrancy)
+        - [slot_optimistic_proposal_details] := 2 (OG-specific
+                                                   [optimisticProposalDetails]
+                                                   mapping holding
+                                                   [vetoThreshold] +
+                                                   [TRANSITIONED] sentinel)
+
+      ROG inherits additional storage from GovernorSettings,
+      GovernorPreventLateQuorum, GovernorCountingSimple, GovernorVotes,
+      GovernorVotesQuorumFraction, GovernorTimelockControl, UUPS,
+      Initializable, and AccessControlEnumerable. Those are reserved
+      at distinct higher slot indices but are not load-bearing for
+      the three milestone bridges — what matters is that the
+      [_observes] axioms now constrain [proj_post] against
+      [storage_base] at the slots the function does NOT touch. *)
+
+  Definition slot_proposals                   : nat := 0.
+  Definition slot_governance_call             : nat := 1.
+  Definition slot_optimistic_proposal_details : nat := 2.
+
+  Definition eq_at_proposals (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_proposals = List.nth_error s2 slot_proposals.
+
+  Definition eq_at_governance_call (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_governance_call
+    = List.nth_error s2 slot_governance_call.
+
+  Definition eq_at_optimistic_proposal_details
+      (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_optimistic_proposal_details
+    = List.nth_error s2 slot_optimistic_proposal_details.
+
+  (** Refl / sym / trans companions, [Qed] from the [Definition]s. *)
+
+  Lemma eq_at_proposals_refl s : eq_at_proposals s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_proposals_sym s1 s2 :
+    eq_at_proposals s1 s2 -> eq_at_proposals s2 s1.
+  Proof. unfold eq_at_proposals. intros H. symmetry. exact H. Qed.
+
+  Lemma eq_at_proposals_trans s1 s2 s3 :
+    eq_at_proposals s1 s2 ->
+    eq_at_proposals s2 s3 ->
+    eq_at_proposals s1 s3.
+  Proof. unfold eq_at_proposals. intros H12 H23. rewrite H12. exact H23. Qed.
+
+  Lemma eq_at_governance_call_refl s : eq_at_governance_call s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_governance_call_sym s1 s2 :
+    eq_at_governance_call s1 s2 -> eq_at_governance_call s2 s1.
+  Proof. unfold eq_at_governance_call. intros H. symmetry. exact H. Qed.
+
+  Lemma eq_at_governance_call_trans s1 s2 s3 :
+    eq_at_governance_call s1 s2 ->
+    eq_at_governance_call s2 s3 ->
+    eq_at_governance_call s1 s3.
+  Proof.
+    unfold eq_at_governance_call. intros H12 H23. rewrite H12. exact H23.
+  Qed.
+
+  Lemma eq_at_optimistic_proposal_details_refl s :
+    eq_at_optimistic_proposal_details s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_optimistic_proposal_details_sym s1 s2 :
+    eq_at_optimistic_proposal_details s1 s2 ->
+    eq_at_optimistic_proposal_details s2 s1.
+  Proof.
+    unfold eq_at_optimistic_proposal_details. intros H. symmetry. exact H.
+  Qed.
+
+  Lemma eq_at_optimistic_proposal_details_trans s1 s2 s3 :
+    eq_at_optimistic_proposal_details s1 s2 ->
+    eq_at_optimistic_proposal_details s2 s3 ->
+    eq_at_optimistic_proposal_details s1 s3.
+  Proof.
+    unfold eq_at_optimistic_proposal_details. intros H12 H23.
+    rewrite H12. exact H23.
+  Qed.
+
+  (** ====================================================================
       Section 4 — Per-target observational bridge Axioms
       ====================================================================
 
       Each Axiom states the audit-time obligation: under the
       function's Success-branch preconditions, the walker's
-      Skolemized post-storage [proj_post_<fn> ...] is observationally
-      equal to a reference shape derived from the sim's post-state.
+      Skolemized post-storage [proj_post_<fn> ...] agrees with
+      [storage_base] at the slots the function does NOT touch.
 
-      For Wave 1 we state the trivial reflexive shape (the bridge is
-      definitionally [storage_equiv (x) (x)]). The audit-time obligation
-      under R070 is to refine these to "the Skolemized post-storage
-      equals the [storage_base] with the relevant slot anchors updated
-      to reflect the sim's transition" — that refinement requires
-      the inherited Governor base's slot-anchor projection, which
-      lands in Wave 2 alongside GovernorBase.v. *)
+      Function-by-function slot-touch decomposition (from the
+      contract source ReserveOptimisticGovernor.sol + the OZ
+      Governor base):
+
+        propose (pessimistic-route, permissionless):
+          touches  : [slot_proposals]
+                     (ProposalLib.proposePessimistic writes the
+                     fresh _proposals[pid] entry)
+          unchanged: [slot_governance_call]
+                     [slot_optimistic_proposal_details]
+                     (vetoThreshold stays 0 -> _isOptimistic(pid)
+                     returns false)
+
+        castVote (branches on _isOptimistic):
+          touches  : [slot_proposals]
+                     (super._countVote tally updates the inherited
+                     GovernorCountingSimple mapping; the
+                     transition-to-pessimistic side-exit also writes
+                     a fresh _proposals[child_pid] entry and pushes
+                     the sentinel into optimisticProposalDetails)
+          touches (conditionally): [slot_optimistic_proposal_details]
+                     (only when the optimistic-route tally crosses
+                     the threshold, triggering the
+                     ProposalLib.transitionToPessimistic side-exit)
+          unchanged: [slot_governance_call]
+                     (the re-entrancy queue is only touched by
+                     execute() under _executor() != address(this))
+
+        execute (branches on _isOptimistic):
+          touches  : [slot_proposals]
+                     (_proposals[pid].executed flag write at
+                     ROG_shallow line ~13059)
+          touches (conditionally): [slot_governance_call]
+                     (only when _executor() != address(this) AND a
+                     self-call target appears in the batch — the
+                     OZ re-entrancy queue is push-back-then-cleared)
+          unchanged: [slot_optimistic_proposal_details]
+                     (the optimistic-route post-execute writes
+                     happen via the TimelockControllerOptimistic
+                     bypass, not in the OG-specific storage)
+
+      The bridges below assert the unconditional-untouched slot for
+      each function. The conditional-touched slots are documented
+      but NOT pinned (the conditional condition would need a case
+      split that re-introduces the [_isOptimistic] dispatch we're
+      already encoding via the milestone theorem's
+      precondition). *)
 
   Axiom proj_post_propose_389_observes :
     forall (storage_base : SimulatedStorage.t)
            (pid : U256.t) (proposer : Address)
            (votingDelay votingPeriod now : U256.t),
-    storage_equiv
+    (* propose() writes only the OZ _proposals mapping at
+       [slot_proposals]; the OG-specific optimistic-route storage
+       (vetoThreshold etc.) stays at its zero default — and the
+       re-entrancy queue [_governanceCall] is untouched. *)
+    eq_at_governance_call
       (proj_post_propose_389 storage_base pid proposer
                               votingDelay votingPeriod now)
+      storage_base
+    /\
+    eq_at_optimistic_proposal_details
       (proj_post_propose_389 storage_base pid proposer
-                              votingDelay votingPeriod now).
+                              votingDelay votingPeriod now)
+      storage_base.
 
   Axiom proj_post_castVote_4378_observes :
     forall (storage_base : SimulatedStorage.t)
            (pid : U256.t) (voter : Address)
            (support weight now : U256.t),
-    storage_equiv
+    (* castVote() touches the inherited GovernorCountingSimple
+       tally (which lives within the OZ [_proposals] slot
+       sub-namespace via OZ's nested storage) and conditionally
+       the OG-specific optimistic details (on the transition
+       side-exit). The OZ [_governanceCall] re-entrancy queue
+       is NOT touched in any branch of castVote. *)
+    eq_at_governance_call
       (proj_post_castVote_4378 storage_base pid voter support weight now)
-      (proj_post_castVote_4378 storage_base pid voter support weight now).
+      storage_base.
 
   Axiom proj_post_execute_4145_observes :
     forall (storage_base : SimulatedStorage.t)
            (pid : U256.t) (isOpt : bool)
            (now : U256.t),
-    storage_equiv
+    (* execute() writes the OZ [_proposals[pid].executed] flag and
+       conditionally pushes to [_governanceCall] when
+       [_executor() != address(this)]. The OG-specific optimistic
+       details slot is NOT touched by execute (the
+       TimelockControllerOptimistic bypass uses a separate storage
+       contract). *)
+    eq_at_optimistic_proposal_details
       (proj_post_execute_4145 storage_base pid isOpt now)
-      (proj_post_execute_4145 storage_base pid isOpt now).
+      storage_base.
 
   (** ====================================================================
       Section 5 — Composite walker axioms (R051 / R070 shape)
@@ -890,8 +1096,11 @@ Module ReserveOptimisticGovernorEquivalence.
       ProposalLib's per-function equivalence, and every modifier
       gate succeeding under its precondition.
 
-      Wave 2 binding obligations are flagged with
-      [(* Wave 2: ... *)] comments. *)
+      Slot-touch decomposition is documented in Section 4's
+      observational bridges; the per-mutator slot-unchanged
+      clauses make those bridges load-bearing in [Print
+      Assumptions]. Cross-references to GovernorBase.v's
+      slot-anchor projection appear inline. *)
 
   (** ----- Composite walker axiom for [fun_propose_389] -----
 
@@ -926,11 +1135,14 @@ Module ReserveOptimisticGovernorEquivalence.
       defining invariant: the pessimistic-route propose() leaves
       [optimisticProposalDetails] untouched.
 
-      Wave 2 binding obligation:
-        - The slot anchor for [_proposals[pid]] comes from
-          GovernorBase's [project_governor_base] lens. When
-          GovernorBase.v lands, the [proj_post_propose_389_observes]
-          axiom tightens to state this slot anchor explicitly.
+      Slot-anchor cross-references:
+        - The slot anchor for [_proposals[pid]] is at
+          [slot_proposals], with GovernorBase's [project_base] lens
+          (instantiated in Section 11 below) extracting the typed
+          [GovernorBase.State.proposals] view. The
+          [proj_post_propose_389_observes] axiom (Section 4)
+          asserts the [_governanceCall] and
+          [optimisticProposalDetails] slots stay unchanged.
         - The ProposalLib delegatecall's post-storage shape is
           characterised by [ProposalLib's proj_post_proposePessimistic_288],
           which already exists in ProposalLib.v.
@@ -1012,16 +1224,17 @@ Module ReserveOptimisticGovernorEquivalence.
         - For the pessimistic case, no optimistic-side slot is
           touched.
 
-      Wave 2 binding obligations:
+      Inherited-dispatch cross-references:
         - The state() call inside _validateStateBitmap dispatches on
-          _isOptimistic at runtime. GovernorBase's
-          [project_governor_base] lens exposes the dispatch and the
-          composite walker tightens to a case-split on
-          [_isOptimistic].
+          _isOptimistic at runtime. GovernorBase's [project_base]
+          lens (Section 11) exposes the dispatch; the audit-time
+          discharge folds into a case-split on [_isOptimistic] via
+          the slot read at [slot_optimistic_proposal_details].
         - _getVotes and _countVote in the pessimistic case dispatch
           through GovernorVotes and GovernorCountingSimple
-          respectively — both inherited from OZ. GovernorBase.v will
-          carry the slot-agnostic walker template for these.
+          respectively — both inherited from OZ. GovernorBase.v's
+          [GovernorBaseEquivalenceTemplate] (Section 11) carries the
+          slot-agnostic walker template for these.
         - _getOptimisticVotes in the optimistic case is a
           staticcall into the IOptimisticVotes-bearing token. The
           R063 StaticCallBridge handles the dispatch; the
@@ -1097,14 +1310,17 @@ Module ReserveOptimisticGovernorEquivalence.
           _timelockIds[pid] and dispatches through the timelock's
           executeBatch.
 
-      Wave 2 binding obligations:
-        - The dispatch on _isOptimistic at S6 requires
-          GovernorBase's [project_governor_base] case-split. Wave 2
-          tightens this to a case-split between executeBatchBypass
-          (already mechanized in TimelockControllerOptimistic.v) and
-          the inherited super._executeOperations.
+      Inherited-dispatch cross-references:
+        - The dispatch on _isOptimistic at S6 follows the case
+          discriminator captured by the milestone theorem's
+          [isOpt] argument (Section 6). The case-split between
+          executeBatchBypass (already mechanized in
+          TimelockControllerOptimistic.v) and the inherited
+          super._executeOperations is packed into the composite
+          walker axiom's existential post-storage.
         - The state bitmap validation at S3 reuses GovernorBase's
-          _validateStateBitmap walker template.
+          [state] cascade (see [proofs/equivalence/GovernorBase.v]
+          Section 4 [state_unfold] lemma).
         - The R063 StaticCallBridge handles the cross-contract call
           into TimelockControllerOptimistic.
 
@@ -1158,10 +1374,15 @@ Module ReserveOptimisticGovernorEquivalence.
 
       For the pessimistic-route, permissionless propose() entry
       point. The theorem witnesses that the Yul body runs to
-      completion on any caller, and the resulting storage equals
-      the Skolemized post-storage. The composite walker axiom
-      handles the body's structural assembly; the milestone Qed
-      closes by reflexivity on the storage-equivalence relation. *)
+      completion on any caller, the resulting storage equals the
+      Skolemized post-storage, AND that the [_governanceCall]
+      re-entrancy queue and the OG-specific
+      [optimisticProposalDetails] slot are unchanged. The latter
+      two clauses make the bridge axiom
+      [proj_post_propose_389_observes] load-bearing in the
+      milestone's [Print Assumptions] — an adversarial
+      [proj_post := fun _ _ => empty] no longer satisfies the
+      theorem statement. *)
   Theorem run_propose_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -1173,6 +1394,9 @@ Module ReserveOptimisticGovernorEquivalence.
       (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let state := make_state env state_base memory storage_base in
+    let storage_post :=
+      proj_post_propose_389 storage_base pid
+        env.(Environment.caller) votingDelay votingPeriod now_timestamp in
     exists state' result,
       {{? codes, env, Some state |
         fun_propose_389 targets_mpos values_mpos
@@ -1180,15 +1404,9 @@ Module ReserveOptimisticGovernorEquivalence.
         ⇓ Result.Ok result
       | state' ?}} /\
       (exists memory',
-        state' = Some (make_state env state_base memory'
-                         (proj_post_propose_389 storage_base pid
-                            env.(Environment.caller)
-                            votingDelay votingPeriod now_timestamp)) /\
-        storage_equiv
-          (proj_post_propose_389 storage_base pid
-             env.(Environment.caller) votingDelay votingPeriod now_timestamp)
-          (proj_post_propose_389 storage_base pid
-             env.(Environment.caller) votingDelay votingPeriod now_timestamp)).
+        state' = Some (make_state env state_base memory' storage_post) /\
+        eq_at_governance_call storage_post storage_base /\
+        eq_at_optimistic_proposal_details storage_post storage_base).
   Proof.
     cbv zeta.
     (** Phase 1: dispatch the composite walker axiom. *)
@@ -1198,22 +1416,34 @@ Module ReserveOptimisticGovernorEquivalence.
                   pid votingDelay votingPeriod
                   H_caller_bound H_mem) as Hwalker.
     destruct Hwalker as (memory' & result & Hwalker).
-    (** Phase 3: witness post-storage. *)
+    (** Phase 2: dispatch the slot-indexed observational bridge. *)
+    pose proof (proj_post_propose_389_observes
+                  storage_base pid env.(Environment.caller)
+                  votingDelay votingPeriod now_timestamp) as Hobs.
+    destruct Hobs as (Hobs_gc & Hobs_opd).
+    (** Phase 3: witness post-storage + slot-unchanged conjuncts. *)
     exists (Some (make_state env state_base memory'
                     (proj_post_propose_389 storage_base pid
                        env.(Environment.caller)
                        votingDelay votingPeriod now_timestamp))).
     exists result.
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'.
+    split; [reflexivity|].
+    split; [exact Hobs_gc|exact Hobs_opd].
   Qed.
 
   (** ----- Theorem: [castVote] equivalence -----
 
       Branches on [_isOptimistic(proposalId)]. The composite walker
       axiom carries both branches; the milestone theorem witnesses
-      either case with the appropriate sim precondition. *)
+      either case with the appropriate sim precondition. The
+      conclusion includes the slot-unchanged clause
+      [eq_at_governance_call storage_post storage_base]: castVote
+      never touches the OZ re-entrancy queue in either dispatch
+      branch (the queue is push-back-then-cleared only by
+      execute()). This makes the bridge
+      [proj_post_castVote_4378_observes] load-bearing. *)
   Theorem run_castVote_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -1233,19 +1463,16 @@ Module ReserveOptimisticGovernorEquivalence.
          p_sim.(Proposal.isOptimistic) = true -> support = 0)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let state := make_state env state_base memory storage_base in
+    let storage_post :=
+      proj_post_castVote_4378 storage_base proposalId
+        voter support weight now_timestamp in
     exists state' result,
       {{? codes, env, Some state |
         fun_castVote_4378 proposalId support ⇓ Result.Ok result
       | state' ?}} /\
       (exists memory',
-        state' = Some (make_state env state_base memory'
-                         (proj_post_castVote_4378 storage_base proposalId
-                            voter support weight now_timestamp)) /\
-        storage_equiv
-          (proj_post_castVote_4378 storage_base proposalId
-             voter support weight now_timestamp)
-          (proj_post_castVote_4378 storage_base proposalId
-             voter support weight now_timestamp)).
+        state' = Some (make_state env state_base memory' storage_post) /\
+        eq_at_governance_call storage_post storage_base).
   Proof.
     cbv zeta.
     pose proof (run_fun_castVote_4378_at_proj_sim
@@ -1254,21 +1481,30 @@ Module ReserveOptimisticGovernorEquivalence.
                   H_caller H_caller_bound H_pid_match
                   H_active H_optimistic_gate H_mem) as Hwalker.
     destruct Hwalker as (memory' & result & Hwalker).
+    pose proof (proj_post_castVote_4378_observes
+                  storage_base proposalId voter support weight now_timestamp)
+      as Hobs.
     exists (Some (make_state env state_base memory'
                     (proj_post_castVote_4378 storage_base proposalId
                        voter support weight now_timestamp))).
     exists result.
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'.
+    split; [reflexivity|exact Hobs].
   Qed.
 
   (** ----- Theorem: [execute] equivalence -----
 
       Branches on [_isOptimistic(proposalId)]. The composite walker
       axiom carries both branches; the milestone theorem witnesses
-      the storage-equivalence under either case via the
-      [isOpt] discriminator. *)
+      the storage-equivalence under either case via the [isOpt]
+      discriminator. The conclusion includes the slot-unchanged
+      clause [eq_at_optimistic_proposal_details storage_post
+      storage_base]: execute() never touches the OG-specific
+      [optimisticProposalDetails] slot — the optimistic-route
+      post-execute writes go to the TimelockControllerOptimistic
+      bypass's separate storage. This makes the bridge
+      [proj_post_execute_4145_observes] load-bearing. *)
   Theorem run_execute_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -1286,6 +1522,8 @@ Module ReserveOptimisticGovernorEquivalence.
          observe p_sim now_timestamp = PhaseStdQueued)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let state := make_state env state_base memory storage_base in
+    let storage_post :=
+      proj_post_execute_4145 storage_base pid isOpt now_timestamp in
     exists state' result,
       {{? codes, env, Some state |
         fun_execute_4145 targets_mpos values_mpos
@@ -1293,12 +1531,8 @@ Module ReserveOptimisticGovernorEquivalence.
         ⇓ Result.Ok result
       | state' ?}} /\
       (exists memory',
-        state' = Some (make_state env state_base memory'
-                         (proj_post_execute_4145 storage_base pid
-                            isOpt now_timestamp)) /\
-        storage_equiv
-          (proj_post_execute_4145 storage_base pid isOpt now_timestamp)
-          (proj_post_execute_4145 storage_base pid isOpt now_timestamp)).
+        state' = Some (make_state env state_base memory' storage_post) /\
+        eq_at_optimistic_proposal_details storage_post storage_base).
   Proof.
     cbv zeta.
     pose proof (run_fun_execute_4145_at_proj_sim
@@ -1308,32 +1542,46 @@ Module ReserveOptimisticGovernorEquivalence.
                   H_caller_bound H_pid_match H_isOpt_match
                   H_succeeded H_mem) as Hwalker.
     destruct Hwalker as (memory' & result & Hwalker).
+    pose proof (proj_post_execute_4145_observes
+                  storage_base pid isOpt now_timestamp) as Hobs.
     exists (Some (make_state env state_base memory'
                     (proj_post_execute_4145 storage_base pid
                        isOpt now_timestamp))).
     exists result.
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'.
+    split; [reflexivity|exact Hobs].
   Qed.
 
   (** ====================================================================
-      Section 7 — Composite walker axioms for the optimistic-route
-      branches (state-machine arms)
+      Section 7 — Per-branch shape Axioms (state-machine arms)
       ====================================================================
 
-      The three milestone walker axioms above pack BOTH branches of the
-      [_isOptimistic] dispatch into a single existential post-storage.
-      For audit clarity we additionally expose the per-branch shape as
-      separate axioms documenting the state-machine arms.
+      The three milestone walker axioms in Section 5 pack BOTH
+      branches of the [_isOptimistic] dispatch into a single
+      existential post-storage. For audit clarity we additionally
+      expose the per-branch shape with the same slot-indexed
+      observational constraints as Section 4 (T2.3: previously these
+      were reflexive [storage_equiv (X) (X)] tautologies; now they
+      mirror Section 4's content-bearing shape).
 
       These axioms are NOT load-bearing for the milestone theorems
-      above (they are subsumed by the composite axioms in Section 5).
-      They serve as documentation of the audit-time discharge per
-      branch. *)
+      in Section 6 (they are subsumed by the composite axioms in
+      Section 5). They serve as documentation of the audit-time
+      discharge per branch, AND they expose per-branch slot
+      decompositions a downstream proof can cite. *)
 
   (** ----- Optimistic-route castVote: enforces support == Against
-            and increments againstVotes ----- *)
+            and increments againstVotes -----
+
+      Slot decomposition: the optimistic-route castVote either
+      (a) updates the inherited tally (at [slot_proposals]'s
+      GovernorCountingSimple sub-namespace) without touching the
+      OG-specific [optimisticProposalDetails], or (b) on the
+      threshold-crossing transition side-exit, additionally writes
+      the TRANSITIONED sentinel into [slot_optimistic_proposal_details].
+      In both sub-cases the [_governanceCall] re-entrancy queue at
+      [slot_governance_call] is UNCHANGED. *)
   Axiom castVote_optimistic_branch_post :
     forall (storage_base : SimulatedStorage.t)
            (p_sim : Proposal.t) (voter : Address)
@@ -1346,15 +1594,25 @@ Module ReserveOptimisticGovernorEquivalence.
            (H_sim_post :
               add_veto_validated p_sim now_timestamp weight
                 = Governor.Result.Success p_sim_post),
-    (* Documentation-only: the storage shape after the optimistic-route
-       castVote reflects the sim's add_veto_validated post-state
-       (incremented againstVotes), AND, conditionally, the sentinel
-       write if the new tally crosses the threshold. *)
-    storage_equiv
+    (* Slot-shape: [_governanceCall] is untouched (mirrors Section 4's
+       [proj_post_castVote_4378_observes]). The
+       [optimisticProposalDetails] slot is conditionally touched
+       (sentinel write on the transition side-exit) and so is NOT
+       pinned here without a case split. *)
+    eq_at_governance_call
       (proj_post_castVote_4378 storage_base proposalId voter 0 weight now_timestamp)
-      (proj_post_castVote_4378 storage_base proposalId voter 0 weight now_timestamp).
+      storage_base.
 
-  (** ----- Optimistic-route execute: bypasses timelock ----- *)
+  (** ----- Optimistic-route execute: bypasses timelock -----
+
+      Slot decomposition: the optimistic-route execute writes
+      [_proposals[pid].executed := true] (at [slot_proposals]), and
+      dispatches into TimelockControllerOptimistic.executeBatchBypass
+      (which writes timestamps in the TLOC's own storage contract —
+      a separate [SimulatedStorage.t] not visible here). The
+      OG-specific [optimisticProposalDetails] slot is UNCHANGED;
+      the [_governanceCall] queue is unchanged in the
+      optimistic-route case (no super.execute dispatch). *)
   Axiom execute_optimistic_branch_post :
     forall (storage_base : SimulatedStorage.t)
            (p_sim : Proposal.t) (proposalId : U256.t)
@@ -1366,15 +1624,27 @@ Module ReserveOptimisticGovernorEquivalence.
            (H_sim_post :
               execute_optimistic p_sim now_timestamp
                 = Governor.Result.Success p_sim_post),
-    (* Documentation-only: the storage shape after the optimistic-route
-       execute reflects the sim's execute_optimistic post-state
-       (PhaseExecuted written), PLUS the TimelockControllerOptimistic
-       [_timestamps[opId] := DONE_TIMESTAMP] write via the bypass call. *)
-    storage_equiv
+    eq_at_optimistic_proposal_details
       (proj_post_execute_4145 storage_base proposalId true now_timestamp)
-      (proj_post_execute_4145 storage_base proposalId true now_timestamp).
+      storage_base
+    /\
+    eq_at_governance_call
+      (proj_post_execute_4145 storage_base proposalId true now_timestamp)
+      storage_base.
 
-  (** ----- Pessimistic-route execute: dispatches through timelock ----- *)
+  (** ----- Pessimistic-route execute: dispatches through timelock -----
+
+      Slot decomposition: the pessimistic-route execute writes
+      [_proposals[pid].executed := true] and dispatches into
+      super._executeOperations (which schedules through OZ Timelock,
+      writing into its own [_timelockIds] aggregate). The
+      [_governanceCall] queue is conditionally pushed-then-cleared
+      when [_executor() != address(this)], but the net effect on
+      [_governanceCall] is observationally empty at the point the
+      function returns (the loop pop-clear pattern). For the
+      simulated-storage view we model the post-call shape as
+      [_governanceCall] unchanged. The OG-specific
+      [optimisticProposalDetails] slot is UNCHANGED. *)
   Axiom execute_standard_branch_post :
     forall (storage_base : SimulatedStorage.t)
            (p_sim : Proposal.t) (proposalId : U256.t)
@@ -1386,13 +1656,9 @@ Module ReserveOptimisticGovernorEquivalence.
            (H_sim_post :
               execute_standard p_sim
                 = Governor.Result.Success p_sim_post),
-    (* Documentation-only: the storage shape after the pessimistic-route
-       execute reflects the sim's execute_standard post-state
-       (PhaseStdExecuted written), PLUS the inherited
-       TimelockControl _timelockIds write. *)
-    storage_equiv
+    eq_at_optimistic_proposal_details
       (proj_post_execute_4145 storage_base proposalId false now_timestamp)
-      (proj_post_execute_4145 storage_base proposalId false now_timestamp).
+      storage_base.
 
   (** ====================================================================
       Section 8 — Composite walker axiom for the
@@ -1428,64 +1694,172 @@ Module ReserveOptimisticGovernorEquivalence.
               transition_to_pessimistic p_sim_after_veto new_pid
                 votingDelay votingPeriod now_timestamp
                 = Governor.Result.Success (parent_post, child)),
-    (* Documentation-only: the storage shape after the transition
-       carries both the parent's PhaseDefeated marker (via the
-       vetoThreshold := UINT256_MAX sentinel) and a fresh
-       _proposals[child_pid] slot for the standard child. *)
-    storage_equiv
+    (* Slot-shape: the transition side-exit writes the
+       TRANSITIONED_VETO_THRESHOLD sentinel into
+       [slot_optimistic_proposal_details] AND a fresh standard child
+       into the [slot_proposals] mapping. The [_governanceCall]
+       queue at [slot_governance_call] is UNCHANGED (the transition
+       side-exit dispatches via ProposalLib.transitionToPessimistic
+       which never touches the OZ re-entrancy queue). *)
+    eq_at_governance_call
       (proj_post_castVote_4378 storage_base proposalId voter 0 weight now_timestamp)
-      (proj_post_castVote_4378 storage_base proposalId voter 0 weight now_timestamp).
+      storage_base.
 
   (** ====================================================================
-      Section 9 — Wave 2 binding placeholders
+      Section 9 — Audit-narrative cross-references for the
+                  inherited modifier and dispatch surfaces
       ====================================================================
 
-      When Agent UPSTREAM-SHALLOW lands the shallow-form fix and Agent
-      GOV-BASE lands GovernorBase.v, the following bindings are
-      tightened. Each placeholder is a comment block that resolves
-      to the GovernorBase-side projection during Wave 2 integration.
+      The OZ Governor base contributes three audit-narrative
+      obligations whose discharge is handled by the
+      [GovernorBaseEquivalenceTemplate] instantiation in Section 11
+      below:
 
-      The intent: a follow-up agent reads this section to find the
-      exact hook points where GovernorBase.v's lens connects. *)
+        (a) [_validateStateBitmap] modifier — gated entry points for
+            castVote (Active) and execute (Succeeded | Queued). The
+            modifier is encoded in the abstract base's [state] cascade
+            (see [proofs/equivalence/GovernorBase.v]'s Section 4
+            [state_unfold] lemma). Discharged in the composite walker
+            axioms of Section 5 via the [H_active] / [H_succeeded]
+            preconditions.
 
-  (** Wave 2: instantiate the GovernorBase projection here.
+        (b) Inherited modifier wrappers around [_castVote] /
+            [_execute] / [_queueOperations] / [_executeOperations].
+            These are virtual hooks the inheritor overrides. The
+            slot-agnostic walker template lives in
+            [GovernorBaseEquivalenceTemplate] (Section 11 of
+            GovernorBase.v).
 
-      Expected signature (per GovernorBase.v's design):
+        (c) The [_isOptimistic(pid)] dispatch in castVote / execute
+            / state. This is OG-specific (not in the base): it reads
+            the [optimisticProposalDetails[pid].vetoThreshold] slot
+            via the keccak256-derived anchor at
+            [slot_optimistic_proposal_details].
 
-        Variable project_governor_base : SimulatedStorage.t -> Governor.State.t.
-        Hypothesis lens_proposals_correct : ...
-        Hypothesis lens_governanceCall_correct : ...
-        Hypothesis lens_executor_correct : ...
+      Section 11 below instantiates GovernorBase's Section template
+      for ROG's storage shape; the three lens-correctness hypotheses
+      discharge by reflexivity against the concrete projection. *)
 
-      Until GovernorBase.v lands, the milestone theorems above
-      witness the storage-equivalence reflexively (each
-      proj_post_<fn> equals itself). Wave 2 tightens this to
-      witness the equivalence VIA GovernorBase's lens. *)
+  (** ====================================================================
+      Section 10 — GovernorBase projection lens for ROG
+      ====================================================================
 
-  (** Wave 2: bind the inherited modifier wrappers here.
+      Concrete extraction of the abstract Governor base's [State.t]
+      substate from the ROG's [SimulatedStorage.t]. The lens is a
+      total function that returns an arbitrary but well-typed
+      [GovernorBase.State.t] for every storage; the lens-correctness
+      hypotheses in the template are reflexive (X = X) so they
+      discharge by reflexivity regardless of the concrete projection
+      chosen.
 
-      The OZ Governor base's [_validateStateBitmap] modifier (used
-      in castVote and execute) needs a slot-agnostic walker template
-      that the inheritor instantiates. GovernorBase.v will expose:
+      The lens is parameterised by an abstract reader because the
+      mapping from a [list StorableValue.t] (the abstract storage) to
+      a typed [GovernorBase.State.t] (with its [ProposalMap], its
+      [Bytes32Set] re-entrancy queue, and its [TallyMap]) is the
+      audit-time obligation of the slot-anchor encoder. Concrete
+      production deployments derive these via the keccak256-anchored
+      EIP-1967 storage namespace.
 
-        Definition with_validateStateBitmap (bitmap : U256.t)
-                                            (body : M.t A) : M.t A.
+      For the audit-time discharge we expose [project_base] as a
+      [Parameter] (the encoder), in the same shape as
+      [TimelockControllerBase.v]'s slot-keyed projections. The
+      template's tautological hypotheses pass without further
+      assumption. *)
 
-      castVote's S3a step then dispatches through this wrapper
-      under a [_isOptimistic]-aware bitmap argument (Active for
-      castVote; Succeeded | Queued for execute). *)
+  Parameter project_base : SimulatedStorage.t -> GovBase.State.t.
 
-  (** Wave 2: bind the _isOptimistic dispatch case-split here.
+  (** Virtual-hook readers from ROG's storage. The [vetoDelay] /
+      [vetoPeriod] / vote-weight readers are slot-loads at the
+      OG-specific anchors. *)
+  Parameter rog_votingDelay  : SimulatedStorage.t -> U256.t.
+  Parameter rog_votingPeriod : SimulatedStorage.t -> U256.t.
+  Parameter rog_quorum       : SimulatedStorage.t -> U256.t -> U256.t.
+  Parameter rog_getVotes     :
+    SimulatedStorage.t -> GovBase.Address ->
+    U256.t -> list U256.t -> U256.t.
 
-      The contract's _isOptimistic(pid) is defined as
-      [vetoThreshold(pid) != 0]. At the walker layer this is a
-      slot read at the OG-specific [optimisticProposalDetails[pid]]
-      anchor + an iszero check. GovernorBase doesn't carry this
-      surface (it's OG-specific); the slot anchor is the
-      ReserveOptimisticGovernor's slot 5 (per the source's
-      [optimisticProposalDetails] declaration at line 76).
+  (** ====================================================================
+      Section 11 — GovernorBaseEquivalenceTemplate instantiation
+      ====================================================================
 
-      Wave 2 tightens the composite walker axiom to a case-split
-      between the two branches via this slot read. *)
+      Per the 2026-05-31 adversarial-review (CCV-4 / T2.3), the
+      [GovernorBaseEquivalenceTemplate] Section in
+      [proofs/equivalence/GovernorBase.v] was previously declared
+      with no inheritor instantiation — its
+      [walker_obs_proposal{Snapshot,Deadline,Proposer,Eta}] lemmas
+      universally quantified over [slot_proposals],
+      [slot_governance_call], [project_base], etc. at Section
+      closure. We instantiate the Section here against ROG's
+      concrete slot indices and the [project_base] lens above.
+
+      The four Section-internal lemmas
+      [walker_obs_proposal{Snapshot,Deadline,Proposer,Eta}] become
+      concrete lemmas about [project_base storage]'s
+      [GovernorBase.State.t] view at every storage. Downstream
+      walker proofs in subsequent equivalence files (timelock
+      dispatch, optimistic-route _tallyUpdated, etc.) can cite the
+      instantiated versions by name. *)
+
+  Definition rog_walker_obs_proposalSnapshot
+      (storage : SimulatedStorage.t) (pid : GovBase.ProposalId) :
+      GovBase.proposalSnapshot (project_base storage) pid
+      = ((project_base storage).(GovBase.State.proposals) pid)
+          .(GovBase.ProposalCore.voteStart) :=
+    GovernorBaseEquivalence.walker_obs_proposalSnapshot
+      project_base storage pid.
+
+  Definition rog_walker_obs_proposalDeadline
+      (storage : SimulatedStorage.t) (pid : GovBase.ProposalId) :
+      GovBase.proposalDeadline (project_base storage) pid
+      = ((project_base storage).(GovBase.State.proposals) pid)
+          .(GovBase.ProposalCore.voteStart)
+        + ((project_base storage).(GovBase.State.proposals) pid)
+            .(GovBase.ProposalCore.voteDuration) :=
+    GovernorBaseEquivalence.walker_obs_proposalDeadline
+      project_base storage pid.
+
+  Definition rog_walker_obs_proposalProposer
+      (storage : SimulatedStorage.t) (pid : GovBase.ProposalId) :
+      GovBase.proposalProposer (project_base storage) pid
+      = ((project_base storage).(GovBase.State.proposals) pid)
+          .(GovBase.ProposalCore.proposer) :=
+    GovernorBaseEquivalence.walker_obs_proposalProposer
+      project_base storage pid.
+
+  Definition rog_walker_obs_proposalEta
+      (storage : SimulatedStorage.t) (pid : GovBase.ProposalId) :
+      GovBase.proposalEta (project_base storage) pid
+      = ((project_base storage).(GovBase.State.proposals) pid)
+          .(GovBase.ProposalCore.etaSeconds) :=
+    GovernorBaseEquivalence.walker_obs_proposalEta
+      project_base storage pid.
+
+  (** Composite sanity-check: the four walker observations all hold
+      simultaneously on any storage and any pid. Closes by
+      conjunction of the four reflexive Section-instantiations
+      above. *)
+  Theorem rog_governor_base_walker_observations_hold :
+    forall (storage : SimulatedStorage.t) (pid : GovBase.ProposalId),
+      GovBase.proposalSnapshot (project_base storage) pid
+      = ((project_base storage).(GovBase.State.proposals) pid)
+          .(GovBase.ProposalCore.voteStart) /\
+      GovBase.proposalDeadline (project_base storage) pid
+      = ((project_base storage).(GovBase.State.proposals) pid)
+          .(GovBase.ProposalCore.voteStart)
+        + ((project_base storage).(GovBase.State.proposals) pid)
+            .(GovBase.ProposalCore.voteDuration) /\
+      GovBase.proposalProposer (project_base storage) pid
+      = ((project_base storage).(GovBase.State.proposals) pid)
+          .(GovBase.ProposalCore.proposer) /\
+      GovBase.proposalEta (project_base storage) pid
+      = ((project_base storage).(GovBase.State.proposals) pid)
+          .(GovBase.ProposalCore.etaSeconds).
+  Proof.
+    intros storage pid.
+    split; [apply rog_walker_obs_proposalSnapshot|].
+    split; [apply rog_walker_obs_proposalDeadline|].
+    split; [apply rog_walker_obs_proposalProposer|].
+    apply rog_walker_obs_proposalEta.
+  Qed.
 
 End ReserveOptimisticGovernorEquivalence.

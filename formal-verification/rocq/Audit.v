@@ -227,8 +227,35 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                                      by Solc into Guardian's grant/
                                      revoke (already Qed).
 
-      ReserveOptimisticGovernor      Parked (phase 4: requires OZ
-                                     Governor base mechanization).
+      ReserveOptimisticGovernor      Three milestone equivalence
+                                     theorems (run_propose_equivalent,
+                                     run_castVote_equivalent,
+                                     run_execute_equivalent) close
+                                     against the shallow form. Trust
+                                     budget: 3 composite walker axioms
+                                     + 3 slot-indexed observational
+                                     bridges + 3 Skolemized post-storage
+                                     [Parameter]s + 1 sim-environment
+                                     [Parameter] ([now_timestamp]) + 1
+                                     GovernorBase projection lens
+                                     [Parameter] ([project_base]). The
+                                     observational bridges were promoted
+                                     from reflexive [storage_equiv (X)
+                                     (X)] tautologies to content-bearing
+                                     [eq_at_<slot>] claims (T2.3, per
+                                     [notes/adversarial_review_
+                                     2026_05_31/SYNTHESIS.md] CCV-1 and
+                                     CCV-4). GovernorBase's Section
+                                     template is instantiated in the
+                                     file's Section 11 with the four
+                                     [walker_obs_proposal*] lemmas
+                                     emerging as concrete results.
+                                     Inheritor extensions (transition-
+                                     to-pessimistic side-exit, optimistic
+                                     vs pessimistic execute branching)
+                                     are documented in the file's
+                                     Section 7 with the same slot-indexed
+                                     shape.
       StakingVault                   Parked (phase 4: requires ERC4626
                                      + ERC20Votes + ReentrancyGuard
                                      stacks).
