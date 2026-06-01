@@ -48,8 +48,13 @@
 
     Trust axioms accepted:
       - 5 composite walker axioms.
-      - 1-2 non-trivial observational bridges (the rest collapse to
-        reflexivity via [storage_equiv_refl]).
+      - 5 slot-indexed observational bridge axioms (per the
+        2026-05-31 adversarial-review skolemization-soundness audit
+        (CCV-1 / CCV-2 / CRIT-V), the bridges were promoted from
+        reflexive [storage_equiv (X) (X)] tautologies to
+        content-bearing [eq_at_<slot> (proj_post_<fn> ...) storage_base]
+        claims; an empty-storage adversarial instantiation of
+        [proj_post_<fn>] no longer satisfies them).
       - 5 Skolemized post-storage [Parameter]s.
       - 1 sim-environment [Parameter] ([now_timestamp]).
 
@@ -251,73 +256,182 @@ Module TimelockControllerOptimisticEquivalence.
     SimulatedStorage.t -> OpId -> U256.t -> SimulatedStorage.t.
 
   (** ====================================================================
+      Concrete slot-indexed observational predicates
+      ====================================================================
+
+      Per the 2026-05-31 adversarial-review skolemization-soundness
+      audit (CCV-1 / CCV-2 / CRIT-V), the [_observes] bridges that
+      previously stated [storage_equiv (proj_post X) (proj_post X)]
+      were tautologies on the Skolem -- the same opaque
+      [proj_post_<fn>] appeared on both sides, constraining nothing.
+      An adversarial inheritor could pick any
+      [proj_post_<fn> := fun _ _ => empty] without contradicting the
+      bridges, leaving the milestone theorems content-free.
+
+      We promote the bridges to content-bearing claims that relate
+      the Skolemized post-storage to a CONCRETE reference shape
+      derived from [storage_base] at slot-indexed positions of the
+      [SimulatedStorage.t = list StorableValue.t] list. Each bridge
+      now asserts equality at the specific slots the contract's Yul
+      body touches:
+
+        - [slot_timestamps] (the OZ TimelockControllerStorage
+          namespace anchor, holding the [mapping bytes32 => uint256
+          _timestamps] aggregate at slot offset 0 / its EIP-7201
+          keccak256 anchor).
+        - [slot_roles]      (the OZ AccessControlStorage namespace
+          anchor, holding the [mapping bytes32 => RoleData _roles]
+          aggregate).
+
+      The slot-index choice is abstract (mirrors
+      [TimelockControllerBase.v]'s [Variable slot_timestamps : nat]
+      template); downstream inheritors / instantiation sites pin the
+      concrete keccak256-derived value.  We hard-code
+      [slot_timestamps := 0] and [slot_roles := 1] here because
+      [List.nth_error] needs a [nat] index and the abstract list
+      shape supports any consistent assignment; what matters is that
+      the predicates [eq_at_timestamps] / [eq_at_roles] now carry
+      real content (an empty-storage adversarial instantiation of
+      [proj_post_<fn>] no longer satisfies "slot 0 equals slot 0 of
+      storage_base"). *)
+
+  Definition slot_timestamps : nat := 0.
+  Definition slot_roles      : nat := 1.
+
+  Definition eq_at_timestamps (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_timestamps = List.nth_error s2 slot_timestamps.
+
+  Definition eq_at_roles (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_roles = List.nth_error s2 slot_roles.
+
+  (** Reflexivity / transitivity of each slot-indexed predicate,
+      [Qed]-provable from the [Definition]s above. Mirrors
+      [StakingVaultRewards.eq_at_*_concrete_refl] /
+      [_trans] / [Guardian.set_eq_at_role] / [RewardTokenRegistry.set_eq_in_registry]
+      patterns. *)
+
+  Lemma eq_at_timestamps_refl s : eq_at_timestamps s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_timestamps_sym s1 s2 :
+    eq_at_timestamps s1 s2 -> eq_at_timestamps s2 s1.
+  Proof. unfold eq_at_timestamps. intros H. symmetry. exact H. Qed.
+
+  Lemma eq_at_timestamps_trans s1 s2 s3 :
+    eq_at_timestamps s1 s2 ->
+    eq_at_timestamps s2 s3 ->
+    eq_at_timestamps s1 s3.
+  Proof.
+    unfold eq_at_timestamps. intros H12 H23.
+    rewrite H12. exact H23.
+  Qed.
+
+  Lemma eq_at_roles_refl s : eq_at_roles s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_roles_sym s1 s2 :
+    eq_at_roles s1 s2 -> eq_at_roles s2 s1.
+  Proof. unfold eq_at_roles. intros H. symmetry. exact H. Qed.
+
+  Lemma eq_at_roles_trans s1 s2 s3 :
+    eq_at_roles s1 s2 ->
+    eq_at_roles s2 s3 ->
+    eq_at_roles s1 s3.
+  Proof.
+    unfold eq_at_roles. intros H12 H23.
+    rewrite H12. exact H23.
+  Qed.
+
+  (** ====================================================================
       Per-target observational bridge Axioms
       ====================================================================
 
-      Each Axiom states the audit-time obligation:
-        "Under the function's Success-branch preconditions, the
-         walker's Skolemized post-storage [proj_post_<fn> ...] is
-         observationally equal to a reference shape derived from the
-         sim's post-state."
+      Each Axiom states the audit-time obligation: under the
+      function's Success-branch preconditions, the walker's
+      Skolemized post-storage [proj_post_<fn> ...] agrees with
+      [storage_base] at the slots the function does NOT touch.
+      An adversarial instantiation that returns garbage at the
+      untouched slots now contradicts these bridges.
 
-      For [revokeOptimisticProposer] the reference is the unchanged
-      Timelock storage (the role write doesn't touch the Timelock
-      namespace).
+      For [revokeOptimisticProposer] the function writes only the
+      AccessControl role map at [slot_roles] -- the [slot_timestamps]
+      slot is unchanged.
 
       For the four timestamps mutators
       ([executeBatchBypass]/[scheduleBatch]/[executeBatch]/[cancel])
-      the reference shape is the storage_base with the
-      [_timestamps[id]] slot updated to the value the sim transition
-      writes:
+      the function writes only the [_timestamps[id]] aggregate at
+      [slot_timestamps] -- the [slot_roles] slot is unchanged. The
+      audit-time obligation that the [slot_timestamps] value matches
+      the sim's [set_ts] write is documented in the per-bridge
+      comments below; pinning the post-value at [slot_timestamps]
+      requires a slot-encoding lemma for the [TsMap] aggregate
+      (mapping(bytes32 => uint256) layout) and is left to the
+      instantiation site of
+      [TimelockControllerBaseEquivalenceTemplate]. The CURRENT
+      bridges are content-bearing on the [_unchanged_ slot] side --
+      enough to defeat the [proj_post := fun _ _ => empty]
+      adversarial instantiation that previously closed all five
+      milestones via [True]-degeneracy.
 
+      The sim-side post-value targets the bridges document:
         scheduleBatch:        timestamps[id] := now + delay
         executeBatch:         timestamps[id] := DONE_TIMESTAMP (1)
         cancel:               timestamps[id] := 0
         executeBatchBypass:   timestamps[id] := DONE_TIMESTAMP (1)
                               (via the inner executeBatch dispatch).
 
-      Each Axiom is a single equation. Audit-time discharge is a
-      slot-by-slot mapping_index_access + sstore composition. *)
+      Audit-time discharge of the full slot-by-slot equality is a
+      [mapping_index_access] + [sstore] composition; see
+      [proofs/equivalence/TimelockControllerBase.v]'s
+      [walker_obs_getTimestamp] / [walker_obs_hasRole] for the
+      lens-correctness hypotheses an inheritor supplies. *)
 
   Axiom proj_post_revokeOptimisticProposer_136_observes :
     forall (storage_base : SimulatedStorage.t) (account : Address),
     (* The Timelock-side projection is unchanged: revokeOptimisticProposer
        writes only the AccessControl role map, leaving timestamps and
        minDelay alone. *)
-    storage_equiv
+    eq_at_timestamps
       (proj_post_revokeOptimisticProposer_136 storage_base account)
-      (proj_post_revokeOptimisticProposer_136 storage_base account).
+      storage_base.
 
   Axiom proj_post_executeBatchBypass_201_observes :
     forall (storage_base : SimulatedStorage.t)
            (id : OpId) (now_ : U256.t),
-    (* Net effect: timestamps[id] = DONE_TIMESTAMP (Unset -> Done).
-       The intermediate now-write is shadowed by the inner executeBatch
-       call's DONE_TIMESTAMP write. *)
-    storage_equiv
+    (* Net effect on timestamps: timestamps[id] = DONE_TIMESTAMP
+       (Unset -> Done).  The intermediate now-write is shadowed by
+       the inner executeBatch call's DONE_TIMESTAMP write. The
+       [slot_roles] aggregate is untouched. *)
+    eq_at_roles
       (proj_post_executeBatchBypass_201 storage_base id now_)
-      (proj_post_executeBatchBypass_201 storage_base id now_).
+      storage_base.
 
   Axiom proj_post_scheduleBatch_1295_observes :
     forall (storage_base : SimulatedStorage.t)
            (id : OpId) (delay now_ : U256.t),
-    storage_equiv
+    (* Net effect on timestamps: timestamps[id] = now + delay.
+       The [slot_roles] aggregate is untouched. *)
+    eq_at_roles
       (proj_post_scheduleBatch_1295 storage_base id delay now_)
-      (proj_post_scheduleBatch_1295 storage_base id delay now_).
+      storage_base.
 
   Axiom proj_post_executeBatch_1552_observes :
     forall (storage_base : SimulatedStorage.t)
            (id : OpId) (now_ : U256.t),
-    storage_equiv
+    (* Net effect on timestamps: timestamps[id] = DONE_TIMESTAMP.
+       The [slot_roles] aggregate is untouched. *)
+    eq_at_roles
       (proj_post_executeBatch_1552 storage_base id now_)
-      (proj_post_executeBatch_1552 storage_base id now_).
+      storage_base.
 
   Axiom proj_post_cancel_1394_observes :
     forall (storage_base : SimulatedStorage.t)
            (id : OpId) (now_ : U256.t),
-    storage_equiv
+    (* Net effect on timestamps: timestamps[id] = 0.  The
+       [slot_roles] aggregate is untouched. *)
+    eq_at_roles
       (proj_post_cancel_1394 storage_base id now_)
-      (proj_post_cancel_1394 storage_base id now_).
+      storage_base.
 
   (** ====================================================================
       Composite walker axioms — one per function
@@ -649,7 +763,14 @@ Module TimelockControllerOptimisticEquivalence.
                  shape).
         Phase 3: witness the post-storage. *)
 
-  (** ----- R071 Theorem: [revokeOptimisticProposer] equivalence ----- *)
+  (** ----- R071 Theorem: [revokeOptimisticProposer] equivalence -----
+
+      Conclusion includes [eq_at_timestamps storage_post storage_base]:
+      the function writes only the AccessControl role map at
+      [slot_roles], so the [slot_timestamps] slot is preserved. This
+      clause makes the bridge axiom
+      [proj_post_revokeOptimisticProposer_136_observes] load-bearing
+      (it appears in [Print Assumptions] of this milestone). *)
   Theorem run_fun_revokeOptimisticProposer_136_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -669,7 +790,8 @@ Module TimelockControllerOptimisticEquivalence.
       (exists memory',
         state' = Some (make_state env state_base memory' storage_post) /\
         storage_equiv storage_post
-          (proj_post_revokeOptimisticProposer_136 storage_base account)).
+          (proj_post_revokeOptimisticProposer_136 storage_base account) /\
+        eq_at_timestamps storage_post storage_base).
   Proof.
     cbv zeta.
     (** Phase 1: dispatch the composite walker axiom. *)
@@ -678,16 +800,23 @@ Module TimelockControllerOptimisticEquivalence.
                   H_caller_canceller H_caller_bound H_account_bound H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & Hwalker).
+    (** Phase 2: dispatch the slot-unchanged observational bridge. *)
+    pose proof (proj_post_revokeOptimisticProposer_136_observes
+                  storage_base account) as Hobs.
     (** Phase 3: witness post-storage. *)
     exists (Some (make_state env state_base memory'
                     (proj_post_revokeOptimisticProposer_136 storage_base account))).
     exists (proj_post_revokeOptimisticProposer_136 storage_base account).
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'. split; [reflexivity|].
+    split; [apply storage_equiv_refl|exact Hobs].
   Qed.
 
-  (** ----- R071 Theorem: [executeBatchBypass] equivalence ----- *)
+  (** ----- R071 Theorem: [executeBatchBypass] equivalence -----
+
+      Conclusion includes [eq_at_roles storage_post storage_base]:
+      the function writes only the [_timestamps] aggregate at
+      [slot_timestamps], so the [slot_roles] slot is preserved. *)
   Theorem run_fun_executeBatchBypass_201_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -723,7 +852,8 @@ Module TimelockControllerOptimisticEquivalence.
       (exists memory',
         state' = Some (make_state env state_base memory' storage_post) /\
         storage_equiv storage_post
-          (proj_post_executeBatchBypass_201 storage_base id now_timestamp)).
+          (proj_post_executeBatchBypass_201 storage_base id now_timestamp) /\
+        eq_at_roles storage_post storage_base).
   Proof.
     cbv zeta.
     pose proof (run_fun_executeBatchBypass_201_at_proj_sim
@@ -736,15 +866,21 @@ Module TimelockControllerOptimisticEquivalence.
                   H_unset H_success H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & Hwalker).
+    pose proof (proj_post_executeBatchBypass_201_observes
+                  storage_base id now_timestamp) as Hobs.
     exists (Some (make_state env state_base memory'
                     (proj_post_executeBatchBypass_201 storage_base id now_timestamp))).
     exists (proj_post_executeBatchBypass_201 storage_base id now_timestamp).
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'. split; [reflexivity|].
+    split; [apply storage_equiv_refl|exact Hobs].
   Qed.
 
-  (** ----- R071 Theorem: [scheduleBatch] equivalence ----- *)
+  (** ----- R071 Theorem: [scheduleBatch] equivalence -----
+
+      Conclusion includes [eq_at_roles storage_post storage_base]:
+      the function writes only the [_timestamps] aggregate at
+      [slot_timestamps], so the [slot_roles] slot is preserved. *)
   Theorem run_fun_scheduleBatch_1295_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -778,7 +914,8 @@ Module TimelockControllerOptimisticEquivalence.
       (exists memory',
         state' = Some (make_state env state_base memory' storage_post) /\
         storage_equiv storage_post
-          (proj_post_scheduleBatch_1295 storage_base id delay now_timestamp)).
+          (proj_post_scheduleBatch_1295 storage_base id delay now_timestamp) /\
+        eq_at_roles storage_post storage_base).
   Proof.
     cbv zeta.
     pose proof (run_fun_scheduleBatch_1295_at_proj_sim
@@ -791,12 +928,14 @@ Module TimelockControllerOptimisticEquivalence.
                   H_unset H_delay_ok H_success H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & Hwalker).
+    pose proof (proj_post_scheduleBatch_1295_observes
+                  storage_base id delay now_timestamp) as Hobs.
     exists (Some (make_state env state_base memory'
                     (proj_post_scheduleBatch_1295 storage_base id delay now_timestamp))).
     exists (proj_post_scheduleBatch_1295 storage_base id delay now_timestamp).
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'. split; [reflexivity|].
+    split; [apply storage_equiv_refl|exact Hobs].
   Qed.
 
   (** ----- R071 Theorem: [executeBatch] equivalence ----- *)
@@ -834,7 +973,8 @@ Module TimelockControllerOptimisticEquivalence.
       (exists memory',
         state' = Some (make_state env state_base memory' storage_post) /\
         storage_equiv storage_post
-          (proj_post_executeBatch_1552 storage_base id now_timestamp)).
+          (proj_post_executeBatch_1552 storage_base id now_timestamp) /\
+        eq_at_roles storage_post storage_base).
   Proof.
     cbv zeta.
     pose proof (run_fun_executeBatch_1552_at_proj_sim
@@ -847,15 +987,21 @@ Module TimelockControllerOptimisticEquivalence.
                   H_ready H_no_predecessor H_success H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & Hwalker).
+    pose proof (proj_post_executeBatch_1552_observes
+                  storage_base id now_timestamp) as Hobs.
     exists (Some (make_state env state_base memory'
                     (proj_post_executeBatch_1552 storage_base id now_timestamp))).
     exists (proj_post_executeBatch_1552 storage_base id now_timestamp).
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'. split; [reflexivity|].
+    split; [apply storage_equiv_refl|exact Hobs].
   Qed.
 
-  (** ----- R071 Theorem: [cancel] equivalence ----- *)
+  (** ----- R071 Theorem: [cancel] equivalence -----
+
+      Conclusion includes [eq_at_roles storage_post storage_base]:
+      the function writes only the [_timestamps] aggregate at
+      [slot_timestamps], so the [slot_roles] slot is preserved. *)
   Theorem run_fun_cancel_1394_equivalent
       (codes : Codes.t) (env : Environment.t)
       (state_base : RocqOfSolidity.State.t)
@@ -882,7 +1028,8 @@ Module TimelockControllerOptimisticEquivalence.
       (exists memory',
         state' = Some (make_state env state_base memory' storage_post) /\
         storage_equiv storage_post
-          (proj_post_cancel_1394 storage_base id now_timestamp)).
+          (proj_post_cancel_1394 storage_base id now_timestamp) /\
+        eq_at_roles storage_post storage_base).
   Proof.
     cbv zeta.
     pose proof (run_fun_cancel_1394_at_proj_sim
@@ -891,12 +1038,14 @@ Module TimelockControllerOptimisticEquivalence.
                   H_pending H_success H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & Hwalker).
+    pose proof (proj_post_cancel_1394_observes
+                  storage_base id now_timestamp) as Hobs.
     exists (Some (make_state env state_base memory'
                     (proj_post_cancel_1394 storage_base id now_timestamp))).
     exists (proj_post_cancel_1394 storage_base id now_timestamp).
-    split.
-    - exact Hwalker.
-    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+    split; [exact Hwalker|].
+    exists memory'. split; [reflexivity|].
+    split; [apply storage_equiv_refl|exact Hobs].
   Qed.
 
 End TimelockControllerOptimisticEquivalence.
