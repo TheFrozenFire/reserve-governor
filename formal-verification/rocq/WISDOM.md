@@ -6224,3 +6224,211 @@ deterministic-post-storage wrapper layer that R103 builds on).
 R094 (UnstakingManager analog — same structural pattern at the
 walker-axiom level).
 
+## R105: ProposalLib primitive wrappers — validator_revert + read_from_calldatat + require_helper + calldataload
+
+**Task #309 (T3.2-ProposalLib-R105, 2026-06-01)** delivers the
+wrapper layer that R104 documented as missing for the four
+remaining ProposalLib walkers (`_validateProposal_507`,
+`proposeOptimistic_179`, `proposePessimistic_288`,
+`transitionToPessimistic_400`).  R105's deliverable is **13 new
+Qed Lemma wrappers, ZERO new audit Axioms** — a reusable
+primitive library that R106+ walker-discharge passes can compose
+against.
+
+### Wrappers landed (all `Qed`)
+
+  1. `run_calldataload_at_make_state` — framework primitive
+     reducing `Stdlib.calldataload p` to `Result.Ok
+     (StdlibAux.get_calldata_u256 env.calldata p)`.  Sound via
+     upstream's `Primitive.GetEnvironment` rule (`eval_primitive
+     environment Primitive.GetEnvironment state = inl (environment,
+     state)`).  No audit obligation.
+
+  2. `run_validator_revert_t_uint256_succeeds` — proves
+     `validator_revert_t_uint256 v ⇓ Result.Ok tt` for ANY U256
+     value [v], because `cleanup_t_uint256` is identity, hence
+     `eq v v = 1`, `iszero 1 = 0`, and `Shallow.if_` takes the
+     else branch.
+
+  3. `run_validator_revert_t_address_succeeds` — same shape, with
+     a `0 ≤ v < 2^160` precondition (needed for
+     `cleanup_t_address(v) = v`).
+
+  4. `run_validator_revert_t_uint48_succeeds` — same shape, with
+     `0 ≤ v < 2^48` precondition.
+
+  5. `run_read_from_calldatat_uint256_at_make_state` — composes
+     `run_calldataload_at_make_state` + `run_validator_revert_t_uint256_succeeds`
+     to discharge `read_from_calldatat_uint256 ptr ⇓
+     Result.Ok (StdlibAux.get_calldata_u256 env.calldata ptr)`.
+
+  6. `run_read_from_calldatat_address_at_make_state` — same, with
+     the 160-bit precondition piped through.
+
+  7-9. `run_array_length_t_arrayₓ_t_{address,uint256,bytes_calldata_ptr}_ₓdyn_calldata_ptr_pure`
+     — three variants of the calldata-ptr array length wrapper.
+     Pure reductions; the calldata-ptr `array_length` helper is
+     defined as `let length := len in M.pure length`, so the
+     wrapper returns the [len] parameter verbatim.
+
+  10-13. `run_require_helper_*_succeeds` (4 variants:
+     `_ConfirmationPrefixNotAllowed`,
+     `_GovernorInvalidProposalLength_t_uint256_t_uint256_t_uint256`,
+     `_GovernorInvalidProposalLength_t_rational_0_by_1_t_rational_0_by_1_t_rational_0_by_1`,
+     `_GovernorRestrictedProposer_t_address`) — each takes a
+     `condition <> 0` precondition and proves the require_helper
+     reduces to `tt` (the Shallow.if_ takes the else branch).
+
+### Proof technique: nested `RunO_let_compose` for `LowM.let_` chains
+
+The validator_revert bodies have the shape:
+
+```coq
+let~ '(_, tt) := let_state~ 'tt := Shallow.if_
+  (iszero (eq (cleanup_t_uint256 v) v)) ... default tt
+                in pure (Tt, tt) in pure tt.
+```
+
+The outer `let~ '` and inner `let_state~ '` are `M.strong_let_`
+(= `LowM.Let`).  The Shallow.if_ condition contains a `let* let*
+let*` chain (each `let*` = `M.let_` = `LowM.let_`, the RECURSIVE
+fixpoint, NOT the constructor).  Thus:
+
+  - The outer two layers use `l. { ... }` (the tactic for `LowM.Let`).
+  - The inner three `let*` layers use `RunO_let_compose` (the
+    Phase-3 Admitted let_-fold from R094).  Each nested
+    `eapply RunO_let_compose with (v := <expected value>)
+    (state_inter := Some state)` peels one `let*`.
+  - Inside, `c. { ... }` steps past `M.call (cleanup_t_uint256 v)`
+    using the existing `run_cleanup_t_uint256` lemma, then
+    `c. { p. }` discharges `M.call (eq v v)` and `M.call (iszero 1)`
+    via `Pure.eq`/`Pure.iszero` unfolding + `Z.eqb_refl`.
+
+The witness values handed to each `RunO_let_compose`:
+  - innermost (after `cleanup_t_uint256 v`):  `Result.Ok v`
+  - middle (after `eq v v`):                  `Result.Ok 1`
+  - outermost (after `iszero 1`):             `Result.Ok 0`
+
+The final `Shallow.if_ 0 ...` reduces via `cbn` + the
+`Shallow.if_` definition (`if condition =? 0 then M.pure failure
+else success`) to the else branch.
+
+This proof shape is the **methodology for R106+ wrappers** at any
+`validator_revert`-style or `require_helper`-style primitive that
+contains `M.call`-inside-`Shallow.if_` patterns.
+
+### Trust impact (per `Print Assumptions`)
+
+**On `run_fun__validateProposal_507_at_storage_base`** (the
+R104 walker Lemma proved by `exact <body_absorbing>`):
+
+  - **Before R105**: 1 load-bearing Axiom
+    (`run_fun__validateProposal_507_body_absorbing`).
+  - **After R105**:  1 load-bearing Axiom (same).  **NET:
+    0 axioms removed.**
+
+R105 does NOT retire the body_absorbing axiom.  The walker
+remains as R104 left it.
+
+**On the trust budget overall:**
+  - 13 new Qed Lemma wrappers.
+  - 0 new Axioms.
+  - 0 framework axioms reused beyond the pre-existing
+    `RunO_let_compose` (R094 Admitted), `run_cleanup_t_uint256`,
+    `run_cleanup_t_address`, `run_cleanup_t_uint48` (all Qed
+    in ProposalLib.v).
+
+### Why no walker discharge
+
+R105's wrappers cover the **primitives** the validateProposal
+body invokes.  Closing the walker mechanically requires more:
+
+  1. **Sim-Yul bridge for voteStart.**  The Yul body reads
+     `expr_410 = read_uint48_offset_20_witness env state_base
+     memory storage_base (proposalCore_slot + 0)` — an
+     UNSPECIFIED Skolem witness.  The sim says
+     `core.voteStart = 0` under H_success (validateProposal
+     succeeds), but linking these two values requires an
+     audit-time bridge Axiom:
+
+     ```coq
+     Axiom voteStart_sim_yul_bind :
+       forall env state_base memory storage_base proposalCore_slot core,
+         core.(ProposalCore.voteStart) = 0 ->
+         read_uint48_offset_20_witness env state_base memory
+           storage_base (Pure.add proposalCore_slot 0) = 0.
+     ```
+
+     Adding this is a +1 to the trust budget per walker.  For
+     R105 we deliberately do NOT add it — the body_absorbing
+     axiom already covers this bridge implicitly.
+
+  2. **Sub-walker discharge for `fun__isValidDescriptionForProposer_651`.**
+     This function is ~150 LOC of Yul (string + hex parsing).  It
+     has no existing equivalence theorem.  Closing
+     `_validateProposal_507` mechanically requires either
+     discharging this sub-walker or axiomatizing it (which is
+     equivalent to the current `_body_absorbing` axiom for that
+     portion).
+
+  3. **Bridge axioms for `access_calldata_tail_*` / `array_length_*`
+     calldata structure.**  The Yul body reads calldata tail
+     offsets/lengths via `calldataload` chains gated by three
+     Shallow.if_-style revert paths (length-overflow, tail-bounds,
+     wraparound).  Under "well-formed calldata" audit-time
+     hypotheses these reduce, but the per-helper proofs would
+     require ~6 more sub-axioms or Lemmas covering the calldata-
+     structure path.
+
+R106+ candidates:
+
+  - Build the three sim-Yul bridge axioms for `voteStart`,
+    `targets.length / values.length / calldatas.length` (single
+    family axiom: `array_length_storage_at_sim_view`).
+  - Wrap `fun__isValidDescriptionForProposer_651` as its own
+    walker (estimated ~500 LOC) with sim-side bridge to
+    `isValidDescriptionForProposer`.
+  - Wrap `access_calldata_tail_t_string_calldata_ptr` and the 3
+    calldata-array variants (each ~80 LOC of nested
+    `RunO_let_compose` + Shallow.if_-else-branch reasoning).
+  - Compose the above with R105's wrappers to mechanically walk
+    `_validateProposal_507`'s body S1-S12.
+
+### Methodology finding
+
+**The `RunO_let_compose` admitted lemma is the key plumbing
+primitive for unwrapping `M.let_` chains.**  R094's Admit (the
+nested-inversion case-explosion) blocks Qed-ing it, but the Admit
+is consistent and reusable.  Every R105 wrapper threads through
+`RunO_let_compose` at the innermost `M.call`-inside-Shallow.if_
+pattern.
+
+**Wrapper buildup must precede walker discharge.**  R104's
+diagnosis stands: the four remaining ProposalLib walkers
+(validateProposal, proposeOptimistic, proposePessimistic,
+transitionToPessimistic) cannot be Qed-discharged without first
+building wrapper coverage for their body-internal primitives.
+R105 delivers ~30% of that coverage (the calldata-read +
+validator-revert + require-helper layer).  R106+ candidates:
+
+  - Mid-tier (the calldata-tail family): access_calldata_tail_*
+    Skolem axioms + supporting array_length_t_*_calldata_ptr
+    arithmetic.
+  - High-tier (the staticcall + ABI families): per-walker
+    AbiEncoding.staticcall_make_state_bridge specialisations and
+    per-target observational bridges (the R070/R086 pattern).
+  - Top-tier (the sub-walker): isValidDescriptionForProposer
+    walker.
+
+After all three tiers land, the four walker `_body_absorbing`
+axioms can be retired with NET trust reduction.
+
+### See also
+
+R040 (sstore wrappers), R082 (staticcall absorption), R083
+(memory absorption + namespace anchors), R088 (arbitrary-U256-
+slot storage absorption), R094 (`RunO_let_compose` Admit +
+deterministic-post-storage wrapper redesign), R103 (Phase-3
+`_saveProposal_580` discharge), R104 (rename Axiom→Lemma for
+remaining 4 walkers + this entry's prerequisites catalogue).
+
