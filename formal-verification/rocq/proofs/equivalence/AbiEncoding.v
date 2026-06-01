@@ -782,6 +782,221 @@ Module AbiEncoding.
   Ltac apply_run_delegatecall_absorbing_outsize_0 :=
     apply delegatecall_make_state_bridge_absorbing_outsize_0.
 
+  (** ===== Layer 14c: the absorbing [call] bridge (R093) =====
+
+      Sibling to [staticcall_make_state_bridge_absorbing] (R082) and
+      [delegatecall_make_state_bridge_absorbing] (R091), for the
+      low-level [Stdlib.call] opcode.  Closes R086 — the SafeERC20
+      library-call gap blocking UnstakingManager (3 walkers) +
+      StakingVaultExchange (4 walkers).
+
+      Semantic difference vs siblings:
+
+        - staticcall: target runs in TARGET's storage; cannot mutate.
+          Caller storage unchanged at projection level.
+        - delegatecall: target runs in CALLER's storage; WRITES
+          caller storage.  Absorbing form Skolemises the caller's
+          post-storage.
+        - call: target runs in TARGET's storage; writes TARGET's
+          storage (NOT caller's).  Caller storage unchanged at the
+          projection level — same shape as staticcall.
+
+      The absorbing form Skolemises the memory write at [out]
+      (mirrors [staticcall_post_memory]); storage is UNCHANGED at
+      the projection layer (matches staticcall, NOT delegatecall).
+      The target's storage mutation is invisible from the caller's
+      [SimulatedStorage.t] projection.
+
+      Per-target audit-time obligation: the call's success/failure
+      outcome (the [call_result] U256 value) is the load-bearing
+      trust commitment.  Each use site discharges this via a
+      companion callee-spec axiom (R063 / R086 shape).  Examples:
+
+        - SafeERC20.safeTransfer:
+            [safeTransfer_success_spec_concrete token to amount]
+            (audit-time obligation: the registered token's [transfer]
+            returns success — a [call_result = 1] witness).
+        - SafeERC20.safeTransferFrom:
+            [safeTransferFrom_success_spec_concrete token from to amount].
+        - SafeERC20.forceApprove:
+            [forceApprove_success_spec_concrete token spender value].
+
+      See [StakingVaultRewards.v]'s
+      [safeTransfer_success_spec_concrete] (Section 6) for the
+      template; UnstakingManager / StakingVaultExchange will declare
+      their own per-contract instances following the same shape.
+
+      Soundness justification:
+
+        - The upstream's [Stdlib.call] reduces (in the non-fast-path
+          non-precompile branch) to [LowM.CallContract addr v input
+          false false k] sandwiched between MLoad / RLoad / MStore
+          primitives.  See [StaticCallBridge.run_call_general]
+          (Layer 6) for the Qed-proved base bridge.
+        - [LowM.CallContract] is a trust-based proof rule whose
+          [state_inter] choice is what carries the target's body
+          effect.  For [call], the target's body runs in TARGET's
+          storage context, so [state_inter] reflects the CALLER's
+          storage UNCHANGED — only memory + return_data move.
+        - The Skolem [call_post_memory] captures the post-memory
+          witness exactly as the staticcall absorbing form does.
+        - Storage is identity at the projection layer.  This is the
+          structural difference from the delegatecall absorbing form.
+
+      AUDIT OBLIGATION per use site: the consumer carries a
+      companion callee-spec axiom witnessing that the call's
+      [call_result] satisfies the per-target trust assumption (the
+      ERC20 returned [true], or the SafeERC20 wrapper succeeded).
+      Same shape as R063 — the spec is the per-contract obligation;
+      the bridge is the framework primitive.
+
+      Trust delta: +1 axiom (this one) per framework use; the
+      per-use-site callee-spec axioms are existing R063 trust
+      budget lines, NOT new framework lines.  Reused across every
+      [call] consumer. *)
+
+  Parameter call_post_memory :
+    Environment.t -> RocqOfSolidity.State.t ->
+    SimulatedMemory.t -> SimulatedStorage.t ->
+    U256.t (* addr *) -> U256.t (* v *) ->
+    U256.t (* out *) -> U256.t (* call_result *) ->
+    SimulatedMemory.t.
+
+  Axiom call_make_state_bridge_absorbing :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+           (g addr v in_ insize out : U256.t) (call_result : U256.t),
+    ((g <? 100) && (v =? 0))%bool = false ->
+    Stdlib.precompile_output addr [] = None ->
+    let state_post :=
+      (make_state env state_base
+         (call_post_memory env state_base memory storage addr v out call_result)
+         storage)
+        <| State.return_data := Memory.u256_as_bytes call_result |> in
+    {{? codes, env, Some (make_state env state_base memory storage) |
+      Stdlib.call g addr v in_ insize out 32 ⇓
+      Result.Ok call_result
+    | Some state_post ?}}.
+
+  (** Structural companion axioms on [call_post_memory] —
+      mirror [staticcall_post_memory_at_out / at_other / length].
+      Audit obligation: the call's mstore tail only touches the
+      word at [out/32] (when [out] is 32-aligned); all other
+      word indices are unchanged. *)
+
+  Axiom call_post_memory_at_out :
+    forall env state_base memory storage addr v out call_result (k : nat),
+    out = 32 * Z.of_nat k ->
+    List.nth_error
+      (call_post_memory env state_base memory storage addr v out call_result) k
+    = Some call_result.
+
+  Axiom call_post_memory_at_other :
+    forall env state_base memory storage addr v out call_result (k : nat),
+    32 * Z.of_nat k <> out ->
+    List.nth_error
+      (call_post_memory env state_base memory storage addr v out call_result) k
+    = List.nth_error memory k.
+
+  Axiom call_post_memory_length :
+    forall env state_base memory storage addr v out call_result,
+    List.length
+      (call_post_memory env state_base memory storage addr v out call_result)
+    = List.length memory.
+
+  (** Absorbing-form variant when the [call]'s [outsize = 0] (no
+      return-data write to memory).  Used when the caller decodes
+      the return via [returndatasize] / [returndatacopy] after the
+      call (e.g. OZ SafeERC20's [_callOptionalReturn] inspects
+      [returndatasize()] post-call to decide whether to mload the
+      return word). *)
+
+  Axiom call_make_state_bridge_absorbing_outsize_0 :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+           (g addr v in_ insize out : U256.t) (call_result : U256.t),
+    ((g <? 100) && (v =? 0))%bool = false ->
+    Stdlib.precompile_output addr [] = None ->
+    let state_post :=
+      (make_state env state_base
+         (call_post_memory env state_base memory storage addr v 0 0)
+         storage)
+        <| State.return_data := Memory.u256_as_bytes call_result |> in
+    {{? codes, env, Some (make_state env state_base memory storage) |
+      Stdlib.call g addr v in_ insize out 0 ⇓
+      Result.Ok call_result
+    | Some state_post ?}}.
+
+  (** Ergonomic [Ltac] aliases: drive a walker arm past a [call]
+      by deferring to the absorbing axiom. *)
+  Ltac apply_run_call_absorbing :=
+    apply call_make_state_bridge_absorbing.
+
+  Ltac apply_run_call_absorbing_outsize_0 :=
+    apply call_make_state_bridge_absorbing_outsize_0.
+
+  (** ===== Layer 14d: SafeERC20 callee-spec template (R093) =====
+
+      Per-library audit-time spec templates following the R063
+      callee-spec pattern.  These are PARAMETERS (per-consumer
+      obligations), NOT framework axioms — each consumer of
+      SafeERC20 declares its own per-(token, args) instances.
+
+      The framework supplies the SHAPE; the consumer pins the
+      obligation at audit time.  The pattern mirrors
+      [StakingVaultRewards.v]'s [safeTransfer_success_spec_concrete]
+      from Section 6 — we re-expose it here as a framework template
+      so future consumers (UnstakingManager, StakingVaultExchange,
+      and any future SafeERC20-using contract) declare their own
+      instance against the framework's name conventions.
+
+      Soundness: a [Parameter] of shape [Address -> Address -> U256.t
+      -> Prop] is the canonical T-TOKEN trust boundary.  Witnessing
+      it requires the audit-time argument that the registered token
+      is well-behaved (no fee-on-transfer, no balance-lying, no
+      malicious return-data encoding).  Each consumer declares its
+      own [Parameter] instance + the corresponding
+      [_callee_spec] [Axiom] tying the bool flag to the on-chain
+      call result.
+
+      The SHAPE templates below are placeholders — they document
+      the expected signature.  Real consumers (UnstakingManager.v,
+      StakingVaultExchange.v) will declare their own at module
+      scope. *)
+
+  Module SafeERC20Templates.
+
+    (** Convenience local alias.  [Address] is a 160-bit subset of
+        [U256.t]; per-contract modules typically redefine it at their
+        own module scope (see [StakingVaultRewards.v] line 171).
+        Re-stated here so the template shapes are well-typed inside
+        AbiEncoding's module. *)
+    Definition Address : Set := U256.t.
+
+    (** Spec shape for [SafeERC20.safeTransfer(token, to, amount)].
+        Audit-time obligation: token's [transfer(to, amount)]
+        returns success (either as a bool true or void with no
+        revert).  Per-(token, recipient, amount). *)
+    Definition safeTransfer_spec_shape : Type :=
+      Address -> Address -> U256.t -> Prop.
+
+    (** Spec shape for [SafeERC20.safeTransferFrom(token, from, to,
+        amount)].  Audit-time obligation: token's [transferFrom]
+        returns success.  Per-(token, from, to, amount). *)
+    Definition safeTransferFrom_spec_shape : Type :=
+      Address -> Address -> Address -> U256.t -> Prop.
+
+    (** Spec shape for [SafeERC20.forceApprove(token, spender, value)].
+        Audit-time obligation: token's [approve] (or the
+        zero-then-set fallback) returns success.  Per-(token,
+        spender, value). *)
+    Definition forceApprove_spec_shape : Type :=
+      Address -> Address -> U256.t -> Prop.
+
+  End SafeERC20Templates.
+
   (** [abi_encode_tuple__to__fromStack memPtr] is the zero-arg encode
       (for an empty event payload). Returns [memPtr] unchanged, no
       memory side effect. The Yul body is:

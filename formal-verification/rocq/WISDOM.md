@@ -4021,3 +4021,251 @@ closes Blocker 2), R088 (arbitrary-U256-slot storage absorption
 (per-mutator composite walker recipe), R086 (observational bridge
 shape per use site).
 
+## R093: SafeERC20 + linkersymbol framework primitive — R086 closure
+
+**Task #297 (R086-followup, 2026-06-01).**  Closes the SafeERC20
+library-call + linkersymbol framework gap diagnosed in R086.
+Seven walker workstreams were blocked on this primitive family:
+
+  - UnstakingManager's `fun_createLock_144`, `fun_cancelLock_212`,
+    `fun_claimLock_270` — each invokes `SafeERC20.{safeTransfer,
+    safeTransferFrom, forceApprove}` via the `using SafeERC20
+    for IERC20` pattern.
+  - StakingVaultExchange's `fun_deposit`, `fun_mint`,
+    `fun_withdraw`, `fun_redeem` — each invokes
+    `SafeERC20.{safeTransfer, safeTransferFrom, forceApprove}`
+    against the underlying asset.
+
+R086 documented two needed primitives: a `linkersymbol` resolution
+axiom and a per-library callee-spec axiom.  Investigation against
+the actual generated Yul (`UnstakingManager_shallow.v` lines
+1166-1517) revealed a third, more load-bearing gap and refined
+the shape of the first two:
+
+  - `linkersymbol` reads a library address that — in the
+    compiled-and-inlined shape — is **never used downstream**.
+    solc emits the `linkersymbol` read as a Yul artifact alongside
+    the inlined library body, but the resolved value flows nowhere
+    (lines 1372, 1418 of UnstakingManager_shallow.v: `expr_255_address
+    := linkersymbol(SafeERC20)`, then `fun_safeTransfer_1010` is
+    invoked with `expr_258_address` — the TOKEN address from
+    `loadimmutable`, NOT the linkersymbol value).  This is sound
+    because solc inlines the library body when there are no
+    inter-contract storage requirements.
+  - The SafeERC20 library body IS inlined.  The actual external
+    call is a low-level `Stdlib.call(gas(), token_addr, 0, ...)`
+    to the ERC20 selector — NOT a delegatecall, NOT a staticcall.
+    `Stdlib.call` is the framework primitive that was missing —
+    siblings to staticcall (R063 / R082) and delegatecall (R091)
+    existed, but the third arm of the trio was unmechanized.
+
+### The three primitives
+
+Layer 6 (`StaticCallBridge.v`) — three Qed-proved base lemmas:
+
+```coq
+Lemma run_call_general
+    codes env state g addr v in_ insize out outsize call_result output_bytes
+    (H_not_fast_path : ((g <? 100) && (v =? 0))%bool = false)
+    (H_not_precompile : Stdlib.precompile_output addr [] = None) :
+  ... ⇓ Result.Ok call_result | Some state' ?}}.
+
+Lemma run_call_to_word   ... (* outsize = 32 specialisation *)
+Lemma run_call_to_nothing ... (* outsize = 0 specialisation *)
+```
+
+Layer 7 (`StaticCallBridge.v`) — one Qed-proved leaf lemma:
+
+```coq
+Lemma run_linkersymbol codes env state (name : U256.t) :
+  {{? codes, env, Some state |
+    Stdlib.linkersymbol name ⇓ Result.Ok name
+  | Some state ?}}.
+```
+
+Layer 14c (`AbiEncoding.v`) — Skolem-absorbing variant + four
+structural companions + outsize-0 variant:
+
+```coq
+Parameter call_post_memory :
+  Environment.t -> RocqOfSolidity.State.t ->
+  SimulatedMemory.t -> SimulatedStorage.t ->
+  U256.t (* addr *) -> U256.t (* v *) ->
+  U256.t (* out *) -> U256.t (* call_result *) ->
+  SimulatedMemory.t.
+
+Axiom call_make_state_bridge_absorbing : ...
+Axiom call_post_memory_at_out : ...
+Axiom call_post_memory_at_other : ...
+Axiom call_post_memory_length : ...
+Axiom call_make_state_bridge_absorbing_outsize_0 : ...
+```
+
+Layer 14d (`AbiEncoding.v`) — per-library spec shape templates
+(documentation; consumers declare their own `Parameter`):
+
+```coq
+Module SafeERC20Templates.
+  Definition Address : Set := U256.t.
+  Definition safeTransfer_spec_shape : Type :=
+    Address -> Address -> U256.t -> Prop.
+  Definition safeTransferFrom_spec_shape : Type :=
+    Address -> Address -> Address -> U256.t -> Prop.
+  Definition forceApprove_spec_shape : Type :=
+    Address -> Address -> U256.t -> Prop.
+End SafeERC20Templates.
+```
+
+### Semantic difference vs siblings
+
+The three external-call primitives (call / staticcall /
+delegatecall) share `LowM.CallContract` as the underlying proof
+rule but differ in two structural ways:
+
+| primitive    | fast-path                          | storage shape                  |
+|--------------|------------------------------------|--------------------------------|
+| staticcall   | precompile                         | callee in TARGET's storage     |
+| delegatecall | (none)                             | callee in CALLER's storage     |
+| call         | `(g < 100) && (v = 0)`             | callee in TARGET's storage     |
+
+  - **Fast-path.**  `Stdlib.call` short-circuits to `RStore [] +
+    M.pure 0` when both `g < 100` AND `v = 0`.  This is the
+    EVM's bookkeeping for fully-pruned gas-budget calls.  For
+    real contract calls (`g = gas()`, `v = 0`) the condition is
+    false and the `else` branch fires, identical to staticcall's
+    structure modulo the `is_static` flag.  The bridge carries
+    `H_not_fast_path : ((g <? 100) && (v =? 0))%bool = false`
+    as a precondition — trivially discharged when `g = gas()`
+    (a witness > 100).
+  - **Storage shape.**  Under `call`, the callee runs in the
+    TARGET's storage context (writes target's storage, not
+    caller's).  From the caller's projection layer, storage is
+    UNCHANGED — same shape as staticcall, NOT delegatecall.
+    The absorbing axiom Skolemises only post-memory; storage
+    passes through identity.
+
+### Soundness argument
+
+The base bridges are Qed-proved from `RunO.CallContract` +
+`RunO.Primitive`:
+
+  - `run_call_general` unfolds `Stdlib.call`, rewrites the
+    fast-path test to `false` (via `H_not_fast_path`), rewrites
+    the precompile test to `None` (via `H_not_precompile`), then
+    steps through MLoad → CallContract → RLoad → MStore identical
+    to `run_staticcall_general`.
+  - `run_call_to_word` / `run_call_to_nothing` are
+    `outsize`-specialisations using `change (Z.to_nat 32) with
+    32%nat` / `change (Z.to_nat 0) with 0%nat`.
+  - `run_linkersymbol` is two-line: `unfold Stdlib.linkersymbol;
+    apply RunO.Pure`.  Sound by upstream definition.
+
+The absorbing axiom (`call_make_state_bridge_absorbing`) shares
+the R082 staticcall absorbing template's soundness justification:
+under the well-formedness preconditions, the call's `call_result`
+plus the post-memory + return_data write IS the on-chain effect.
+The Skolem witnesses one consistent assignment for the post-memory
+list; the four structural companions (`_at_out`, `_at_other`,
+`_length`, the `_outsize_0` variant) expose the bookkeeping facts
+walkers need.
+
+The SafeERC20 spec-shape templates are NOT axioms — they are
+type definitions consumed by per-contract `Parameter`
+declarations.  Each consumer carries its own audit-time T-TOKEN
+trust obligation following the
+`StakingVaultRewards.safeTransfer_success_spec_concrete` pattern
+(R063).
+
+### Audit trust delta
+
+Layer 6 (call bridge): three Qed lemmas.  Net +0 axioms.
+Layer 7 (linkersymbol): one Qed lemma.  Net +0 axioms.
+Layer 14c (call absorbing): +1 framework axiom + 4 structural
+companions + 1 outsize-0 variant.
+Layer 14d (SafeERC20 templates): +0 axioms (definitions only).
+
+Total framework axioms added: **+1** (the
+`call_make_state_bridge_absorbing` axiom) + **4 structural
+companions** + **1 outsize-0 variant**.  Reused across SEVEN
+walker workstreams (UnstakingManager × 3, StakingVaultExchange ×
+4) and any future SafeERC20-using contract.
+
+### Why `linkersymbol` is a Qed lemma not an axiom
+
+R086's diagnosis ("a `linkersymbol` resolution axiom analogous to
+`loadimmutable`") was overly pessimistic.  Upstream's
+`Stdlib.linkersymbol` is **definitionally** `M.pure name` (see
+`rocq-of-solidity/rocq/RocqOfSolidity/simulations/RocqOfSolidity.v`
+line 1236) — the "linker substitutes a real library address at
+deployment time" is a compile-time fact, NOT a runtime one.  In
+the equivalence proof the name-vs-address distinction has zero
+load: every consumer of the returned value either (a) discards
+it (the SafeERC20 inlined-body case in UnstakingManager) or (b)
+threads it to an external `call`/`delegatecall` whose
+`RunO.CallContract` rule accepts any `U256.t` as the callee
+address.  No axiom needed.
+
+`loadimmutable` IS an axiom (`StaticCallBridge.run_loadimmutable`)
+because its semantics genuinely depends on a per-contract immutable
+dictionary lookup (`Dict.get account.(Account.immutables) name`),
+which requires a per-contract witness.  `linkersymbol`'s upstream
+definition has no such dependency.
+
+### Validation status
+
+This task ships framework primitives only.  Validation against an
+UnstakingManager or StakingVaultExchange walker was NOT attempted
+in this task because:
+
+  - The blocking gap was the missing `Stdlib.call` bridge family,
+    closed by this commit.  Walker discharge can proceed against
+    the new primitives in follow-up tasks.
+  - Walker discharge per mutator is estimated at 500-1500 LOC
+    each (R086's analysis) — a meaningfully larger workstream than
+    the framework primitives themselves, and one that requires
+    instantiating per-contract `Parameter`s for the
+    `safeTransfer_success_spec_concrete` style obligations.
+
+The seven walker discharges (UnstakingManager × 3,
+StakingVaultExchange × 4) are now mechanically tractable: the
+remaining work per walker is the R082 standard recipe (callvalue
+guard + abi-decode + body walk via the new
+`call_make_state_bridge_absorbing` for each safeTransfer /
+safeTransferFrom / forceApprove call + sstore wrappers + log
+emission).  Each walker also needs per-contract spec
+`Parameter`s following Section 6 of `StakingVaultRewards.v`.
+
+### Consumer recipe (forward-looking)
+
+For UnstakingManager.claimLock (smallest target):
+
+  1. Declare in `UnstakingManager.v` module scope:
+     ```coq
+     Parameter safeTransfer_success_spec :
+       Address (* token *) -> Address (* to *) -> U256.t (* amount *) -> Prop.
+     ```
+  2. State the audit obligation as a hypothesis on the walker:
+     `safeTransfer_success_spec token caller amount` for the
+     ZERO-FIRST-ordered claim transfer.
+  3. Walk the Yul body via `l. { p. }` for the `linkersymbol`
+     step (or `ls.` from Layer 7), `loadimmutable` via
+     `StaticCallBridge.run_loadimmutable`, then drive the
+     inlined safeTransfer body via the new
+     `call_make_state_bridge_absorbing` for the external
+     `call(gas, token, 0, ...)` step.
+  4. The `_callOptionalReturn` return-data decode discharges via
+     the standard staticcall-bridge return-data pattern (the
+     same shape as R063 / R082).
+
+### See also
+
+R063 (StaticCallBridge — original sibling primitive for
+staticcall), R082 (`staticcall_make_state_bridge_absorbing` —
+direct template for the absorbing-Skolem shape), R086 (this
+gap's original diagnosis; refined here), R091
+(`delegatecall_make_state_bridge_absorbing` — the second sibling
+primitive in the call/staticcall/delegatecall trio; R093 is the
+third).  R041 (resolved, upstream `Stdlib.linkersymbol`
+definition).  R070 (per-mutator composite walker recipe — applies
+to the seven blocked walkers).
+

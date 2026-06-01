@@ -389,6 +389,14 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                                      — same shape, different
                                      [is_delegate] flag and no
                                      precompile guard.
+                                     (R093): adds sibling
+                                     [run_call_*] proved base
+                                     lemmas for [call] (low-level
+                                     ERC20 / SafeERC20 external
+                                     call shape) + [run_linkersymbol]
+                                     leaf.  Closes R086's
+                                     UnstakingManager + StakingVault
+                                     Exchange library-call gap.
       - AbiEncoding.v        (R064): abi-encode/decode tuple leaves
                                      for staticcall input/output
                                      marshaling (6 Qed, 7 documented
@@ -400,6 +408,20 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                                      BOTH post-memory and
                                      post-storage (the new axis vs
                                      the staticcall absorbing form).
+                                     (R093): adds
+                                     [call_make_state_bridge_absorbing]
+                                     + 3 structural companions +
+                                     outsize-0 variant.  Skolemises
+                                     ONLY post-memory (call's storage
+                                     mutation lives in TARGET's
+                                     storage, opaque from caller's
+                                     projection — same shape as
+                                     staticcall, NOT delegatecall).
+                                     Also adds SafeERC20Templates
+                                     module with per-library spec
+                                     shape definitions
+                                     (safeTransfer / safeTransferFrom
+                                     / forceApprove).
       - Membership-equivalence predicates (R059): [set_eq_at_role],
                                      [set_eq_in_registry] capture
                                      OZ EnumerableSet's public-API

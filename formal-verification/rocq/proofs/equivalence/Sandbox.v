@@ -266,3 +266,124 @@ Module R050VerificationCheck.
   Qed.
 
 End R050VerificationCheck.
+
+(** ----- R093 verification: [linkersymbol] + low-level [call] bridges -----
+
+    Three smoke tests covering the new primitives that close R086 (the
+    SafeERC20 / linkersymbol gap blocking UnstakingManager and
+    StakingVaultExchange walkers):
+
+      1. [linkersymbol_returns_name] — the Layer 7 Qed leaf
+         [StaticCallBridge.run_linkersymbol] applies directly.
+      2. [call_bridge_dispatches_to_word] — the Layer 6 Qed base lemma
+         [StaticCallBridge.run_call_to_word] drives a [call(g, addr,
+         0, in_, insize, out, 32)] step under the gas-fast-path and
+         not-precompile preconditions.
+      3. [call_walker_shape_composes] — the [LowM.Call(Stdlib.call ...)
+         LowM.Pure] continuation shape (exactly what the inlined
+         SafeERC20 body emits in UnstakingManager_shallow.v line 1186)
+         composes through the bridge + a [LowM.Let] tail.
+
+    If any of these fails, the seven walker workstreams
+    (UnstakingManager × 3, StakingVaultExchange × 4) blocked on the
+    primitive are also blocked at the same layer. *)
+
+Module R093VerificationCheck.
+
+  (** linkersymbol returns the name argument identity-wise.  This is
+      the Qed leaf — no axiom, no hypothesis needed. *)
+  Lemma linkersymbol_returns_name
+      codes env state (name : U256.t) :
+    {{? codes, env, Some state |
+      Stdlib.linkersymbol name ⇓ Result.Ok name
+    | Some state ?}}.
+  Proof.
+    apply StaticCallBridge.run_linkersymbol.
+  Qed.
+
+  (** The Layer 6 Qed base lemma applies to a [call] step.  Carries
+      the two preconditions: the gas-fast-path test is false, and
+      the address is not a precompile. *)
+  Lemma call_bridge_dispatches_to_word
+      codes env state
+      (g addr v in_ insize out : U256.t)
+      (call_result : U256.t)
+      (H_not_fast_path : ((g <? 100) && (v =? 0))%bool = false)
+      (H_not_precompile : Stdlib.precompile_output addr [] = None) :
+    let output_bytes := Memory.u256_as_bytes call_result in
+    let memory' :=
+      Memory.update_bytes state.(State.memory) out
+        (List.firstn 32 output_bytes) in
+    let state' :=
+      state
+        <| State.return_data := output_bytes |>
+        <| State.memory := memory' |> in
+    {{? codes, env, Some state |
+      Stdlib.call g addr v in_ insize out 32 ⇓
+      Result.Ok call_result
+    | Some state' ?}}.
+  Proof.
+    intros output_bytes memory' state'.
+    apply (StaticCallBridge.run_call_to_word codes env state
+              g addr v in_ insize out call_result
+              H_not_fast_path H_not_precompile).
+  Qed.
+
+  (** Walker-shaped composition: the same [LowM.Let (LowM.Call ...)
+      (fun _ => LowM.Pure)] pattern the staticcall bridge exercises,
+      but now for [Stdlib.call] — exactly the shape the inlined
+      SafeERC20 body in UnstakingManager_shallow.v line 1186 emits:
+
+        let~ _77 := [[ call ~(| gas(), token, 0, _75, ..., _75, 32 |) ]] in
+        ...
+
+      Closing this validates that the new [run_call_to_word] composes
+      mechanically with the [c]/[l] tactic vocabulary downstream. *)
+  Lemma call_walker_shape_composes
+      codes env state
+      (g addr v in_ insize out : U256.t)
+      (call_result : U256.t)
+      (H_not_fast_path : ((g <? 100) && (v =? 0))%bool = false)
+      (H_not_precompile : Stdlib.precompile_output addr [] = None) :
+    exists state',
+    {{? codes, env, Some state |
+      LowM.Let
+        (LowM.Call (Stdlib.call g addr v in_ insize out 32) LowM.Pure)
+        (fun result => LowM.Pure result)
+      ⇓ Result.Ok call_result
+    | state' ?}}.
+  Proof.
+    eexists.
+    eapply RunO.Let.
+    - StaticCallBridge.call_word call_result H_not_fast_path H_not_precompile.
+      apply RunO.Pure.
+    - apply RunO.Pure.
+  Qed.
+
+  (** linkersymbol walker-arm: the [let~ expr_X_address := linkersymbol(...)]
+      step in UnstakingManager_shallow.v line 1166 desugars to a
+      [LowM.Let (linkersymbol ...) (fun addr => k)] node.  This
+      lemma confirms the [run_linkersymbol] leaf threads through the
+      continuation without trouble.
+
+      The shape models the un-used linkersymbol artifact: the
+      continuation [k] receives the linkersymbol value but doesn't
+      consume it (the SafeERC20 library body has been inlined, so
+      the library address isn't actually called against). *)
+  Lemma linkersymbol_walker_arm_composes
+      codes env state (name : U256.t) :
+    exists state',
+    {{? codes, env, Some state |
+      LowM.Let
+        (Stdlib.linkersymbol name)
+        (fun addr => LowM.Pure addr)
+      ⇓ Result.Ok name
+    | state' ?}}.
+  Proof.
+    eexists.
+    eapply RunO.Let.
+    - apply StaticCallBridge.run_linkersymbol.
+    - apply RunO.Pure.
+  Qed.
+
+End R093VerificationCheck.
