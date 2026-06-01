@@ -314,6 +314,186 @@ Module AbiEncoding.
     | None => True
     end.
 
+  (** ===== Layer 10b: the absorbing staticcall bridge (R082) =====
+
+      Skolem-form sibling to [staticcall_make_state_bridge]: instead
+      of requiring [k < length memory] and producing the concrete
+      [update_nth memory k call_result], the absorbing form
+      Skolemises the post-memory as an arbitrary function of the
+      inputs. This is the staticcall analog of R083's absorbing
+      mstore primitive — useful when prior mstores (themselves
+      absorbed) make the per-index length precondition non-trivial.
+
+      Soundness: same as the per-index bridge — under audit-time
+      alignment / well-formedness, the staticcall writes its
+      [call_result] as bytes at [out], producing a new memory
+      expressible at the [SimulatedMemory.t] level. The Skolem
+      function [staticcall_post_memory] points at that witness. *)
+
+  Parameter staticcall_post_memory :
+    Environment.t -> RocqOfSolidity.State.t ->
+    SimulatedMemory.t -> SimulatedStorage.t ->
+    U256.t -> U256.t -> SimulatedMemory.t.
+
+  Axiom staticcall_make_state_bridge_absorbing :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+           (g addr in_ insize out : U256.t) (call_result : U256.t),
+    Stdlib.precompile_output addr [] = None ->
+    let state_post :=
+      (make_state env state_base
+         (staticcall_post_memory env state_base memory storage out call_result)
+         storage)
+        <| State.return_data := Memory.u256_as_bytes call_result |> in
+    {{? codes, env, Some (make_state env state_base memory storage) |
+      Stdlib.staticcall g addr in_ insize out 32 ⇓
+      Result.Ok call_result
+    | Some state_post ?}}.
+
+  (** ===== Layer 10c: staticcall_post_memory structural axioms =====
+
+      Audit-time obligations on the Skolem post-memory:
+
+      - At the word-index corresponding to [out] (= [out/32] when
+        [out] is 32-aligned), the post-memory contains [call_result].
+        This is the operational specification: the staticcall writes
+        the callee's return word to memory at [out].
+
+      - At any OTHER word-index, the post-memory equals the
+        pre-memory. The staticcall only writes at [out].
+
+      - The post-memory list has the same length as the pre-memory.
+        The staticcall doesn't grow memory at the SimulatedMemory.t
+        list level (it overwrites a single 32-byte slot, allocated
+        by the prior abi-prelude). *)
+
+  Axiom staticcall_post_memory_at_out :
+    forall env state_base memory storage out call_result (k : nat),
+    out = 32 * Z.of_nat k ->
+    List.nth_error
+      (staticcall_post_memory env state_base memory storage out call_result) k
+    = Some call_result.
+
+  Axiom staticcall_post_memory_at_other :
+    forall env state_base memory storage out call_result (k : nat),
+    32 * Z.of_nat k <> out ->
+    List.nth_error
+      (staticcall_post_memory env state_base memory storage out call_result) k
+    = List.nth_error memory k.
+
+  Axiom staticcall_post_memory_length :
+    forall env state_base memory storage out call_result,
+    List.length
+      (staticcall_post_memory env state_base memory storage out call_result)
+    = List.length memory.
+
+  (** [make_state]'s [return_data] passes through from [state_base].
+      Useful for proving [(make_state env state_base ...).return_data
+      = state_base.return_data] post-rd-absorption. *)
+
+  Axiom make_state_return_data_eq :
+    forall env state_base memory storage,
+    (make_state env state_base memory storage).(State.return_data)
+    = state_base.(State.return_data).
+
+  (** ===== Layer 10c.2: mapping_index_access composite (R082) =====
+
+      The mapping_index_access pattern at a 32-byte key/slot pair:
+        do~ mstore(0, key) in
+        do~ mstore(0x20, slot) in
+        let~ dataSlot := keccak256(0, 0x40) in
+        ...
+
+      The keccak256 reads memory[0] (= key after the first mstore)
+      and memory[1] (= slot after the second mstore) — but the
+      framework's [run_keccak256_tuple2] requires explicit per-index
+      [nth_error] hypotheses. The absorbing-mstore Skolem memory
+      doesn't satisfy those.
+
+      This composite axiom abstracts over the two-mstore-then-
+      keccak256 pattern at the absorbing make_state state shape.
+      Audit-time obligation: the two mstores write [key] and [slot]
+      at scratch words 0 and 1, so the keccak256 reads exactly the
+      bytes that produce [keccak256_tuple2 key slot]. *)
+
+  Parameter mapping_index_access_post_memory :
+    Environment.t -> RocqOfSolidity.State.t ->
+    SimulatedMemory.t -> SimulatedStorage.t ->
+    U256.t (* key *) -> U256.t (* slot *) -> SimulatedMemory.t.
+
+  Axiom run_mapping_index_access_absorbing :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+           (slot key : U256.t),
+    {{? codes, env, Some (make_state env state_base memory storage) |
+      mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_bool_ₓ_of_t_bytes32 slot key ⇓
+        Result.Ok (keccak256_tuple2 key slot)
+    | Some (make_state env state_base
+              (mapping_index_access_post_memory env state_base memory storage
+                                                 key slot)
+              storage) ?}}.
+
+  (** ===== Layer 10d: post-bridge decode composite (R082) =====
+
+      The post-staticcall return-path is structured by the Solidity
+      compiler as a fixed three-step sequence:
+
+        1. [returndatasize] — checked >= expected size
+        2. [finalize_allocation(memPtr, returndatasize)] — bumps
+           the free memory pointer past the just-read bytes
+        3. [abi_decode_tuple_t_bool_fromMemory(memPtr, memPtr + size)] —
+           reads + validates the 0/1 bool at [memPtr]
+
+      Each step's per-index semantics is gnarly (the staticcall
+      writes [call_result] at [out = memPtr]; finalize_allocation
+      bumps memory[2] but leaves memory[memPtr/32] alone; the abi
+      decode reads memory[memPtr/32]). Rather than thread per-index
+      memory shape facts through three axiom invocations, we ship a
+      composite axiom that produces the cleaned-up [call_result]
+      value and a Skolemised post-memory.
+
+      Audit-time obligation on the contract: [call_result] is the
+      bool the callee returned (0 for false, 1 for true).
+
+      Reusable across every Solidity contract that decodes a single
+      bool from a staticcall return — i.e., every R050-blocked
+      external boolean call. *)
+
+  Parameter post_staticcall_decode_post_memory :
+    Environment.t -> RocqOfSolidity.State.t ->
+    SimulatedMemory.t -> SimulatedStorage.t ->
+    U256.t (* memPtr *) -> U256.t (* call_result *) -> SimulatedMemory.t.
+
+  (** The composite post-staticcall decode block:
+        do~ finalize_allocation memPtr 32 in
+        let~ expr := abi_decode_tuple_t_bool_fromMemory memPtr (memPtr + 32) in
+        M.pure (Tt, expr)
+      reduces — at the post-staticcall absorbing state — to
+      [call_result], with the memory Skolemised. *)
+
+  Axiom run_post_staticcall_decode_bool :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+           (memPtr size : U256.t) (call_result : U256.t),
+    call_result = 0 \/ call_result = 1 ->
+    size = 32 ->
+    let body :=
+      do~ M.call (finalize_allocation memPtr size) in
+      (let~ ' expr_162 :=
+         let* v := M.call (Stdlib.add memPtr size) in
+         M.call (abi_decode_tuple_t_bool_fromMemory memPtr v)
+       in LowM.Pure (Result.Ok (BlockUnit.Tt, expr_162)))
+    in
+    {{? codes, env, Some (make_state env state_base memory storage) |
+      body ⇓ Result.Ok (BlockUnit.Tt, call_result)
+    | Some (make_state env state_base
+              (post_staticcall_decode_post_memory env state_base memory storage
+                                                  memPtr call_result)
+              storage) ?}}.
+
   (** ===== Layer 11: returndatasize at the post-bridge state (proved) =====
 
       After the bridge, the post-state's return_data has length 32
@@ -398,6 +578,29 @@ Module AbiEncoding.
     (make_state env state_base memory storage)
       <| State.return_data := rd |> =
     make_state env (state_base <| State.return_data := rd |>) memory storage.
+
+  (** Gas-decrement commutation. Same soundness story as
+      [make_state_with_rd_eq]: [State.gas] is a record field not
+      touched by [with_current_storage] (which only writes
+      [State.accounts]). Applying a [gas]-override outside
+      [make_state] is the same as threading it through [state_base]
+      first. Useful for absorbing [gas] reads (each of which
+      decrements via [GetGas]'s eval_primitive). *)
+
+  Axiom make_state_with_gas_eq :
+    forall env state_base memory storage (g : U256.t),
+    (make_state env state_base memory storage)
+      <| State.gas := g |> =
+    make_state env (state_base <| State.gas := g |>) memory storage.
+
+  (** [make_state] preserves the [State.gas] field — useful for
+      proving [state.gas = state_base.gas] after the [make_state]
+      wrapping (since [with_current_storage] only writes accounts). *)
+
+  Axiom make_state_gas_eq :
+    forall env state_base memory storage,
+    (make_state env state_base memory storage).(State.gas)
+    = state_base.(State.gas).
 
   (** [abi_encode_tuple__to__fromStack memPtr] is the zero-arg encode
       (for an empty event payload). Returns [memPtr] unchanged, no

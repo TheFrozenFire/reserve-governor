@@ -14,7 +14,7 @@ Counts:
 | Guardian.v | `run_hasRole_equivalent` | GuardianEquivalence | 22 | 10 | OK |
 | Guardian.v | `run_grantRole_1468_observed_behavior` | GuardianEquivalence | 1 | 1 | OK |
 | Guardian.v | `run_grantRole_1359_equivalent` | GuardianEquivalence | 40 | 28 | OK |
-| Guardian.v | `run_revokeRole_1378_equivalent` | GuardianEquivalence | 28 | 16 | OK |
+| Guardian.v | `run_revokeRole_1378_equivalent` | GuardianEquivalence | 32 | 20 | OK |
 | Guardian.v | `run_cancel_equivalent_make_state` | GuardianEquivalence | 17 | 5 | OK |
 | ProposalLib.v | `run_fun__governor_679_equivalent` | ProposalLibEquivalence | 10 | 0 | OK |
 | ProposalLib.v | `run_fun__validateProposal_507_equivalent` | ProposalLibEquivalence | 18 | 6 | OK |
@@ -64,5 +64,5 @@ Counts:
 | UnstakingManager.v | `run_claimLock_make_state` | UnstakingManagerEquivalence | 1 | 1 | OK |
 | VersionRegistry.v | `run_isDeprecated_equivalent_scaffold` | VersionRegistryEquivalence | 19 | 7 | OK |
 | VersionRegistry.v | `run_deployments_equivalent_scaffold` | VersionRegistryEquivalence | 19 | 7 | OK |
-| VersionRegistry.v | `run_deprecateVersion_equivalent_make_state` | VersionRegistryEquivalence | 17 | 5 | OK |
+| VersionRegistry.v | `run_deprecateVersion_equivalent_make_state` | VersionRegistryEquivalence | 38 | 26 | OK |
 | VersionRegistry.v | `run_registerVersion_equivalent_make_state` | VersionRegistryEquivalence | 18 | 6 | OK |

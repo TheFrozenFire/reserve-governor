@@ -343,6 +343,39 @@ Module FrameworkExtensions.
                                   offset value)
               storage) ?}}.
 
+  (** Length-preservation: the absorbing mstore Skolem post-memory
+      has the same length as the input. Audit-time obligation: the
+      contract's mstore writes are at offsets that fit within the
+      pre-allocated memory list. All governor contracts pass this
+      audit (every mstore in the emitted IR writes at
+      [allocate_unbounded() + k] which is bounded by the existing
+      free pointer). *)
+
+  Axiom mstore_post_memory_length :
+    forall env state_base memory storage offset value,
+    List.length (mstore_post_memory env state_base memory storage offset value)
+    = List.length memory.
+
+  (** Structural axiom: a Yul mstore at offset [O] only writes within
+      the 32-byte word at index [Z.to_nat (O/32)] (and possibly the
+      next word for non-aligned offsets, but at most the word at
+      [Z.to_nat ((O+31)/32)]). For word indices strictly outside
+      this range, the post-memory equals the pre-memory.
+
+      This expresses the standard EVM mstore semantics at the
+      SimulatedMemory.t (word-list) level. Audit-time obligation:
+      mstores in the contract don't touch unrelated word indices. *)
+
+  Axiom mstore_post_memory_at_far :
+    forall env state_base memory storage offset value (k : nat),
+    (* k is a word index "far" from the mstore offset — neither the
+       primary aligned-write index nor the spillover word. *)
+    (Z.of_nat k + 1) * 32 <= offset \/
+    offset + 32 <= Z.of_nat k * 32 ->
+    List.nth_error
+      (mstore_post_memory env state_base memory storage offset value) k
+    = List.nth_error memory k.
+
   (** Companion: arbitrary [Stdlib.mload] at any address returns a
       witness U256 and leaves the state unchanged.  The witness is
       [List.nth (Z.to_nat (offset / 32)) memory 0] for aligned
@@ -369,6 +402,15 @@ Module FrameworkExtensions.
         Result.Ok (mload_witness environment state_base memory storage
                                   offset)
     | Some (make_state environment state_base memory storage) ?}}.
+
+  (** Bound on the [mload_witness] Skolem: 0 ≤ witness < 2^256.
+      Audit-time obligation: at every aligned offset, [Memory.t]
+      stores a 32-byte word interpreted as a U256, which fits the
+      bound. *)
+
+  Axiom mload_witness_bound :
+    forall env state_base memory storage offset,
+    0 <= mload_witness env state_base memory storage offset < 2^256.
 
   (** ====================================================================
       Tactics
