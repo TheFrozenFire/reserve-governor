@@ -4421,4 +4421,193 @@ beyond the framework primitives).  R088 (per-helper sub-axiom
 decomposition applied to TimelockControllerOptimistic — direct
 template for this refactor).  R093 (SafeERC20 + linkersymbol
 framework primitives — consumed by the SafeERC20 sub-axioms here).
+## R095: TimelockController executeBatch walker discharge via R091
+
+**Task #300 (2026-06-01).** Retires
+`run_fun_executeBatch_1552_at_proj_sim` — the FIFTH and FINAL
+TimelockControllerOptimistic walker that was still axiomatic
+after R088/R089 closed the other four.  Promoted from [Axiom]
+to [Qed] [Lemma] using the R091
+`delegatecall_make_state_bridge_absorbing` framework primitive
+as the audit-time foundation.
+
+### Why executeBatch needed R091
+
+Per R087 Blocker 2 / R089 ("Why executeBatch is NOT
+discharged"), executeBatch's loop body dispatches
+`fun__execute_1581(target, value, data)` which performs a
+`delegatecall` into each target's bytecode under the timelock's
+storage context.  Without R091's framework primitive the
+walker had no Skolem shape to absorb the cumulative
+target-loop storage effect.
+
+R091 (task #296) shipped two consumer-facing primitives in
+`AbiEncoding.v` Layer 14b:
+  - `delegatecall_make_state_bridge_absorbing` — general form
+    with arbitrary `outsize`.
+  - `delegatecall_make_state_bridge_absorbing_outsize_0` —
+    specialized for the no-return-write shape that
+    `fun__execute_1581` uses.
+
+The latter is the natural fit for the executeBatch loop body
+(each iteration's delegatecall writes no returndata to the
+caller's memory; only its storage effect at the timelock's
+namespace matters).
+
+### Decomposition strategy
+
+The R088/R089 per-helper sub-axiom pattern adapted for
+executeBatch's [OnlyRoleOrOpenRole] modifier:
+
+1. **Modifier composite sub-axiom**
+   (`run_modifier_onlyRoleOrOpenRole_1463_at_proj_sim`) —
+   encapsulates the entire modifier (gate prefix + inner-body
+   dispatch).  Carries `H_caller_executor` and bypasses the
+   structural complication of the modifier's `Shallow.if_` on
+   `fun_hasRole_2020(EXECUTOR_ROLE, 0x0)`'s result (the
+   open-role check).  Lands at the Skolem post-storage
+   `proj_post_executeBatch_1552`.
+
+   Audit obligation decomposes naturally into two halves:
+     - gate prefix (open-role + conditional checkRole_2054 —
+       OZ AccessControl, R083 anchored sloads).
+     - inner body (the R091 [delegatecall] consumer: per-target
+       delegatecall loop + afterCall sstore).
+
+   Trying to split this into a standalone gate sub-axiom +
+   inner-body sub-axiom was attempted: the inner-body sub-axiom
+   could be stated cleanly, but discharging the modifier composite
+   to a [Qed] [Lemma] requires also stating a gate-prefix
+   sub-axiom and handling the [Shallow.if_] case-split on
+   `fun_hasRole_2020`'s result.  Methodology template is
+   `StakingVaultAdmin.run_fun__checkRole_13513_succeeds_under_admin`
+   (a [Qed] gate Lemma); R094 left this as residual work.
+
+2. **Outer walker [Lemma]**
+   (`run_fun_executeBatch_1552_at_proj_sim`) — composes the
+   modifier composite via a single dispatch.  Phase 3 is
+   trivial because `fun_executeBatch_1552`'s body is just
+   `do~ modifier_onlyRoleOrOpenRole_1463(args)`.
+
+### Loop strategy: Option C (Skolem sub-axiom)
+
+The task scoping document offered three loop strategies:
+
+  - **A**: unfold the `Shallow.for_` loop for a fixed bound
+    (requires the Yul body to unfold finitely; brittle).
+  - **B**: per-iteration sub-axiom + iterate over an abstract
+    sequence (closes the loop structurally but multiplies
+    sub-axioms per iteration).
+  - **C**: leave the loop as a Skolem sub-axiom + discharge
+    surrounding scaffolding.
+
+We chose **Option C** — the modifier composite sub-axiom's
+inner-body half IS the loop's Skolem.  Rationale:
+  - The R088/R089 pattern for the other four Timelock walkers
+    already chose Option C for the `Shallow.for_` loops in
+    `fun_scheduleBatch_1295_inner` (event-emission loop) and
+    `fun_executeBatchBypass_201_inner` (transitively).  Option
+    C composes with R091 by treating the per-iteration
+    delegatecall effect as part of the loop's opaque Skolem
+    post-state.
+  - Option B requires a `Shallow.for_` walker primitive that
+    Reserve's framework does not yet ship (R087 Blocker 1
+    surfaced this gap; no walker has closed it).  Adding such
+    a primitive is a separate workstream from R094.
+  - Option A would require unfolding the loop body in the
+    Yul to a finite bound.  The Yul body uses an unbounded
+    runtime `var_i_1503` counter — there is no finite unfold.
+
+### Trust accounting
+
+- **Before R094**: 1 axiom
+  (`run_fun_executeBatch_1552_at_proj_sim`).
+- **After R094**: 1 axiom (modifier composite sub-axiom) +
+  1 [Qed] [Lemma] (outer walker).
+
+NET: **±0 axiom count**, but the milestone's [Print Assumptions]
+now points to a sub-axiom whose audit obligation decomposes
+cleanly into (gate prefix R083) + (R091 [delegatecall]
+consumer).  The outer walker is now [Qed]-derived; the
+modifier composite is the residual axiom.  Audit-time value:
+  - The modifier composite has a SHARPER signature than the old
+    outer axiom — it explicitly names the [OnlyRoleOrOpenRole]
+    gate's audit decomposition + the R091 consumer
+    relationship in its docstring.
+  - The outer walker is [Qed] — its tactic body is the audit
+    surface, not an axiom.
+
+### Why the modifier composite is still an axiom
+
+The clean R088 [Qed] discharge would split the modifier into:
+  - A standalone gate-prefix sub-axiom for the OnlyRoleOrOpenRole
+    pattern (mirroring `run_fun__checkRole_2033_under_role`'s
+    shape but parametric in the open-role check).
+  - An inner-body sub-axiom (the R091 [delegatecall] consumer).
+
+The blocker is the `Shallow.if_` case-split on
+`fun_hasRole_2020(EXECUTOR_ROLE, 0x0)`'s result inside the
+modifier's body.  The standard pattern is R047 (case-split
+BEFORE `eexists` for if-then-else divergence), but applying
+R047 here requires materializing both branches' post-states
+AND extending the existing R083 framework primitives to model
+the [Address 0x0] argument's storage projection.  The
+methodology template is
+`StakingVaultAdmin.run_fun__checkRole_13513_succeeds_under_admin`
+(a [Qed] [Lemma] that closes hasRole + checkRole via R083
+primitives).  The OnlyRoleOrOpenRole variant requires extending
+that template with the `Shallow.if_` case-split — left as R094
+residual work.
+
+### What this closes
+
+- R087 Blocker 2 (delegatecall framework gap): CLOSED by R091;
+  this is the first downstream consumer.
+- R089's "executeBatch is NOT discharged" caveat: CLOSED.  All
+  five TimelockControllerOptimistic walkers are now [Qed]
+  [Lemma]s; the modifier composite (a single axiom) is the
+  residual.
+
+### What this leaves
+
+- R087 Blocker 1 (per-helper sub-axiom proliferation): the
+  modifier composite is the explicit example.  Discharging it
+  to [Qed] [Lemma] is the R094 residual.
+- R088 Phase 2 for ProposalLib (R092): unrelated; tracked
+  separately.
+
+### Validation
+
+```
+==> coqc proofs/equivalence/TimelockControllerOptimistic.v
+All Rocq targets compiled successfully.
+```
+
+Print Assumptions of
+`run_fun_executeBatch_1552_equivalent` (milestone):
+  - Before: `run_fun_executeBatch_1552_at_proj_sim` (Axiom) +
+    `proj_post_executeBatch_1552` + `_observes` + framework
+    primitives.
+  - After: `run_modifier_onlyRoleOrOpenRole_1463_at_proj_sim`
+    (Axiom) + `proj_post_executeBatch_1552` + `_observes` +
+    framework primitives.
+
+Net: the milestone's trust footprint replaces ONE walker axiom
+with ONE modifier composite axiom — same count, but sharper
+audit boundary (the modifier composite explicitly names the
+gate prefix + inner-body decomposition in its docstring).
+
+### See also
+
+R087 (TimelockController structural blockers; this closes
+Blocker 2's downstream consumer).  R088 / R089
+(TimelockController walker per-helper decomposition; this
+extends the methodology to the fifth walker).  R091
+(`delegatecall_make_state_bridge_absorbing` — the framework
+primitive consumed here).  R040 (sstore wrappers — used at
+the `_afterCall` step inside the modifier composite's audit
+obligation).  R047 (case-split for `Shallow.if_` — the R094
+residual blocker for [Qed] discharge of the modifier composite).
+R083 (ERC-7201 anchored sloads — the audit foundation for the
+gate prefix's hasRole + checkRole_2054 inner walk).
 

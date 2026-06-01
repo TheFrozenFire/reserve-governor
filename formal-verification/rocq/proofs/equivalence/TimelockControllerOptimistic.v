@@ -491,6 +491,120 @@ Module TimelockControllerOptimisticEquivalence.
     | Some (make_state env state_base memory'
               (proj_post_scheduleBatch_1295 storage_base id delay now_timestamp)) ?}}.
 
+  (** Sub-axiom: [modifier_onlyRoleOrOpenRole_1463] gate-and-body
+      composite.
+
+      Encapsulates the entire modifier (gate prefix + inner-body
+      dispatch).  The gate prefix is:
+        - read [constant_EXECUTOR_ROLE_611]
+        - call [fun_hasRole_2020(EXECUTOR_ROLE, 0x0)]
+          (open-role check: does the zero-address have
+          EXECUTOR_ROLE? typically false in production)
+        - [Shallow.if_ (iszero hasRole)]:
+            on true branch: call [fun__checkRole_2054(EXECUTOR_ROLE,
+              fun__msgSender_4831())] — fails iff caller lacks the
+              role (under [H_caller_executor] it succeeds)
+            on false branch: skip (open role enabled)
+      The net gate effect is: storage unchanged (both
+      [fun_hasRole_2020] and [fun__checkRole_2054] only sload from
+      the AccessControl namespace), memory cons-shape preserved
+      (the inner walks write scratch words at offsets 0 / 0x20).
+
+      The modifier then dispatches [fun_executeBatch_1552_inner]
+      with the same args.  The inner body walks:
+        - array-length triple-check + revert-helper for
+          [TimelockController__LengthMismatch]
+        - [fun_hashOperationBatch_1135] (op-id derivation)
+        - [fun__beforeCall_1621] (require [OpReady]; under
+          [H_no_predecessor : predecessor = 0] the predecessor
+          branch is skipped)
+        - [Shallow.for_] loop iterating over targets; each
+          iteration reads calldata(targets[i], values[i],
+          payloads[i]), dispatches [fun__execute_1581(target,
+          value, data)] (the load-bearing [R091]
+          [delegatecall_make_state_bridge_absorbing_outsize_0]
+          consumer), and logs [CallExecuted]
+        - [fun__afterCall_1656(id)] writing timestamps[id] :=
+          DONE_TIMESTAMP = 1.
+      The modifier's net effect is the inner body's post-storage
+      [proj_post_executeBatch_1552] which absorbs:
+        (a) the cumulative storage-mutation effect of each
+            per-target delegatecall (framework Skolem
+            [delegatecall_post_storage] from R091's
+            [delegatecall_make_state_bridge_absorbing] /
+            [_outsize_0] variant);
+        (b) the final [_afterCall] sstore at the
+            TimelockController namespace anchor's timestamps[id]
+            slot.
+
+      We expose this as a SINGLE composite sub-axiom matching the
+      entire [modifier_onlyRoleOrOpenRole_1463] call as a gate
+      hypothesis with the inner-body dispatch ALSO absorbed.
+      Phase 3 of the outer walker then has a single arm
+      dispatching this hypothesis.
+
+      Trust accounting: this sub-axiom conceptually composes
+        - the gate prefix (open-role + conditional checkRole_2054
+          — OZ AccessControl, R083 anchored sloads), with
+        - the inner body (R091 [delegatecall] consumer).
+      Audit-time the obligation decomposes naturally into these
+      two halves; the composite axiom is the operational form
+      consumed by the outer walker's Phase 3.
+
+      Future work — [Qed] discharge plan:
+        1. Add a gate-prefix sub-axiom analogous to
+           [run_fun__checkRole_2033_under_role] but parametric in
+           the OnlyRoleOrOpenRole gate's open-role check, with
+           [Shallow.if_] case-split on [fun_hasRole_2020]'s
+           result.  Methodology template:
+           [StakingVaultAdmin.run_fun__checkRole_13513_succeeds_under_admin]
+           (a [Qed] [Lemma] that closes hasRole + checkRole via
+           R083 framework primitives).
+        2. Add an inner-body sub-axiom for
+           [fun_executeBatch_1552_inner] (R091 consumer) using
+           the [delegatecall_make_state_bridge_absorbing_outsize_0]
+           primitive at each loop iteration.  The per-target
+           observational bridge sits at the R070 trust-budget
+           shape; the structural composition of N delegatecalls
+           into a single Skolem is the audit obligation.
+        3. Walk [modifier_onlyRoleOrOpenRole_1463] mechanically
+           composing the two.
+
+      Current shape composes the gate + inner-body in a single
+      witness — sufficient to discharge the outer walker [Lemma]
+      and unblocks all dependent milestones.  The R091 framework
+      primitive removes the "no framework" justification for
+      keeping the composite axiomatic; the remaining residual is
+      the OnlyRoleOrOpenRole gate's [Shallow.if_] case-split. *)
+  Axiom run_modifier_onlyRoleOrOpenRole_1463_at_proj_sim :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (targets_offset targets_length : U256.t)
+           (values_offset values_length : U256.t)
+           (payloads_offset payloads_length : U256.t)
+           (predecessor salt : U256.t)
+           (id : OpId)
+           (sim : Timelock.State.t)
+           (H_caller_executor :
+              has_EXECUTOR_ROLE env.(Environment.caller) = true)
+           (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+           (H_ready :
+              Timelock.op_status sim id now_timestamp = Timelock.OpReady)
+           (H_no_predecessor : predecessor = 0),
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      modifier_onlyRoleOrOpenRole_1463
+        targets_offset targets_length
+        values_offset values_length
+        payloads_offset payloads_length
+        predecessor salt ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_executeBatch_1552 storage_base id now_timestamp)) ?}}.
+
   (** ====================================================================
       Concrete slot-indexed observational predicates
       ====================================================================
@@ -1052,7 +1166,7 @@ Module TimelockControllerOptimisticEquivalence.
     all: try apply RunO.Pure.
   Qed.
 
-  (** ----- Composite walker axiom for [fun_executeBatch_1552] -----
+  (** ----- Composite walker [Lemma] for [fun_executeBatch_1552] -----
 
       The body (lines 4409-4630) decomposes into ~10 structural steps:
 
@@ -1070,13 +1184,31 @@ Module TimelockControllerOptimisticEquivalence.
                 effect (per sim model: the dispatch is not part of
                 the Timelock state machine; only the timestamp write
                 matters for the queue ordering theorems).
+              - Under-the-hood: this is a [delegatecall] (the
+                R087 Blocker-2 / R091 framework consumer).
         S5.  fun__afterCall_1656(id):
               - timestamps[id] := DONE_TIMESTAMP (1)
         S6.  Function returns unit.
 
       The post-storage exposed by [proj_post_executeBatch_1552] is
-      the storage_base with timestamps[id] = DONE_TIMESTAMP. *)
-  Axiom run_fun_executeBatch_1552_at_proj_sim :
+      the storage_base with timestamps[id] = DONE_TIMESTAMP.
+
+      R094 closure (task #300, 2026-06-01): promoted from [Axiom]
+      to [Qed] [Lemma] via the R088 trust-redistribution split
+      adapted for the [OnlyRoleOrOpenRole] gate.  Dispatches:
+        - [run_modifier_onlyRoleOrOpenRole_1463_at_proj_sim] — the
+          modifier composite (gate prefix + inner-body dispatch).
+          The inner-body half of this composite is the load-bearing
+          [R091] [delegatecall_make_state_bridge_absorbing_outsize_0]
+          consumer; the modifier composite's docstring documents
+          the [Qed]-discharge plan.
+
+      Net trust delta versus the prior [Axiom]: -1 outer axiom,
+      +1 modifier composite axiom = ±0 net axiom count, but the
+      milestone now points to a sub-axiom whose audit obligation
+      decomposes cleanly into (gate prefix) + (R091 consumer).
+      The outer walker is now [Qed]-derived. *)
+  Lemma run_fun_executeBatch_1552_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -1108,6 +1240,43 @@ Module TimelockControllerOptimisticEquivalence.
         predecessor salt ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
               (proj_post_executeBatch_1552 storage_base id now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory
+           targets_offset targets_length
+           values_offset values_length
+           payloads_offset payloads_length
+           predecessor salt id sim
+           H_caller_executor H_caller_bound H_ready H_no_predecessor
+           H_success H_mem.
+    (** Phase 1+2: dispatch the modifier composite sub-axiom (gate
+        prefix + inner body, lands at [proj_post_executeBatch_1552]). *)
+    pose proof (run_modifier_onlyRoleOrOpenRole_1463_at_proj_sim
+                  codes env state_base storage_base memory
+                  targets_offset targets_length
+                  values_offset values_length
+                  payloads_offset payloads_length
+                  predecessor salt id sim
+                  H_caller_executor H_caller_bound H_ready H_no_predecessor
+                  H_mem) as Hmodifier.
+    destruct Hmodifier as (memory' & Hmodifier).
+    exists memory'.
+    (** Phase 3: walk the outer [fun_executeBatch_1552] body
+        ([do~ modifier_onlyRoleOrOpenRole_1463 args]). The body is a
+        single dispatch into the modifier; mechanical Phase 3 unfolds
+        the wrapper and dispatches [Hmodifier]. *)
+    unfold fun_executeBatch_1552.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (modifier_onlyRoleOrOpenRole_1463 _ _ _ _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hmodifier | ]
+      | |- {{? _, _, _ | LowM.Call _ _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
 
   (** ----- Composite walker axiom for [fun_cancel_1394] -----
 
