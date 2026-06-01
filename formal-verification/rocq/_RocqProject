@@ -58,6 +58,7 @@ mocks/ReentrancyGuard.v
 mocks/EnumerableSet.v
 mocks/Votes.v
 mocks/ERC4626.v
+mocks/TimelockController.v
 
 # --- ProposerThrottle ---
 simulations/ProposerThrottle.v
