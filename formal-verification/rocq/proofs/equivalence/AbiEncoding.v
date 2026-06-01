@@ -375,4 +375,50 @@ Module AbiEncoding.
     - apply RunO.Pure.
   Qed.
 
+  (** ===== Layer 14: make_state / return_data commutation =====
+
+      The bridge produces a post-state of shape
+
+        (make_state env state_base memory' storage)
+          <| State.return_data := bytes |>
+
+      [make_state] is defined via [with_current_storage] (opaque in
+      [proofs/RocqOfSolidity.v]). [State.return_data] is a different
+      record field from those touched by [with_current_storage] (which
+      writes [State.accounts]). The two commute: applying the
+      [return_data] override outside [make_state] is the same as
+      threading it through [state_base] first.
+
+      Closed in the same spirit as the framework's
+      [CanonizeState.update_memory_eq] / [update_storage_eq] — both
+      [Admitted] because [with_current_storage] is opaque. *)
+
+  Axiom make_state_with_rd_eq :
+    forall env state_base memory storage (rd : list Z),
+    (make_state env state_base memory storage)
+      <| State.return_data := rd |> =
+    make_state env (state_base <| State.return_data := rd |>) memory storage.
+
+  (** [abi_encode_tuple__to__fromStack memPtr] is the zero-arg encode
+      (for an empty event payload). Returns [memPtr] unchanged, no
+      memory side effect. The Yul body is:
+        [function abi_encode_tuple__to__fromStack(headStart) -> tail {
+           tail := headStart
+         }] — i.e. a pure return. *)
+
+  Lemma run_abi_encode_tuple_empty_fromStack codes env state (memPtr : U256.t)
+      (H_bound : 0 <= memPtr < 2^256) :
+    {{? codes, env, Some state |
+      abi_encode_tuple__to__fromStack memPtr ⇓ Result.Ok memPtr
+    | Some state ?}}.
+  Proof.
+    unfold abi_encode_tuple__to__fromStack.
+    lu. repeat (lu || cu || p).
+    s.
+    apply RunO.PureEq; [|reflexivity].
+    unfold Pure.add. rewrite Z.add_0_r.
+    rewrite Z.mod_small by exact H_bound.
+    reflexivity.
+  Qed.
+
 End AbiEncoding.
