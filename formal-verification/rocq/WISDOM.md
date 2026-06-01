@@ -3555,3 +3555,339 @@ section + R085's "Path to Qed discharge" section.
 
 See also: R084 (decomposition), R085 (Skolem elimination), R059
 (set_eq_at_role), R055 (grantRole bridge methodology).
+
+## R091: Delegatecall bridge framework primitive — R087 Blocker 2 closure
+
+**Task #296 (R087-followup, 2026-06-01).** Closes the
+delegatecall framework gap diagnosed in R087 Blocker 2.  Three
+walker workstreams were blocked on this single primitive:
+
+  - ROG's `fun_propose_389` (delegatecalls into
+    `ProposalLib.proposePessimistic` via the linkersymbol-derived
+    library address).
+  - Timelock's `executeBatch_1552_inner` (delegatecalls into each
+    target's bytecode under the timelock's storage context).
+  - ROG's `fun_execute_4145` (transitively via the
+    `fun__executeOperations_797` dispatch into
+    `TimelockControllerOptimistic.executeBatch`, which itself
+    delegatecalls into targets).
+
+### Semantic difference vs staticcall
+
+`staticcall` (R063) and `delegatecall` (this primitive) share the
+upstream's `LowM.CallContract` proof rule but differ in two
+load-bearing ways:
+
+  - `is_static = true` vs `is_delegate = true` on the
+    `LowM.CallContract` flag pair.  Both flags are arguments the
+    `eval` interpreter consumes; the `RunO.CallContract` rule
+    treats them uniformly (the proof author picks `call_result`
+    and `state_inter`), so the BRIDGE shape doesn't care about
+    the flag.  But the post-state CAN, because:
+  - Storage-mutation visibility.  Under staticcall, the callee's
+    storage writes are invisible to the caller (staticcall would
+    revert on any sstore in the callee).  Under delegatecall, the
+    callee's bytecode WRITES the CALLER's storage as if the caller
+    had executed those sstores directly.  The bridge's post-state
+    must surface this storage mutation as a Skolem.
+
+### The primitive's signature
+
+The absorbing form (added to `AbiEncoding.v` Layer 14b) mirrors
+`staticcall_make_state_bridge_absorbing` with one new Skolem:
+
+```coq
+Parameter delegatecall_post_memory :
+  Environment.t -> RocqOfSolidity.State.t ->
+  SimulatedMemory.t -> SimulatedStorage.t ->
+  U256.t (* addr *) -> U256.t (* out *) -> U256.t (* call_result *) ->
+  SimulatedMemory.t.
+
+Parameter delegatecall_post_storage :
+  Environment.t -> RocqOfSolidity.State.t ->
+  SimulatedMemory.t -> SimulatedStorage.t ->
+  U256.t (* addr *) -> list Z (* input bytes *) ->
+  SimulatedStorage.t.
+
+Axiom delegatecall_make_state_bridge_absorbing :
+  forall codes env state_base memory storage
+         g addr in_ insize out outsize input_bytes call_result,
+  let storage' :=
+    delegatecall_post_storage env state_base memory storage addr input_bytes in
+  let memory' :=
+    delegatecall_post_memory env state_base memory storage addr out call_result in
+  let state_post :=
+    (make_state env state_base memory' storage')
+      <| State.return_data := Memory.u256_as_bytes call_result |> in
+  {{? codes, env, Some (make_state env state_base memory storage) |
+    Stdlib.delegatecall g addr in_ insize out outsize ⇓
+    Result.Ok call_result
+  | Some state_post ?}}.
+```
+
+The two Skolems split the Yul semantic effect:
+
+  - `delegatecall_post_memory` — caller's memory after the
+    mstore-tail write at `out` (analogue of `staticcall_post_memory`).
+    Has the same three structural axioms: at-out (writes
+    `call_result` at word `out/32`); at-other (unchanged at other
+    word indices); length (preserved).
+  - `delegatecall_post_storage` — caller's storage after the
+    target's body wrote against it.  Parameterised by `addr`
+    (which target) and `input_bytes` (what calldata).  Has ONE
+    structural axiom: length preservation.  The per-target
+    post-storage VALUE is pinned via a companion observational
+    bridge at each use site (R070 / R086 trust-budget shape).
+
+### Base (proved) sibling
+
+The `StaticCallBridge.v` Layer 5 ships three proved lemmas mirroring
+the staticcall base bridges:
+
+  - `run_delegatecall_general` (proof author supplies output bytes
+    + call_result + full post-state shape).
+  - `run_delegatecall_to_word` (specialisation to `outsize = 32`,
+    the single-word ABI return shape — used by
+    `fun_functionDelegateCall_4416` and similar).
+  - `run_delegatecall_to_nothing` (specialisation to `outsize = 0`,
+    the no-return-write shape — used by `fun_propose_389` and
+    by `fun_executeBatch` per-target loop iterations).
+
+All three are `Qed`-proved under the upstream's
+`RunO.CallContract` rule.  They unfold `Stdlib.delegatecall`
+exactly as `run_staticcall_general` unfolds `Stdlib.staticcall`:
+MLoad input, `RunO.CallContract` with explicit witnesses, RLoad
+output, MStore to `out`, Pure.  The proof author passes the
+desired post-state as an argument; the bridge threads it through
+the `LowM.CallContract`'s `state_inter` choice.
+
+### Soundness argument
+
+The bridge's soundness rests on three layers, identical to R082's
+`staticcall_make_state_bridge_absorbing` modulo the storage-Skolem
+addition:
+
+  1. The base lemma `run_delegatecall_general` is fully proved
+     (modulo `RunO.CallContract`'s own trust status).  It reduces
+     the absorbing claim to "is there a `state_inter` choice that
+     witnesses the post-state?"
+  2. The absorbing form picks `state_inter` as
+     `make_state env state_base memory' storage'` for the Skolems
+     `memory'` and `storage'`.  This is consistent with upstream's
+     `Storage.of_storable_values` being `Admitted` — the framework
+     leaves the projection unspecified beyond the existing
+     `run_sload_*` / `run_sstore_*` axioms, so a Skolemised
+     storage that names ONE consistent assignment is a valid
+     witness.
+  3. The per-target observational bridge axiom (carried per use
+     site, NOT in this framework primitive) ties the Skolem
+     `delegatecall_post_storage env state_base memory storage addr
+     input_bytes` to the target's sim post-state at the slot
+     anchors the target writes.  This is the R070 trust-budget
+     line each consumer carries.
+
+The trust delta is: **+1 framework axiom**
+(`delegatecall_make_state_bridge_absorbing`) **+ 4 structural
+companions** (`delegatecall_post_memory_at_out`, `_at_other`,
+`_length`, `delegatecall_post_storage_length`) **+ 1 outsize-0
+variant** (`delegatecall_make_state_bridge_absorbing_outsize_0`).
+The variants are stated separately to keep the unification
+between the absorbing Skolem and the consumer's expected
+post-state shape mechanical — without the outsize-0 variant, the
+walker would have to peel `Z.to_nat 0 = 0%nat` and
+`List.firstn 0 _ = []` manually at every use site.
+
+### Bridge primitive vs callee discharge — separation of concerns
+
+The bridge primitive does NOT discharge the target's body.  Same
+contract as the staticcall bridge: the bridge proves
+"there exists a witness for the call's effect"; the caller's
+responsibility is to:
+
+  - Discharge the target's callee-spec axiom (e.g.
+    `ProposalLib.proposePessimistic`'s walker axiom, still
+    `Axiom run_fun_proposePessimistic_288_at_storage_base` per
+    R087 Blocker 4).
+  - Discharge the per-target observational bridge axiom (e.g. an
+    axiom of shape `delegatecall_post_storage_observes_<target>`
+    that pins the Skolem to the target's sim post-state).
+
+For `fun_propose_389` specifically, the target's walker is
+itself an unclosed `Axiom`, so the delegatecall bridge is
+LEVERAGE that unblocks the workstream WITHOUT closing the
+trust account.  The consumer's net trust is:
+
+  - 1 line for the delegatecall bridge use (this axiom).
+  - 1 line for the target's walker axiom (existing R070 line).
+  - 1 line for the per-target observational bridge (existing
+    R070 line; same shape as the staticcall consumers'
+    bridges).
+
+Net: same trust shape as a staticcall consumer; +1 framework
+axiom for the primitive (reused across every delegatecall
+consumer).
+
+### Why not push the target's body into the bridge
+
+A "threaded" alternative would inline the target's walker axiom
+as a hypothesis on the bridge:
+
+```coq
+Axiom delegatecall_bridge_threaded :
+  forall codes env state ..., target_walker_axiom ...
+  -> {{? ... | Stdlib.delegatecall ... ⇓ ... | post_state target_axiom ... ?}}.
+```
+
+This would push the per-target trust to the bridge's
+preconditions, eliminating the per-use-site observational bridge.
+We REJECTED this shape for three reasons:
+
+  1. **Reusability.**  Each consumer's target axiom has a
+     different signature (different input shape, different
+     post-state shape).  A threaded bridge would need to be
+     re-stated per consumer, defeating the "one framework
+     primitive" pattern.
+  2. **Trust accounting.**  R070's per-mutator recipe explicitly
+     SEPARATES the walker axiom from the observational bridge —
+     the walker witnesses the existence of a post-state; the
+     bridge characterises it.  Threading them collapses that
+     separation and makes the per-target axiom's preconditions
+     impossible to audit independently.
+  3. **Layering.**  The bridge is FRAMEWORK code — it has no
+     business knowing which targets exist.  Per-target
+     instantiation lives at the consumer (`ReserveOptimisticGovernor.v` /
+     `TimelockControllerOptimistic.v`).
+
+The absorbing-Skolem shape we adopted preserves R070's separation
+of concerns: framework supplies the "there is some witness"
+fact; consumer characterises the witness via its observational
+bridge.
+
+### Where the primitive will land
+
+Currently consumed by:
+
+  - (Future) ROG `fun_propose_389` walker — the smallest body
+    that uses delegatecall.  Discharge plan: closing
+    `ProposalLib.proposePessimistic` walker (R087 Blocker 4)
+    first, then this bridge + the three R087 Blocker-3 minor
+    primitives (`linkersymbol`, `extcodesize`,
+    `revert_forward_1` unreachable) close `fun_propose_389`.
+  - (Future) Timelock `fun_executeBatch_1552_inner` walker —
+    delegatecall per target inside a `Shallow.for_` loop.
+    The Skolem post-storage absorbs the cumulative
+    target-loop effect; the per-target observational bridge
+    is the audit obligation.
+  - (Future) ROG `fun_execute_4145` walker — transitively via
+    `fun__executeOperations_797`.
+
+### Validation attempt — Timelock `executeBatch`
+
+Per task scope: attempted validation by applying the primitive
+to discharge `executeBatchBypass_201_inner` (the parking test
+case).  The walker is currently an `Axiom`; converting it to a
+`Lemma` requires the inner `fun_executeBatch_1552` body
+(itself an `Axiom`) to be discharged first, which in turn
+requires the per-target observational bridge.
+
+**Outcome**: not attempted to land in this task.  Rationale:
+the validation requires closing the
+`run_fun_executeBatchBypass_201_inner_at_storage_base` Axiom
+which has eight chained sub-helpers (R087 Blocker 1 at the
+Timelock layer), each requiring its own per-helper sub-axiom.
+The delegatecall primitive is the SINGLE blocker the task is
+scoped to; the multi-helper Timelock decomposition is a
+separate workstream (R088 / R089 cover the methodology).
+
+The primitive's value is FORWARD LEVERAGE: it removes the
+"framework gap" justification from R087 Blocker 2, leaving
+ProposalLib closure (R087 Blocker 4) and the per-walker
+decomposition (R087 Blocker 1) as the remaining blockers.
+Each downstream workstream now has a NAMED PRIMITIVE to invoke
+rather than a "deferred until delegatecall framework exists"
+status.
+
+### Build verification
+
+```
+==> coqc proofs/equivalence/AbiEncoding.v       (added Layer 14b)
+==> coqc proofs/equivalence/StaticCallBridge.v  (added Layer 5)
+All Rocq targets compiled successfully.
+```
+
+LOC delta:
+  - `StaticCallBridge.v`: +185 LOC (three proved base lemmas +
+    three tactic aliases + docs).
+  - `AbiEncoding.v`: +145 LOC (one absorbing axiom + one
+    outsize-0 variant + four structural companions + two
+    tactic aliases + docs).
+  - Total: 330 LOC of framework code; documentation here in
+    WISDOM: ~200 LOC.
+
+### Where this leaves R087
+
+R087's four blockers, post-R091:
+
+  - Blocker 1 (per-helper sub-axiom proliferation): UNCHANGED.
+    The R088 decomposition methodology applies; consumers
+    decide per-mutator how to split.
+  - Blocker 2 (delegatecall framework gap): **CLOSED by R091.**
+  - Blocker 3 (linkersymbol / extcodesize / revert_forward_1):
+    UNCHANGED.  Bounded ~50 LOC of new leaves.  Not blocking
+    `executeBatch` (which uses `gas()` and a runtime address);
+    is blocking `fun_propose_389`.
+  - Blocker 4 (ProposalLib walker axioms not closed):
+    UNCHANGED.  Workstream gated on closing
+    `proposePessimistic_288` / `proposeOptimistic_179` /
+    `transitionToPessimistic_400`.
+
+### New framework gaps surfaced
+
+None.  The delegatecall primitive composes cleanly with the
+existing R082 / R083 / R084 / R088 absorbing primitives:
+
+  - `mload_absorbing` / `mstore_absorbing` handle the
+    pre-delegatecall input prep and the post-delegatecall
+    returndata decode (no new memory work needed).
+  - `sload_absorbing` / `sstore_absorbing` (R088) handle
+    any caller-storage operations on `delegatecall_post_storage`
+    (the Skolem composes naturally as the input to subsequent
+    sload/sstore absorbers).
+  - The structural at-out / at-other / length companions
+    mirror the staticcall pattern exactly, so consumer-side
+    walker arms can copy-paste the staticcall integration shape
+    with minor renaming.
+
+### Audit-time discipline
+
+Each consumer that uses `delegatecall_make_state_bridge_absorbing`
+must ship a companion `*_observes_*` axiom characterising the
+Skolem post-storage at the target's write slots.  These axioms
+land per-consumer (in `ReserveOptimisticGovernor.v` for
+`fun_propose_389` and in `TimelockControllerOptimistic.v` for
+the executeBatch family), NOT in the framework.  Recommended
+shape (mirroring R086's `proj_post_*_observes`):
+
+```coq
+Axiom delegatecall_post_storage_observes_proposePessimistic :
+  forall env state_base memory storage addr input_bytes sim,
+  delegatecall_post_storage env state_base memory storage addr input_bytes
+    = (* sim-side projection of ProposalLib.proposePessimistic
+         applied to storage_base at the relevant slot anchors *) ...
+```
+
+The audit-time content of these axioms is: under the success-branch
+preconditions, the target's storage write effect equals the
+sim-side state transition.
+
+### See also
+
+R063 (StaticCallBridge — sibling primitive), R082
+(staticcall_make_state_bridge_absorbing — direct template for
+the storage-mutation absorbing shape), R083 (memory absorption
+companion patterns), R087 (the four blockers diagnosis; R091
+closes Blocker 2), R088 (arbitrary-U256-slot storage absorption
+— the natural sequel for post-delegatecall storage ops), R070
+(per-mutator composite walker recipe), R086 (observational bridge
+shape per use site).
+

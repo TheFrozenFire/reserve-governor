@@ -383,10 +383,23 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                                      CallContract + RLoad + MStore
                                      primitives — into a single
                                      parametric-callee-spec axiom.
+                                     (R091): adds sibling
+                                     [run_delegatecall_*] proved
+                                     base lemmas for [delegatecall]
+                                     — same shape, different
+                                     [is_delegate] flag and no
+                                     precompile guard.
       - AbiEncoding.v        (R064): abi-encode/decode tuple leaves
                                      for staticcall input/output
                                      marshaling (6 Qed, 7 documented
                                      trust axioms).
+                                     (R091): adds
+                                     [delegatecall_make_state_bridge_absorbing]
+                                     + 4 structural companions +
+                                     outsize-0 variant.  Skolemises
+                                     BOTH post-memory and
+                                     post-storage (the new axis vs
+                                     the staticcall absorbing form).
       - Membership-equivalence predicates (R059): [set_eq_at_role],
                                      [set_eq_in_registry] capture
                                      OZ EnumerableSet's public-API

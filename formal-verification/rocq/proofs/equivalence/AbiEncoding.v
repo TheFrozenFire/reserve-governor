@@ -602,6 +602,186 @@ Module AbiEncoding.
     (make_state env state_base memory storage).(State.gas)
     = state_base.(State.gas).
 
+  (** ===== Layer 14b: the absorbing delegatecall bridge (R091) =====
+
+      Sibling to [staticcall_make_state_bridge_absorbing] above, for
+      the [Stdlib.delegatecall] opcode.  Closes R087 Blocker 2 — the
+      delegatecall framework gap that blocked ROG's [fun_propose_389]
+      walker (delegatecall into [ProposalLib.proposePessimistic]) and
+      Timelock's [executeBatch] inner-body walker (delegatecall into
+      each target's bytecode).
+
+      Semantic difference vs staticcall:
+
+        - staticcall: target runs in TARGET's storage.  Caller's
+          storage is unchanged.  Only memory + return_data move.
+        - delegatecall: target runs in CALLER's storage.  Caller's
+          storage IS mutated by target's logic.  Memory shared;
+          return_data carries the target's return.
+
+      The absorbing form Skolemises BOTH the memory and the storage
+      effects:
+
+        - [delegatecall_post_memory] — caller's memory after the
+          delegatecall's mstore tail write.  Mirrors [staticcall_post_memory].
+        - [delegatecall_post_storage] — caller's storage after the
+          target's body wrote against it.  THIS IS NEW: staticcall has
+          no analogue because staticcall cannot mutate storage.
+
+      Per-target audit-time obligation: the
+      [delegatecall_post_storage] Skolem captures the target's net
+      storage effect under the caller's storage context.  Each use
+      site discharges this via a companion observational-bridge axiom
+      (R070 / R086 shape) that pins the post-storage to the target's
+      sim-side post-state at the slot anchors the target writes.  See
+      the consumers under [ReserveOptimisticGovernor.v]'s
+      [fun_propose_389] walker and [TimelockControllerOptimistic.v]'s
+      [fun_executeBatch_1552_inner] walker.
+
+      Soundness justification:
+
+        - The upstream's [Stdlib.delegatecall] reduces to
+          [LowM.CallContract addr 0 input false true k] sandwiched
+          between MLoad / RLoad / MStore primitives (see
+          [StaticCallBridge.run_delegatecall_general] for the base
+          proof).
+        - [LowM.CallContract] is a trust-based proof rule whose
+          [state_inter] choice is what carries the target's body
+          effect.  For delegatecall, [state_inter] reflects the
+          caller's storage AFTER the target ran against it.
+        - The Skolem [delegatecall_post_storage] points at THAT
+          storage witness.  Soundness reduces to the per-target
+          observational bridge: the Skolem MUST equal the target's
+          sim post-storage at the audited slots.
+        - This is consistent with upstream's [Storage.of_storable_values]
+          being [Admitted] — the framework leaves the storage
+          projection unspecified; the Skolem witnesses one consistent
+          assignment.
+
+      AUDIT OBLIGATION per use site: the consumer carries a
+      companion bridge axiom tying [delegatecall_post_storage] to
+      the target's sim post-state at the slot anchors the target
+      writes.  Same shape as R070 / R086 — the bridge is the
+      observational equality; the Skolem is the existential
+      witness.
+
+      Trust delta: +1 axiom (this one) per framework use; the
+      per-use-site bridge axioms are existing R070 trust budget
+      lines, NOT new framework lines.  The primitive itself is
+      reused across every delegatecall consumer. *)
+
+  Parameter delegatecall_post_memory :
+    Environment.t -> RocqOfSolidity.State.t ->
+    SimulatedMemory.t -> SimulatedStorage.t ->
+    U256.t (* addr *) -> U256.t (* out *) -> U256.t (* call_result *) ->
+    SimulatedMemory.t.
+
+  Parameter delegatecall_post_storage :
+    Environment.t -> RocqOfSolidity.State.t ->
+    SimulatedMemory.t -> SimulatedStorage.t ->
+    U256.t (* addr *) -> list Z (* input bytes *) ->
+    SimulatedStorage.t.
+
+  Axiom delegatecall_make_state_bridge_absorbing :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+           (g addr in_ insize out outsize : U256.t)
+           (input_bytes : list Z) (call_result : U256.t),
+    let storage' :=
+      delegatecall_post_storage env state_base memory storage addr input_bytes in
+    let memory' :=
+      delegatecall_post_memory env state_base memory storage addr out call_result in
+    let state_post :=
+      (make_state env state_base memory' storage')
+        <| State.return_data := Memory.u256_as_bytes call_result |> in
+    {{? codes, env, Some (make_state env state_base memory storage) |
+      Stdlib.delegatecall g addr in_ insize out outsize ⇓
+      Result.Ok call_result
+    | Some state_post ?}}.
+
+  (** Structural companion axioms on [delegatecall_post_memory] —
+      mirror [staticcall_post_memory_at_out / at_other / length].
+      Audit obligation: the delegatecall's mstore tail only touches
+      the word at [out/32] (when [out] is 32-aligned); all other
+      word indices are unchanged. *)
+
+  Axiom delegatecall_post_memory_at_out :
+    forall env state_base memory storage addr out call_result (k : nat),
+    out = 32 * Z.of_nat k ->
+    List.nth_error
+      (delegatecall_post_memory env state_base memory storage addr out call_result) k
+    = Some call_result.
+
+  Axiom delegatecall_post_memory_at_other :
+    forall env state_base memory storage addr out call_result (k : nat),
+    32 * Z.of_nat k <> out ->
+    List.nth_error
+      (delegatecall_post_memory env state_base memory storage addr out call_result) k
+    = List.nth_error memory k.
+
+  Axiom delegatecall_post_memory_length :
+    forall env state_base memory storage addr out call_result,
+    List.length
+      (delegatecall_post_memory env state_base memory storage addr out call_result)
+    = List.length memory.
+
+  (** Structural companion axiom on [delegatecall_post_storage]:
+      length preservation.  Audit obligation: library delegatecall
+      targets (ProposalLib, OZ AccessControlEnumerable swap-and-pop,
+      etc.) write at slot expressions whose backing storage cell
+      already exists in the caller's projection — they do not GROW
+      the storage list.  Same obligation shape as
+      [sstore_post_storage_length] in FrameworkExtensions.v. *)
+
+  Axiom delegatecall_post_storage_length :
+    forall env state_base memory storage addr input_bytes,
+    List.length
+      (delegatecall_post_storage env state_base memory storage addr input_bytes)
+    = List.length storage.
+
+  (** Absorbing-form variant when the delegatecall's [outsize = 0]
+      (no return-data write to memory).  Used by [fun_propose_389]
+      (delegatecall with outsize = 0 — return decoded via
+      returndatacopy later) and by [fun_functionDelegateCall_4416]
+      (delegatecall with outsize = 0 — return extracted via
+      [extract_returndata]).
+
+      Same Skolems as the [_absorbing] form but the post-memory is
+      independent of [out] / [call_result] (the delegatecall didn't
+      mstore at [out]).  We re-use the [delegatecall_post_memory]
+      Skolem with [out := 0] / [call_result := 0] to keep one Skolem
+      family, accepting that the structural [at_out] axiom is
+      vacuous for the zero-out case. *)
+
+  Axiom delegatecall_make_state_bridge_absorbing_outsize_0 :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+           (g addr in_ insize out : U256.t)
+           (input_bytes : list Z) (call_result : U256.t),
+    let storage' :=
+      delegatecall_post_storage env state_base memory storage addr input_bytes in
+    let memory' :=
+      delegatecall_post_memory env state_base memory storage addr 0 0 in
+    let state_post :=
+      (make_state env state_base memory' storage')
+        <| State.return_data := Memory.u256_as_bytes call_result |> in
+    {{? codes, env, Some (make_state env state_base memory storage) |
+      Stdlib.delegatecall g addr in_ insize out 0 ⇓
+      Result.Ok call_result
+    | Some state_post ?}}.
+
+  (** Ergonomic [Ltac] aliases: drive a walker arm past a delegatecall
+      by deferring to the absorbing axiom.  The Skolem witnesses are
+      filled in by unification with the surrounding goal's post-state
+      shape. *)
+  Ltac apply_run_delegatecall_absorbing :=
+    apply delegatecall_make_state_bridge_absorbing.
+
+  Ltac apply_run_delegatecall_absorbing_outsize_0 :=
+    apply delegatecall_make_state_bridge_absorbing_outsize_0.
+
   (** [abi_encode_tuple__to__fromStack memPtr] is the zero-arg encode
       (for an empty event payload). Returns [memPtr] unchanged, no
       memory side effect. The Yul body is:

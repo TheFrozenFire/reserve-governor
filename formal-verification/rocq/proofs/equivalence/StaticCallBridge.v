@@ -334,4 +334,200 @@ Module StaticCallBridge.
 
       For the general (non-32-byte) case, substitute [sc_general]. *)
 
+  (** ====================================================================
+      Layer 5: delegatecall bridge — R091 framework primitive
+      ====================================================================
+
+      Sibling to [run_staticcall_general] / [run_staticcall_to_word] above,
+      but for the [Stdlib.delegatecall] opcode.  The upstream definition
+      mirrors [staticcall]'s shape exactly with two semantic differences:
+
+        - The [is_delegate] flag on [LowM.CallContract] is [true]
+          (instead of [is_static = true]).
+        - There is NO precompile fast-path — the upstream's
+          [Stdlib.delegatecall] does not guard on [precompile_output],
+          so the bridge has no precompile precondition.
+
+      The key SEMANTIC difference at the proof-rule level: the
+      [RunO.CallContract] inference rule treats [is_static] /
+      [is_delegate] uniformly (both flags are arguments but the
+      proof-author is free to pick [call_result] and [state_inter]
+      regardless of the flags).  The flag IS load-bearing for the
+      [eval] interpreter (it changes which [Environment] gets built
+      for the callee, and whether sstore is permitted), but the
+      [RunO] rule pushes that load to the proof author via the
+      callee-spec axiom.
+
+      What the BRIDGE captures is the *shape* of the post-state in
+      Yul terms: input bytes are mloaded; result is mstored; the
+      delegatecall's storage-write side effect appears in the
+      [state_inter] choice.  The base bridge below threads only the
+      memory + return_data write effect; the [_absorbing] sibling
+      in [AbiEncoding.v] threads the storage-write Skolem as well
+      (mirroring R082's absorbing staticcall sibling).
+
+      Soundness justification for treating delegatecall this way at
+      the bridge layer:
+
+        - [LowM.CallContract] is a single trust-based proof rule
+          shared across call/staticcall/delegatecall (see upstream
+          [RunO.CallContract] which is documented as a "trust-based
+          proof rule" pending eval-soundness mechanization).
+        - The proof author is required (by audit discipline) to
+          discharge the choice of [call_result] and [state_inter]
+          via a per-target callee-spec axiom.
+        - For delegatecall, the callee-spec axiom commits to BOTH
+          the [call_result] AND the storage-mutation effect.  The
+          absorbing variant exposes this via the
+          [delegatecall_post_storage] Skolem.
+
+      The base lemma below is fully proved (modulo the underlying
+      [RunO.CallContract] rule's own status). *)
+
+  (** Generic delegatecall bridge — proof author supplies the full
+      output byte sequence, the result value, and the post-state's
+      [State.t] shape (which may carry a storage mutation).  Mirrors
+      [run_staticcall_general] except:
+
+        - No [H_not_precompile] precondition (delegatecall has no
+          precompile guard).
+        - The [state_inter] for the inner [LowM.CallContract] step
+          is explicit, so the proof author can thread storage writes
+          through.
+
+      The post-state's [return_data] is set to [output_bytes] and
+      its [memory] is updated with [List.firstn outsize output_bytes]
+      at [out].  Storage writes (the delegatecall's side effect on
+      the caller's storage) are encoded in the [callee_post_state]
+      argument: the proof author passes the desired post-storage
+      shape; the bridge threads it as the CallContract's
+      [state_inter]. *)
+  Lemma run_delegatecall_general
+      (codes : Codes.t) (env : Environment.t) (state : State.t)
+      (g addr in_ insize out outsize : U256.t)
+      (call_result : U256.t)
+      (output_bytes : list Z)
+      (callee_post_state : State.t) :
+    let memory' :=
+      Memory.update_bytes callee_post_state.(State.memory) out
+        (List.firstn (Z.to_nat outsize) output_bytes) in
+    let state' :=
+      callee_post_state
+        <| State.return_data := output_bytes |>
+        <| State.memory := memory' |> in
+    {{? codes, env, Some state |
+      Stdlib.delegatecall g addr in_ insize out outsize ⇓
+      Result.Ok call_result
+    | Some state' ?}}.
+  Proof.
+    intros memory' state'.
+    unfold Stdlib.delegatecall.
+    cbn [M.let_ generic_let LowM.let_].
+    (* MLoad of input bytes. *)
+    eapply RunO.Primitive; [reflexivity|].
+    cbn [M.let_ generic_let LowM.let_].
+    (* CallContract — choose call_result and state_inter to carry the
+       callee's storage-mutation effect. *)
+    eapply RunO.CallContract with
+      (call_result := call_result)
+      (state_inter := Some (callee_post_state
+                              <| State.return_data := output_bytes |>)).
+    cbn [M.let_ generic_let LowM.let_].
+    (* RLoad reads back [output_bytes]. *)
+    eapply RunO.Primitive; [reflexivity|].
+    cbn [M.let_ generic_let LowM.let_].
+    (* MStore writes [List.firstn outsize output_bytes] at [out]. *)
+    eapply RunO.Primitive; [reflexivity|].
+    apply RunO.Pure.
+  Qed.
+
+  (** Single-word delegatecall bridge — the [outsize = 32] specialisation.
+      Used for delegatecall targets that return a single bool/uint256
+      (e.g. the `expr_4407_component_1` bool from
+      [fun_functionDelegateCall_4416], or ProposalLib's
+      delegate-target return shape).  Mirrors [run_staticcall_to_word]. *)
+  Lemma run_delegatecall_to_word
+      (codes : Codes.t) (env : Environment.t) (state : State.t)
+      (g addr in_ insize out : U256.t)
+      (call_result : U256.t)
+      (callee_post_state : State.t) :
+    let output_bytes := Memory.u256_as_bytes call_result in
+    let memory' :=
+      Memory.update_bytes callee_post_state.(State.memory) out
+        (List.firstn 32 output_bytes) in
+    let state' :=
+      callee_post_state
+        <| State.return_data := output_bytes |>
+        <| State.memory := memory' |> in
+    {{? codes, env, Some state |
+      Stdlib.delegatecall g addr in_ insize out 32 ⇓
+      Result.Ok call_result
+    | Some state' ?}}.
+  Proof.
+    intros output_bytes memory' state'.
+    pose proof (run_delegatecall_general codes env state
+                  g addr in_ insize out 32 call_result
+                  output_bytes callee_post_state) as H.
+    cbv zeta in H.
+    change (Z.to_nat 32) with 32%nat in H.
+    exact H.
+  Qed.
+
+  (** Zero-return delegatecall — [outsize = 0].  Used for
+      delegatecalls whose return data is not consumed by the
+      surrounding Yul (e.g. ROG's [fun_propose_389] delegatecall into
+      ProposalLib.proposePessimistic which uses [outsize = 0] —
+      the caller decodes via [returndatasize] / [returndatacopy] after).
+      Same proof shape as [run_delegatecall_general] with [outsize = 0]
+      forcing [List.firstn 0 output_bytes = []], leaving memory
+      unchanged. *)
+  Lemma run_delegatecall_to_nothing
+      (codes : Codes.t) (env : Environment.t) (state : State.t)
+      (g addr in_ insize out : U256.t)
+      (call_result : U256.t)
+      (output_bytes : list Z)
+      (callee_post_state : State.t) :
+    let memory' :=
+      Memory.update_bytes callee_post_state.(State.memory) out [] in
+    let state' :=
+      callee_post_state
+        <| State.return_data := output_bytes |>
+        <| State.memory := memory' |> in
+    {{? codes, env, Some state |
+      Stdlib.delegatecall g addr in_ insize out 0 ⇓
+      Result.Ok call_result
+    | Some state' ?}}.
+  Proof.
+    intros memory' state'.
+    pose proof (run_delegatecall_general codes env state
+                  g addr in_ insize out 0 call_result
+                  output_bytes callee_post_state) as H.
+    cbv zeta in H.
+    change (Z.to_nat 0) with 0%nat in H.
+    change (List.firstn 0 output_bytes) with (@nil Z) in H.
+    exact H.
+  Qed.
+
+  (** Tactic aliases mirroring [sc_word] / [sc_general] — drive a
+      walker arm past a delegatecall by supplying the callee-spec
+      witnesses (result + output bytes + post-state).  The post-state
+      argument carries the callee's storage-mutation effect. *)
+  Ltac dc_word call_result callee_post_state :=
+    eapply RunO.Call;
+      [ apply (run_delegatecall_to_word _ _ _ _ _ _ _ _ _
+                  call_result callee_post_state)
+      | ].
+
+  Ltac dc_general call_result output_bytes callee_post_state :=
+    eapply RunO.Call;
+      [ apply (run_delegatecall_general _ _ _ _ _ _ _ _ _
+                  call_result output_bytes callee_post_state)
+      | ].
+
+  Ltac dc_to_nothing call_result output_bytes callee_post_state :=
+    eapply RunO.Call;
+      [ apply (run_delegatecall_to_nothing _ _ _ _ _ _ _ _
+                  call_result output_bytes callee_post_state)
+      | ].
+
 End StaticCallBridge.
