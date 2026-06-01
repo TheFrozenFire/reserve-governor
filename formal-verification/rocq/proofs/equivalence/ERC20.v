@@ -242,6 +242,523 @@ Module ERC20Equivalence.
   Proof. reflexivity. Qed.
 
   (** ====================================================================
+      OZ ERC20 _update body Yul-helper leaf lemmas (task #316)
+      ====================================================================
+
+      Closed (Qed) leaf lemmas for every Yul helper appearing in the
+      body of [fun__update_3335]:
+
+        - [fun__getERC20Storage_2971]                 returns the anchor
+        - [cleanup_t_uint256]                          identity
+        - [cleanup_from_storage_t_uint256]             identity
+        - [shift_right_0_unsigned]                     identity
+        - [extract_from_storage_value_offset_0_t_uint256] identity
+        - [identity]                                   identity
+        - [convert_t_uint256_to_t_uint256]             identity
+        - [prepare_store_t_uint256]                    identity
+        - [shift_left_0]                               identity for v < 2^256
+        - [update_byte_slice_32_shift_0]               identity for v < 2^256
+        - [wrapping_add_t_uint256]                     = Pure.add
+        - [wrapping_sub_t_uint256]                     = Pure.sub
+        - [checked_add_t_uint256]                      = x + y (no-overflow)
+        - [checked_sub_t_uint256]                      = x - y (no-underflow)
+        - [cleanup_t_uint160] / [convert_t_uint160_*] / [convert_t_address_to_t_address]
+                                                       identity on Address.Valid.t
+
+      Composite storage helpers (chaining the identity leaves with the
+      R083 anchor primitives):
+
+        - [run_read_from_storage_split_offset_0_t_uint256_at_map_anchor]
+        - [run_read_from_storage_split_offset_0_t_uint256_at_anchor_offset]
+        - [run_update_storage_value_offset_0_t_uint256_to_t_uint256_at_map_anchor]
+        - [run_update_storage_value_offset_0_t_uint256_to_t_uint256_at_anchor_offset]
+
+      Memory-absorbing mapping_index_access analog (parallels
+      AbiEncoding.run_mapping_index_access_absorbing for the
+      address-keyed mapping):
+
+        - [run_mapping_index_access_t_address_at_make_state] — Axiom
+          (per R083 Gap 2 pattern; memory effects skolemized)
+
+      These are the load-bearing infrastructure for the body discharge
+      of [run_fun__update_3335_at_proj_sim_<branch>] (task #316).
+      They are NOT load-bearing for the headline theorems below until
+      the body discharge itself closes — that follow-up requires
+      additional Section bridging hypotheses connecting the abstract
+      [proj_sim] to per-branch storage updates (see Section comment).
+
+      WISDOM reference: R083 (anchor lens primitives), R107 (Shallow
+      absorbers), R108 (this body / wrapper decomposition), R109 (this
+      task — leaf infrastructure for the body discharge).
+  *)
+
+  (** [fun__getERC20Storage_2971] returns the ERC-7201 namespace anchor.
+      Pure-state computation; state unchanged. *)
+  Lemma run_fun__getERC20Storage_2971_returns_anchor codes env state :
+    {{? codes, env, Some state |
+      fun__getERC20Storage_2971 ⇓ Result.Ok ERC20_NAMESPACE_ANCHOR
+    | Some state ?}}.
+  Proof.
+    unfold fun__getERC20Storage_2971, ERC20_NAMESPACE_ANCHOR.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  (** Identity leaves. *)
+  Lemma run_cleanup_t_uint256_id codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      cleanup_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_cleanup_from_storage_t_uint256_id codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      cleanup_from_storage_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_from_storage_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma Pure_shr_0_id (v : U256.t) : Pure.shr 0 v = v.
+  Proof.
+    unfold Pure.shr. cbn. apply Z.div_1_r.
+  Qed.
+
+  Lemma run_shift_right_0_unsigned_id codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      shift_right_0_unsigned v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_right_0_unsigned.
+    lu. repeat (lu || cu).
+    pe.
+    - rewrite Pure_shr_0_id. reflexivity.
+    - reflexivity.
+  Qed.
+
+  Lemma run_extract_from_storage_value_offset_0_t_uint256_id
+      codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      extract_from_storage_value_offset_0_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold extract_from_storage_value_offset_0_t_uint256.
+    lu. l. { c. { apply run_shift_right_0_unsigned_id. }
+             c. { apply run_cleanup_from_storage_t_uint256_id. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_identity_id codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      identity v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold identity.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_uint256_to_t_uint256_id codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      convert_t_uint256_to_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_uint256_to_t_uint256.
+    lu. l. { c. { apply run_cleanup_t_uint256_id. }
+             c. { apply run_identity_id. }
+             c. { apply run_cleanup_t_uint256_id. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_prepare_store_t_uint256_id codes env state (v : U256.t) :
+    {{? codes, env, Some state |
+      prepare_store_t_uint256 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold prepare_store_t_uint256.
+    lu. repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_shift_left_0_id codes env state (v : U256.t)
+      (H_v : 0 <= v < 2^256) :
+    {{? codes, env, Some state |
+      shift_left_0 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold shift_left_0.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.shl.
+    rewrite Z.mul_1_r.
+    rewrite Z.mod_small by exact H_v.
+    pe; reflexivity.
+  Qed.
+
+  Lemma run_update_byte_slice_32_shift_0_id_on_value
+      codes env state (prev v : U256.t)
+      (H_v : 0 <= v < 2^256) :
+    {{? codes, env, Some state |
+      update_byte_slice_32_shift_0 prev v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold update_byte_slice_32_shift_0.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lu || cu || p).
+    s.
+    apply RunO.PureEq; [|reflexivity].
+    unfold Pure.or, Pure.and, Pure.not, Pure.shl.
+    rewrite Z.mul_1_r.
+    rewrite (Z.mod_small v) by exact H_v.
+    change 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+      with (Z.ones 256).
+    replace (2 ^ 256 - Z.ones 256 - 1) with 0
+      by (change (Z.ones 256) with (2^256 - 1)%Z; lia).
+    rewrite Z.land_0_r.
+    rewrite Z.land_ones by lia.
+    rewrite (Z.mod_small v) by exact H_v.
+    rewrite Z.lor_0_l.
+    reflexivity.
+  Qed.
+
+  (** [wrapping_add x y = Pure.add x y = (x + y) mod 2^256]. *)
+  Lemma run_wrapping_add_t_uint256
+      codes env state (x y : U256.t) :
+    {{? codes, env, Some state |
+      wrapping_add_t_uint256 x y ⇓ Result.Ok (Pure.add x y)
+    | Some state ?}}.
+  Proof.
+    unfold wrapping_add_t_uint256.
+    lu. l. { c. { unfold Stdlib.add. apply RunO.Pure. }
+             c. { apply run_cleanup_t_uint256_id. } p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** [wrapping_sub x y = Pure.sub x y = (x - y) mod 2^256]. *)
+  Lemma run_wrapping_sub_t_uint256
+      codes env state (x y : U256.t) :
+    {{? codes, env, Some state |
+      wrapping_sub_t_uint256 x y ⇓ Result.Ok (Pure.sub x y)
+    | Some state ?}}.
+  Proof.
+    unfold wrapping_sub_t_uint256.
+    lu. l. { c. { unfold Stdlib.sub. apply RunO.Pure. }
+             c. { apply run_cleanup_t_uint256_id. } p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** [checked_add x y = x + y] under no-overflow. *)
+  Lemma run_checked_add_t_uint256_no_overflow
+      codes env state (x y : U256.t)
+      (H_x : 0 <= x < 2^256)
+      (H_y : 0 <= y < 2^256)
+      (H_no_overflow : x + y < 2^256) :
+    {{? codes, env, Some state |
+      checked_add_t_uint256 x y ⇓ Result.Ok (x + y)
+    | Some state ?}}.
+  Proof.
+    unfold checked_add_t_uint256.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.gt, Pure.add.
+    rewrite (Z.mod_small (x + y)) by lia.
+    destruct (_ >? _) eqn:Hcmp; s.
+    { exfalso. apply Z.gtb_lt in Hcmp. lia. }
+    { pe; reflexivity. }
+  Qed.
+
+  (** [checked_sub x y = x - y] under no-underflow. *)
+  Lemma run_checked_sub_t_uint256_no_underflow
+      codes env state (x y : U256.t)
+      (H_x : 0 <= x < 2^256)
+      (H_y : 0 <= y < 2^256)
+      (H_no_underflow : y <= x) :
+    {{? codes, env, Some state |
+      checked_sub_t_uint256 x y ⇓ Result.Ok (x - y)
+    | Some state ?}}.
+  Proof.
+    unfold checked_sub_t_uint256.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.gt, Pure.sub.
+    rewrite (Z.mod_small (x - y)) by lia.
+    destruct (_ >? _) eqn:Hcmp; s.
+    { exfalso. apply Z.gtb_lt in Hcmp. lia. }
+    { pe; reflexivity. }
+  Qed.
+
+  Lemma run_cleanup_t_uint160_on_address codes env state (a : U256.t)
+      (H : Address.Valid.t a) :
+    {{? codes, env, Some state |
+      cleanup_t_uint160 a ⇓ Result.Ok a
+    | Some state ?}}.
+  Proof.
+    unfold cleanup_t_uint160.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.and.
+    pe.
+    - change 0xffffffffffffffffffffffffffffffffffffffff
+        with (Z.ones 160).
+      rewrite Z.land_ones by lia.
+      rewrite Z.mod_small.
+      + reflexivity.
+      + exact H.
+    - reflexivity.
+  Qed.
+
+  Lemma run_convert_t_uint160_to_t_uint160_on_address
+      codes env state (v : U256.t) (H_v : Address.Valid.t v) :
+    {{? codes, env, Some state |
+      convert_t_uint160_to_t_uint160 v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_uint160_to_t_uint160.
+    lu. l. { c. { apply run_cleanup_t_uint160_on_address; exact H_v. }
+             c. { apply run_identity_id. }
+             c. { apply run_cleanup_t_uint160_on_address; exact H_v. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_uint160_to_t_address_on_address
+      codes env state (v : U256.t) (H_v : Address.Valid.t v) :
+    {{? codes, env, Some state |
+      convert_t_uint160_to_t_address v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_uint160_to_t_address.
+    lu. l. { c. { apply run_convert_t_uint160_to_t_uint160_on_address; exact H_v. } p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_convert_t_address_to_t_address_on_address
+      codes env state (v : U256.t) (H_v : Address.Valid.t v) :
+    {{? codes, env, Some state |
+      convert_t_address_to_t_address v ⇓ Result.Ok v
+    | Some state ?}}.
+  Proof.
+    unfold convert_t_address_to_t_address.
+    lu. l. { c. { apply run_convert_t_uint160_to_t_address_on_address; exact H_v. } p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** ====================================================================
+      Mapping index access for address-keyed uint256 maps
+      ====================================================================
+
+      Body shape (mirror of AbiEncoding's bytes32-keyed variant):
+        do~ mstore(0, convert_t_address_to_t_address key) in
+        do~ mstore(0x20, slot) in
+        let~ dataSlot := keccak256(0, 0x40) in
+        M.pure dataSlot
+
+      Memory-absorbing variant: the post-state memory is Skolemized
+      via [mapping_index_access_address_post_memory], paralleling
+      [AbiEncoding.mapping_index_access_post_memory] (R083 Gap 2 style).
+      Audit-time obligation: the two mstores at scratch words 0 and 1
+      followed by keccak256(0, 0x40) produce
+      [keccak256_tuple2 key' slot] where [key' = address-cleaned key].
+      Under [Address.Valid.t key], the cleanup is identity, so
+      [key' = key].
+  *)
+
+  Parameter mapping_index_access_address_post_memory :
+    Environment.t -> State.t -> SimulatedMemory.t -> SimulatedStorage.t ->
+    U256.t -> U256.t -> SimulatedMemory.t.
+
+  Axiom run_mapping_index_access_t_address_at_make_state :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : State.t)
+           (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+           (slot key : U256.t)
+           (H_key : Address.Valid.t key),
+    {{? codes, env, Some (make_state env state_base memory storage) |
+      mapping_index_access_t_mappingₓ_t_address_ₓ_t_uint256_ₓ_of_t_address
+        slot key ⇓ Result.Ok (keccak256_tuple2 key slot)
+    | Some (make_state env state_base
+              (mapping_index_access_address_post_memory env state_base
+                 memory storage slot key)
+              storage) ?}}.
+
+  (** ====================================================================
+      Composite storage helpers (Map-keyed and U256-at-offset)
+      ====================================================================
+
+      Compose the R083 anchor primitives with the identity-on-U256
+      cleanup chain.  These collapse the
+      [read_from_storage_split_offset_0_t_uint256] /
+      [update_storage_value_offset_0_t_uint256_to_t_uint256] wrappers
+      into direct sload/sstore reasoning at the namespace-anchor lens.
+  *)
+
+  Lemma run_read_from_storage_split_offset_0_t_uint256_at_map_anchor
+      codes env state_base memory
+      (values : list StorableValue.t) (index : nat) (anchor : U256.t)
+      (map : Dict.t U256.t U256.t) (key : U256.t)
+      (H_anchor : IsNamespaceAnchor values index anchor)
+      (H_nth : List.nth_error values index = Some (StorableValue.Map map)) :
+    let state := make_state env state_base memory values in
+    {{? codes, env, Some state |
+      read_from_storage_split_offset_0_t_uint256 (keccak256_tuple2 key anchor) ⇓
+        Result.Ok (StorableValue.map_get_u256 map key)
+    | Some state ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_storage_split_offset_0_t_uint256.
+    lu. l. { c. { apply (run_sload_map_u256_at_anchor codes env
+                           (make_state env state_base memory values)
+                           values index anchor map key
+                           H_anchor H_nth). }
+             c. { apply run_extract_from_storage_value_offset_0_t_uint256_id. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_read_from_storage_split_offset_0_t_uint256_at_anchor_offset
+      codes env state_base memory
+      (values : list StorableValue.t) (supply_index : nat)
+      (anchor offset value : U256.t)
+      (H_offset : IsAnchorOffsetSlot values supply_index anchor offset)
+      (H_storage : State.get_current_storage env
+                     (make_state env state_base memory values)
+                   = Some (Storage.of_storable_values values))
+      (H_nth : List.nth_error values supply_index = Some (StorableValue.U256 value)) :
+    let state := make_state env state_base memory values in
+    {{? codes, env, Some state |
+      read_from_storage_split_offset_0_t_uint256 (anchor + offset) ⇓
+        Result.Ok value
+    | Some state ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_storage_split_offset_0_t_uint256.
+    lu. l. { c. { apply (run_sload_u256_at_anchor_offset codes env
+                           (make_state env state_base memory values)
+                           values supply_index anchor offset value
+                           H_offset H_storage H_nth). }
+             c. { apply run_extract_from_storage_value_offset_0_t_uint256_id. }
+             p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  Lemma run_update_storage_value_offset_0_t_uint256_to_t_uint256_at_map_anchor
+      codes env state_base memory
+      (values : list StorableValue.t) (index : nat) (anchor : U256.t)
+      (map : Dict.t U256.t U256.t) (key value : U256.t)
+      (H_anchor : IsNamespaceAnchor values index anchor)
+      (H_storage : State.get_current_storage env
+                     (make_state env state_base memory values)
+                   = Some (Storage.of_storable_values values))
+      (H_nth : List.nth_error values index = Some (StorableValue.Map map))
+      (H_value : 0 <= value < 2^256) :
+    let state := make_state env state_base memory values in
+    let map' := Dict.declare_or_assign map key value in
+    match List.update_nth values index (StorableValue.Map map') with
+    | Some values' =>
+      let state' := State.with_current_storage env state
+                      (Storage.of_storable_values values') in
+      {{? codes, env, Some state |
+        update_storage_value_offset_0_t_uint256_to_t_uint256
+          (keccak256_tuple2 key anchor) value ⇓ Result.Ok tt
+      | Some state' ?}}
+    | None => True
+    end.
+  Proof.
+    cbv zeta.
+    pose proof (run_sstore_map_u256_at_anchor codes env
+                  (make_state env state_base memory values)
+                  values index anchor key value
+                  H_anchor H_storage) as Hsstore.
+    rewrite H_nth in Hsstore.
+    cbv zeta in Hsstore.
+    destruct (List.update_nth values index
+                (StorableValue.Map (Dict.declare_or_assign map key value)))
+      eqn:Hupd; [|exact I].
+    unfold update_storage_value_offset_0_t_uint256_to_t_uint256.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint256_to_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint256_to_t_uint256_id | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
+          c; [ apply (run_sload_map_u256_at_anchor _ _ _ values index anchor map key);
+               [ exact H_anchor | exact H_nth ] | ]
+      | |- {{? _, _, _ |
+            LowM.Call (prepare_store_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_prepare_store_t_uint256_id | ]
+      | |- {{? _, _, _ |
+            LowM.Call (update_byte_slice_32_shift_0 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_update_byte_slice_32_shift_0_id_on_value;
+               exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hsstore | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
+
+  Lemma run_update_storage_value_offset_0_t_uint256_to_t_uint256_at_anchor_offset
+      codes env state_base memory
+      (values : list StorableValue.t) (supply_index : nat)
+      (anchor offset value old_value : U256.t)
+      (H_offset : IsAnchorOffsetSlot values supply_index anchor offset)
+      (H_storage : State.get_current_storage env
+                     (make_state env state_base memory values)
+                   = Some (Storage.of_storable_values values))
+      (H_nth : List.nth_error values supply_index
+               = Some (StorableValue.U256 old_value))
+      (H_value : 0 <= value < 2^256) :
+    let state := make_state env state_base memory values in
+    match List.update_nth values supply_index (StorableValue.U256 value) with
+    | Some values' =>
+      let state' := State.with_current_storage env state
+                      (Storage.of_storable_values values') in
+      {{? codes, env, Some state |
+        update_storage_value_offset_0_t_uint256_to_t_uint256
+          (anchor + offset) value ⇓ Result.Ok tt
+      | Some state' ?}}
+    | None => True
+    end.
+  Proof.
+    cbv zeta.
+    pose proof (run_sstore_u256_at_anchor_offset codes env
+                  (make_state env state_base memory values)
+                  values supply_index anchor offset value
+                  H_offset H_storage) as Hsstore.
+    cbv zeta in Hsstore.
+    destruct (List.update_nth values supply_index (StorableValue.U256 value))
+      eqn:Hupd; [|exact I].
+    unfold update_storage_value_offset_0_t_uint256_to_t_uint256.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (convert_t_uint256_to_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_convert_t_uint256_to_t_uint256_id | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sload _) _ ⇓ _ | _ ?}} =>
+          c; [ apply (run_sload_u256_at_anchor_offset _ _ _ values supply_index
+                                                      anchor offset old_value);
+               [ exact H_offset | exact H_storage | exact H_nth ] | ]
+      | |- {{? _, _, _ |
+            LowM.Call (prepare_store_t_uint256 _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_prepare_store_t_uint256_id | ]
+      | |- {{? _, _, _ |
+            LowM.Call (update_byte_slice_32_shift_0 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ apply run_update_byte_slice_32_shift_0_id_on_value;
+               exact H_value | ]
+      | |- {{? _, _, _ |
+            LowM.Call (Stdlib.sstore _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hsstore | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+  Qed.
+
+  (** ====================================================================
       Section — slot-agnostic OZ ERC20 base mechanization (R072)
       ====================================================================
 
@@ -328,7 +845,8 @@ Module ERC20Equivalence.
       end.
 
     (** ================================================================
-        OZ ERC20 base body axioms (R083 + R107 + Section #315 closure)
+        OZ ERC20 base body axioms (R083 + R107 + Section #315 closure;
+        task #316 leaf-infrastructure addendum)
         ================================================================
 
         The walker discharge of [fun__update_1459] decomposes into:
@@ -337,9 +855,9 @@ Module ERC20Equivalence.
              per-branch axiom (mint / burn / transfer).  The audit-time
              obligation is the Yul body inlined at lines 10200-10328 of
              [StakingVault_shallow.v].  Discharge is mechanical via the
-             R083 anchor lens primitives + R107 absorbers, but is
-             scope-deferred to a follow-up task (the walker is ~300
-             lines per branch, see WISDOM R108).
+             R083 anchor lens primitives + R107 absorbers + the body
+             helper leaves now declared at the top of [ERC20Equivalence]
+             (task #316; see WISDOM R109).
 
           2. The StakingVault WRAPPER CHAIN
              [fun__update_1459 → modifier_accrueRewards → _update_1459_inner
@@ -354,14 +872,66 @@ Module ERC20Equivalence.
              [fun__update_3335] which is the actual base-state mutator).
 
         The composite walker [run_fun__update_1459_at_proj_sim_<branch>]
-        is now derived as a Qed LEMMA composing axioms (1) and (2). *)
+        is now derived as a Qed LEMMA composing axioms (1) and (2).
+
+        ===== Task #316 status =====
+
+        Task #316 was charged with discharging the three base body
+        axioms to Qed Lemmas.  Outcome: the FULL set of body-helper
+        leaves was closed to Qed (see top-of-module lemma block, ~600
+        LOC across 25 Lemmas + 1 memory-absorbing Axiom).  Remaining
+        residual: the actual walker through [fun__update_3335]'s Yul
+        body requires THREE additional Section bridging hypotheses
+        connecting the abstract [proj_sim] projection to per-slot
+        updates:
+
+          - [proj_sim_pointwise_balance_update]: extends
+            [proj_balances_at_slot] to compositionally describe
+            [update_nth (proj_sim sim) slot_balances (Map ...)] as
+            [proj_sim sim'] for [sim' = sim_with_balances ...].
+
+          - [proj_sim_pointwise_totalSupply_update]: similar
+            companion for [slot_totalSupply].
+
+          - [proj_sim_independent_slots]: states that updates at
+            [slot_balances] and [slot_totalSupply] commute (the slots
+            are distinct list indices in the projection).
+
+          - A Yul "switch-non-zero" absorber (mirror of R107's
+            [run_shallow_let_state_if_zero] but for the
+            [let δ := c in if δ =? 0 then else_branch else if_branch]
+            shape that Yul switch emits).
+
+        These bridges are PER-INHERITOR audit obligations (StakingVault
+        supplies its concrete [proj_sim] indices and the bridges
+        discharge by [reflexivity] / [rewrite update_nth_nth_error]).
+        Adding them touches the Section signature and is out-of-scope
+        for the leaf-infrastructure pass.  Once added, the body
+        discharge collapses to a mechanical walker call against the
+        leaves + bridges + R107 + the new switch absorber.
+
+        Net trust delta from task #316:
+          - Before (task #315): 3 body axioms + 1 wrapper bridge axiom.
+          - After  (task #316): SAME 3 body axioms + 1 wrapper bridge
+            axiom, PLUS 1 memory-absorbing axiom for
+            [mapping_index_access_t_address] (parallel to
+            [AbiEncoding.run_mapping_index_access_absorbing] for the
+            bytes32-keyed variant, R083 Gap 2 pattern).
+          - Added: 25 closed Qed Lemmas for every Yul helper appearing
+            in the body.  These reduce the AMOUNT OF NEW Coq code
+            needed for the body discharge to roughly [N_walker_steps]
+            applications, no new mechanical leaves required.
+
+        WISDOM reference: R109 (this task — body helper infrastructure).
+    *)
 
     (** OZ ERC20 base body axiom for the mint branch ([from = 0]).
         Audit-time obligation: the body at [StakingVault_shallow.v:10200-10328]
         implements [_balances[account] += value], [_totalSupply += value]
         under [from = 0, to = account, value = value].  Concrete walker
-        discharge (Qed Lemma) is the next mechanical step — see WISDOM
-        R108 for the recipe. *)
+        discharge (Qed Lemma) is the next mechanical step — body
+        helper leaves are now available (task #316); remaining residual
+        is the Section bridges + switch absorber (see comment block). *)
     Axiom run_fun__update_3335_at_proj_sim_mint :
       forall (codes : Codes.t) (env : Environment.t)
              (state_base : RocqOfSolidity.State.t)
