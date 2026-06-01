@@ -650,31 +650,50 @@ Module UnstakingManagerEquivalence.
   Lemma eq_at_nextLockId_refl s : eq_at_nextLockId s s.
   Proof. reflexivity. Qed.
 
-  (** ----- Per-mutator post-state Skolems (R084 shape) -----
+  (** ----- Per-mutator post-state concrete Definitions (R098 Option A) -----
 
-      Each is a [Parameter] (trust-wise equivalent to an axiom; the
-      audit-time obligation is "this Skolem instantiates to the storage
-      after the corresponding Yul body's writes").  Closing these to
-      [Definition] requires the walker discharge below (which is blocked
-      on R086). *)
+      Per R098's Option A discharge plan + R085's Parameter→Definition
+      refactor template (T3.3 swap-and-pop), each [proj_post_<X>] is
+      now a concrete [Definition] computing the sim-side post-storage
+      directly via [proj_sim] applied to the corresponding sim
+      transition.  This eliminates the Skolem-mismatch barrier that
+      blocked mechanical walker discharge under the previous
+      [Parameter] shape.
 
-  Parameter proj_post_createLock :
-    SimulatedStorage.t   (* storage_base = proj_sim sim *)
-    -> U256.t            (* user *)
-    -> U256.t            (* amount *)
-    -> U256.t            (* unlockTime *)
-    -> SimulatedStorage.t.
+      Signature change (R098 follow-up): each [proj_post_<X>] now
+      takes the [State.t] sim directly (not its [SimulatedStorage.t]
+      projection).  All call sites in the inner-body Axioms +
+      milestone Lemmas were rewritten to pass [sim] directly.
+      Rationale: the storage shape we want is precisely [proj_sim
+      (sim_<X> sim args)], and threading [sim] through the Definition
+      sidesteps the (non-trivial) "invert [proj_sim] from storage"
+      problem.
 
-  Parameter proj_post_cancelLock :
-    SimulatedStorage.t
-    -> U256.t            (* lockId *)
-    -> SimulatedStorage.t.
+      Audit consequences:
+        - The 6 observation [Axiom]s ([proj_post_<X>_observes] +
+          [_observes_nextLockId]) collapse to [Qed] [Lemma]s by
+          reflexivity (definitional equality between [proj_post_<X>
+          sim args] and [proj_sim (sim_<X> sim args)]).
+        - The 3 inner-body [Axiom]s now have a CONCRETE post-storage
+          target — mechanical walker discharge via R083 / R040 / R093
+          primitives is unblocked.
+        - The 3 [Parameter] declarations are gone from [Print
+          Assumptions]; only Definition bodies remain. *)
 
-  Parameter proj_post_claimLock :
-    SimulatedStorage.t
-    -> U256.t            (* lockId *)
-    -> U256.t            (* now *)
-    -> SimulatedStorage.t.
+  Definition proj_post_createLock
+      (sim : State.t)
+      (user amount unlockTime : U256.t) : SimulatedStorage.t :=
+    proj_sim (createLock_sim_post sim user amount unlockTime).
+
+  Definition proj_post_cancelLock
+      (sim : State.t)
+      (lockId : U256.t) : SimulatedStorage.t :=
+    proj_sim (cancelLock_sim_post sim lockId).
+
+  Definition proj_post_claimLock
+      (sim : State.t)
+      (lockId now : U256.t) : SimulatedStorage.t :=
+    proj_sim (claimLock_sim_post sim lockId now).
 
   (** ====================================================================
       R093-consumer: SafeERC20 callee-spec parameters + sub-axioms
@@ -901,7 +920,7 @@ Module UnstakingManagerEquivalence.
       UnstakingManager_271.UnstakingManager_271_deployed.fun_createLock_144
         user amount unlockTime ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
-              (proj_post_createLock (proj_sim sim) user amount unlockTime)) ?}}.
+              (proj_post_createLock sim user amount unlockTime)) ?}}.
 
   Axiom run_fun_cancelLock_212_inner_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
@@ -927,7 +946,7 @@ Module UnstakingManagerEquivalence.
       UnstakingManager_271.UnstakingManager_271_deployed.fun_cancelLock_212
         lockId ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
-              (proj_post_cancelLock (proj_sim sim) lockId)) ?}}.
+              (proj_post_cancelLock sim lockId)) ?}}.
 
   Axiom run_fun_claimLock_270_inner_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
@@ -954,7 +973,7 @@ Module UnstakingManagerEquivalence.
       UnstakingManager_271.UnstakingManager_271_deployed.fun_claimLock_270
         lockId ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
-              (proj_post_claimLock (proj_sim sim) lockId now)) ?}}.
+              (proj_post_claimLock sim lockId now)) ?}}.
 
   (** ----- T-TOKEN deployment-fact axioms -----
 
@@ -1031,7 +1050,7 @@ Module UnstakingManagerEquivalence.
       UnstakingManager_271.UnstakingManager_271_deployed.fun_createLock_144
         user amount unlockTime ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
-              (proj_post_createLock (proj_sim sim) user amount unlockTime)) ?}}.
+              (proj_post_createLock sim user amount unlockTime)) ?}}.
   Proof.
     intros codes env state_base sim memory vault_addr user amount unlockTime
            H_env_vault H_no_overflow H_user_bound H_amount_bound H_unlockTime_bound H_mem.
@@ -1064,7 +1083,7 @@ Module UnstakingManagerEquivalence.
       UnstakingManager_271.UnstakingManager_271_deployed.fun_cancelLock_212
         lockId ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
-              (proj_post_cancelLock (proj_sim sim) lockId)) ?}}.
+              (proj_post_cancelLock sim lockId)) ?}}.
   Proof.
     intros codes env state_base sim memory lockId
            H_user H_not_claimed H_caller_bound H_mem.
@@ -1099,7 +1118,7 @@ Module UnstakingManagerEquivalence.
       UnstakingManager_271.UnstakingManager_271_deployed.fun_claimLock_270
         lockId ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
-              (proj_post_claimLock (proj_sim sim) lockId now)) ?}}.
+              (proj_post_claimLock sim lockId now)) ?}}.
   Proof.
     intros codes env state_base sim memory lockId now
            H_timestamp H_unlocked_pos H_unlocked_leq H_not_claimed
@@ -1113,57 +1132,60 @@ Module UnstakingManagerEquivalence.
     - exact H_mem.
   Qed.
 
-  (** ----- Per-mutator observational bridge axioms -----
+  (** ----- Per-mutator observational bridge lemmas (R098 Option A) -----
 
-      Each asserts that the walker's Skolem post-storage agrees with
-      [proj_sim (sim_<fn> sim args)] at the LOCKS slot (slot 1).  An
-      adversarial [proj_post := fun _ _ _ _ => empty] instantiation
-      would fail [eq_at_locks] (because empty has no slot 1), so these
-      bridges are content-bearing.  The full slot-by-slot equality
-      (including the nextLockId slot) is bundled via
-      [proj_post_<fn>_observes_nextLockId] where applicable.
+      Per R098 Option A, [proj_post_<X>] is now a [Definition] computing
+      [proj_sim (sim_<X> sim args)] directly.  The observational
+      bridges therefore reduce to reflexivity — the Skolem-vs-walker
+      mismatch barrier is closed at the definitional layer.
 
-      Discharge: a ~50-100 LOC Boolean reasoning per axiom on the
-      Skolem's locks-slot value vs [locks_packed (<sim_<fn> sim args>
-      .locks)], reducing via [locks_packed_get_*] to per-field lookups.
-      The discharge depends on the Skolem's structure being a single
-      slot-1 [Map] entry — guaranteed by the walker discharge below. *)
+      Previously these were 6 [Axiom]s carrying the content-bearing
+      "the walker's Skolem post-storage agrees with [proj_sim (sim_<X>
+      sim args)] at slot 1 / slot 0" claim.  With the concrete
+      [proj_post_<X>] [Definition], both sides reduce to the same term;
+      [reflexivity] closes each Lemma. *)
 
-  Axiom proj_post_createLock_observes :
-    forall (sim : State.t) (user amount unlockTime : U256.t),
+  Lemma proj_post_createLock_observes
+      (sim : State.t) (user amount unlockTime : U256.t) :
     eq_at_locks
-      (proj_post_createLock (proj_sim sim) user amount unlockTime)
+      (proj_post_createLock sim user amount unlockTime)
       (proj_sim (createLock_sim_post sim user amount unlockTime)).
+  Proof. reflexivity. Qed.
 
-  Axiom proj_post_createLock_observes_nextLockId :
-    forall (sim : State.t) (user amount unlockTime : U256.t),
+  Lemma proj_post_createLock_observes_nextLockId
+      (sim : State.t) (user amount unlockTime : U256.t) :
     eq_at_nextLockId
-      (proj_post_createLock (proj_sim sim) user amount unlockTime)
+      (proj_post_createLock sim user amount unlockTime)
       (proj_sim (createLock_sim_post sim user amount unlockTime)).
+  Proof. reflexivity. Qed.
 
-  Axiom proj_post_cancelLock_observes :
-    forall (sim : State.t) (lockId : U256.t),
+  Lemma proj_post_cancelLock_observes
+      (sim : State.t) (lockId : U256.t) :
     eq_at_locks
-      (proj_post_cancelLock (proj_sim sim) lockId)
+      (proj_post_cancelLock sim lockId)
       (proj_sim (cancelLock_sim_post sim lockId)).
+  Proof. reflexivity. Qed.
 
-  Axiom proj_post_cancelLock_observes_nextLockId :
-    forall (sim : State.t) (lockId : U256.t),
+  Lemma proj_post_cancelLock_observes_nextLockId
+      (sim : State.t) (lockId : U256.t) :
     eq_at_nextLockId
-      (proj_post_cancelLock (proj_sim sim) lockId)
+      (proj_post_cancelLock sim lockId)
       (proj_sim (cancelLock_sim_post sim lockId)).
+  Proof. reflexivity. Qed.
 
-  Axiom proj_post_claimLock_observes :
-    forall (sim : State.t) (lockId now : U256.t),
+  Lemma proj_post_claimLock_observes
+      (sim : State.t) (lockId now : U256.t) :
     eq_at_locks
-      (proj_post_claimLock (proj_sim sim) lockId now)
+      (proj_post_claimLock sim lockId now)
       (proj_sim (claimLock_sim_post sim lockId now)).
+  Proof. reflexivity. Qed.
 
-  Axiom proj_post_claimLock_observes_nextLockId :
-    forall (sim : State.t) (lockId now : U256.t),
+  Lemma proj_post_claimLock_observes_nextLockId
+      (sim : State.t) (lockId now : U256.t) :
     eq_at_nextLockId
-      (proj_post_claimLock (proj_sim sim) lockId now)
+      (proj_post_claimLock sim lockId now)
       (proj_sim (claimLock_sim_post sim lockId now)).
+  Proof. reflexivity. Qed.
 
   (** ====================================================================
       Phase 2.2 (task #177): createLock equivalence — Qed milestone
@@ -1222,9 +1244,9 @@ Module UnstakingManagerEquivalence.
     pose proof (proj_post_createLock_observes_nextLockId
                   sim user amount unlockTime) as Hobs_next.
     exists (Some (make_state env state_base memory'
-                    (proj_post_createLock (proj_sim sim)
+                    (proj_post_createLock sim
                                           user amount unlockTime))).
-    exists (proj_post_createLock (proj_sim sim) user amount unlockTime).
+    exists (proj_post_createLock sim user amount unlockTime).
     split; [exact Hwalker|].
     exists memory'.
     split; [reflexivity|].
@@ -1268,8 +1290,8 @@ Module UnstakingManagerEquivalence.
     pose proof (proj_post_cancelLock_observes_nextLockId sim lockId)
       as Hobs_next.
     exists (Some (make_state env state_base memory'
-                    (proj_post_cancelLock (proj_sim sim) lockId))).
-    exists (proj_post_cancelLock (proj_sim sim) lockId).
+                    (proj_post_cancelLock sim lockId))).
+    exists (proj_post_cancelLock sim lockId).
     split; [exact Hwalker|].
     exists memory'.
     split; [reflexivity|].
@@ -1316,8 +1338,8 @@ Module UnstakingManagerEquivalence.
     pose proof (proj_post_claimLock_observes_nextLockId sim lockId now)
       as Hobs_next.
     exists (Some (make_state env state_base memory'
-                    (proj_post_claimLock (proj_sim sim) lockId now))).
-    exists (proj_post_claimLock (proj_sim sim) lockId now).
+                    (proj_post_claimLock sim lockId now))).
+    exists (proj_post_claimLock sim lockId now).
     split; [exact Hwalker|].
     exists memory'.
     split; [reflexivity|].
