@@ -868,6 +868,42 @@ Module ERC20Equivalence.
       | None => False
       end.
 
+    (** Intermediate-state lens hypotheses for the mint branch
+        (R110 follow-up — task #318).
+
+        Between the two sstores of mint ([slot_totalSupply] then
+        [slot_balances]), the walker visits a state where storage is
+        the list [vs_ts] obtained by updating only [slot_totalSupply].
+        The second sload+sstore needs the lens facts to hold for
+        [vs_ts], not just for [proj_sim sim].  Since [slot_balances]
+        and [slot_totalSupply] are distinct list indices, the lens
+        facts at [slot_balances] are preserved by the [slot_totalSupply]
+        update.
+
+        These hypotheses are the per-inheritor structural obligation:
+        at instantiation, [proj_sim] is a concrete projection function,
+        [slot_balances] and [slot_totalSupply] are literal nats with
+        distinct values, and [update_nth] reduces computationally. *)
+
+    Hypothesis namespace_binding_after_ts_update_mint :
+      forall (sim : ERC20.State) (delta : U256.t),
+      match List.update_nth (proj_sim sim) slot_totalSupply
+              (StorableValue.U256 (sim.(ERC20.totalSupply) + delta)) with
+      | Some vs_ts =>
+        IsNamespaceAnchor vs_ts slot_balances ERC20_NAMESPACE_ANCHOR
+      | None => True
+      end.
+
+    Hypothesis nth_balances_after_ts_update_mint :
+      forall (sim : ERC20.State) (delta : U256.t),
+      match List.update_nth (proj_sim sim) slot_totalSupply
+              (StorableValue.U256 (sim.(ERC20.totalSupply) + delta)) with
+      | Some vs_ts =>
+        List.nth_error vs_ts slot_balances =
+          Some (StorableValue.Map (balances_to_dict sim.(ERC20.balances)))
+      | None => True
+      end.
+
     (** Hypothesis: pointwise composition for the burn branch.
         The Yul body, when [to = 0] and [from = account != 0]:
           1. sstores [Pure.sub (balanceOf sim account) value] at
@@ -1061,6 +1097,135 @@ Module ERC20Equivalence.
         WISDOM reference: R109 (this task — body helper infrastructure).
     *)
 
+    (** ================================================================
+        Walker leaves for the zero-address check (used by body discharge)
+        ================================================================
+
+        These leaves are used both by [fun__update_3335]'s body walker
+        (the from=0 and to=0 cleanup-eq cleanup chains in the two
+        Yul switches) and by the downstream headline walkers'
+        zero-address checks at the entry of [_mint] / [_burn] etc. *)
+
+    (** Identity-on-zero leaf via [cleanup_t_rational_0_by_1] passthrough. *)
+    Lemma run_cleanup_t_rational_0_by_1_at_zero codes env state :
+      {{? codes, env, Some state |
+        cleanup_t_rational_0_by_1 0 ⇓ Result.Ok 0
+      | Some state ?}}.
+    Proof.
+      unfold cleanup_t_rational_0_by_1.
+      lu. repeat (lu || cu || p).
+    Qed.
+
+    Lemma run_identity codes env state (v : U256.t) :
+      {{? codes, env, Some state |
+        identity v ⇓ Result.Ok v
+      | Some state ?}}.
+    Proof.
+      unfold identity.
+      lu. repeat (lu || cu || p).
+    Qed.
+
+    Lemma run_cleanup_t_uint160_at_zero codes env state :
+      {{? codes, env, Some state |
+        cleanup_t_uint160 0 ⇓ Result.Ok 0
+      | Some state ?}}.
+    Proof.
+      pose proof (AbiEncoding.AbiEncoding.run_cleanup_t_uint160 codes env state 0) as H.
+      rewrite Z.land_0_l in H. exact H.
+    Qed.
+
+    Lemma run_convert_t_rational_0_by_1_to_t_uint160_at_zero
+        codes env state :
+      {{? codes, env, Some state |
+        convert_t_rational_0_by_1_to_t_uint160 0 ⇓ Result.Ok 0
+      | Some state ?}}.
+    Proof.
+      unfold convert_t_rational_0_by_1_to_t_uint160.
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      repeat (lazymatch goal with
+        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+        | |- {{? _, _, _ |
+              LowM.Call (cleanup_t_rational_0_by_1 _) _ ⇓ _ | _ ?}} =>
+            c; [ apply run_cleanup_t_rational_0_by_1_at_zero | ]
+        | |- {{? _, _, _ | LowM.Call (identity _) _ ⇓ _ | _ ?}} =>
+            c; [ apply run_identity | ]
+        | |- {{? _, _, _ | LowM.Call (cleanup_t_uint160 _) _ ⇓ _ | _ ?}} =>
+            c; [ apply run_cleanup_t_uint160_at_zero | ]
+        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+        | |- _ => s
+        end).
+      all: cbn match.
+      all: try apply RunO.Pure.
+    Qed.
+
+    (** [convert_t_rational_0_by_1_to_t_address 0 = 0].  The conversion
+        chain is [cleanup_t_uint160 . identity . cleanup_t_rational_0_by_1],
+        all of which preserve [0]. *)
+    Lemma run_convert_t_rational_0_by_1_to_t_address_at_zero
+        codes env state :
+      {{? codes, env, Some state |
+        convert_t_rational_0_by_1_to_t_address 0 ⇓ Result.Ok 0
+      | Some state ?}}.
+    Proof.
+      unfold convert_t_rational_0_by_1_to_t_address.
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      repeat (lazymatch goal with
+        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+        | |- {{? _, _, _ |
+              LowM.Call (convert_t_rational_0_by_1_to_t_uint160 _) _
+              ⇓ _ | _ ?}} =>
+            c; [ apply run_convert_t_rational_0_by_1_to_t_uint160_at_zero | ]
+        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+        | |- _ => s
+        end).
+      all: cbn match.
+      all: try apply RunO.Pure.
+    Qed.
+
+    (** [eq(cleanup_t_address account, cleanup_t_address 0) = 0] iff
+        [account] (as a 160-bit value) is nonzero.  We pre-condition
+        on [0 <= account < 2^160 /\ account <> 0] so cleanup is
+        identity. *)
+    Lemma run_eq_address_zero_check
+        codes env state (account : U256.t)
+        (H_account_bound : 0 <= account < 2^160)
+        (H_account_nz : account <> 0) :
+      {{? codes, env, Some state |
+        Stdlib.eq (Z.land account 0xffffffffffffffffffffffffffffffffffffffff)
+                  (Z.land 0 0xffffffffffffffffffffffffffffffffffffffff)
+        ⇓ Result.Ok 0
+      | Some state ?}}.
+    Proof.
+      unfold Stdlib.eq, Pure.eq.
+      (* Z.land 0 _ = 0 *)
+      rewrite Z.land_0_l.
+      (* Z.land account (Z.ones 160) = account given 0 <= account < 2^160 *)
+      change 0xffffffffffffffffffffffffffffffffffffffff with (Z.ones 160).
+      destruct (Z.eq_dec account 0) as [->|Hne]; [contradiction|].
+      rewrite Z.land_ones by lia.
+      rewrite Z.mod_small by lia.
+      (* Now goal: M.pure (if account =? 0 then 1 else 0) ⇓ Ok 0 *)
+      apply Z.eqb_neq in H_account_nz as Hb.
+      rewrite Hb.
+      apply RunO.Pure.
+    Qed.
+
+    (** [eq(cleanup_t_address 0, cleanup_t_address 0) = 1] — the
+        symmetric form for proving "[from = 0]" in the mint branch
+        of [fun__update_3335].  Cleanup of 0 is 0 on both sides, eq
+        of equal values returns 1. *)
+    Lemma run_eq_address_zero_at_zero codes env state :
+      {{? codes, env, Some state |
+        Stdlib.eq (Z.land 0 0xffffffffffffffffffffffffffffffffffffffff)
+                  (Z.land 0 0xffffffffffffffffffffffffffffffffffffffff)
+        ⇓ Result.Ok 1
+      | Some state ?}}.
+    Proof.
+      unfold Stdlib.eq, Pure.eq.
+      rewrite Z.land_0_l.
+      apply RunO.Pure.
+    Qed.
+
     (** Mechanical walker tactic for fun__update_3335 body discharge.
 
         Pattern: each Yul let-binding becomes [eapply RunO.Let] + a
@@ -1074,21 +1239,17 @@ Module ERC20Equivalence.
 
         Walker proof structure:
         1. Walk getERC20Storage + prelude → eq(0,0) = 1 via cleanup chain.
-        2. Apply [run_let_state_match_pure_nonzero] to commit to else arm.
+        2. Apply [run_let_state_match_pure_nonzero] to commit to if arm
+           (since δ = 1 ≠ 0; Yul-switch [if δ =? 0 then else else if] form).
         3. Walk TS-write subblock: sload(anchor+2), checked_add, sstore(anchor+2).
-        4. Walk second prelude → eq(account, 0) = 0.
-        5. Apply [run_let_state_match_pure_zero] to commit to if arm.
-        6. Walk balance-credit subblock: keccak mapping access, sload,
-           wrapping_add, sstore.
-        7. Absorb log3 emission tail via memory-skolem.
-        8. Apply [proj_sim_pointwise_balance_update] for final composition.
-
-        STATUS (R110, this task): Walker proof SCAFFOLD landed.  Body
-        discharge proof is Admitted pending follow-up — the recipe is
-        documented in WISDOM R110 and the infrastructure (3 Section
-        hypotheses + switch absorber) is complete.  Closure is a pure
-        mechanical exercise (~400 LOC tactic body, no new lemmas
-        required). *)
+        4. Walk second prelude → eq(account, 0) = 0 (since account ≠ 0).
+        5. Apply [run_let_state_match_pure_zero] to commit to else arm.
+        6. Walk balance-credit subblock: keccak mapping_index_access, sload,
+           wrapping_add, sstore (at keccak2(account, anchor)).
+        7. Walk log3 emission tail: allocate_unbounded (mload 64),
+           abi_encode_tuple_t_uint256__to_t_uint256__fromStack, log3 = pure.
+        8. State post-state: [proj_sim_pointwise_balance_update] applied
+           upfront discharges [vs_bal = proj_sim_post_mint sim account value]. *)
     Lemma run_fun__update_3335_at_proj_sim_mint :
       forall (codes : Codes.t) (env : Environment.t)
              (state_base : RocqOfSolidity.State.t)
@@ -1106,7 +1267,339 @@ Module ERC20Equivalence.
         fun__update_3335 0 account value ⇓ Result.Ok tt
       | Some (make_state env state_base memory'
                 (proj_sim_post_mint sim account value)) ?}}.
-    Admitted.
+    Proof.
+      intros codes env state_base memory sim account value
+             H_account_nz H_account_bound H_value_bound
+             H_valid H_no_overflow.
+      (* Upfront skolemization: derive sim's totalSupply bound from
+         validity, the sum bound from preconditions, the bridge equation,
+         and the two intermediate update_nth lists. *)
+      assert (H_ts_bound : 0 <= sim.(ERC20.totalSupply) < 2 ^ 256).
+      { pose proof (ERC20.Valid.supply_u256 sim H_valid) as Hu.
+        unfold U256.Valid.t in Hu. exact Hu. }
+      assert (H_sum_bound : 0 <= sim.(ERC20.totalSupply) + value < 2 ^ 256)
+        by lia.
+      assert (H_balance_bound : 0 <= Pure.add (ERC20.balanceOf sim account) value < 2 ^ 256).
+      { unfold Pure.add. split.
+        - apply Z.mod_pos_bound. lia.
+        - apply Z.mod_pos_bound. lia. }
+      pose proof (proj_sim_pointwise_balance_update sim account value
+                    H_value_bound H_no_overflow) as Hbridge.
+      destruct (List.update_nth (proj_sim sim) slot_totalSupply
+                  (StorableValue.U256 (sim.(ERC20.totalSupply) + value)))
+        as [vs_ts|] eqn:Hupd_ts; [|exfalso; exact Hbridge].
+      destruct (List.update_nth vs_ts slot_balances
+                  (StorableValue.Map
+                     (Dict.declare_or_assign
+                        (balances_to_dict sim.(ERC20.balances)) account
+                        (Pure.add (ERC20.balanceOf sim account) value))))
+        as [vs_bal|] eqn:Hupd_bal; [|discriminate Hbridge].
+      injection Hbridge as Hbridge_eq.
+      (* The post-state storage is vs_bal = proj_sim (mint sim account value). *)
+      pose proof (namespace_binding_after_ts_update_mint sim value) as Hns_after_ts.
+      rewrite Hupd_ts in Hns_after_ts.
+      pose proof (nth_balances_after_ts_update_mint sim value) as Hnth_after_ts.
+      rewrite Hupd_ts in Hnth_after_ts.
+      (* The two intermediate state witnesses: post-TS and post-Bal. *)
+      pose (state_post_ts :=
+              Some (State.with_current_storage env
+                      (make_state env state_base memory (proj_sim sim))
+                      (Storage.of_storable_values vs_ts))).
+      (* Skolemize memory post-mapping_index_access (state during Bal sload). *)
+      pose (memory_post_kc :=
+              mapping_index_access_address_post_memory env
+                state_base
+                memory vs_ts ERC20_NAMESPACE_ANCHOR account).
+      pose (state_post_bal :=
+              Some (State.with_current_storage env
+                      (make_state env state_base memory_post_kc vs_ts)
+                      (Storage.of_storable_values vs_bal))).
+      (* Final post-state memory: after log3 abi_encode mstore. *)
+      pose (memory_final :=
+              mstore_post_memory env state_base memory_post_kc vs_bal
+                (Pure.add (mload_witness env state_base memory_post_kc vs_bal 64) 0)
+                value).
+      exists memory_final.
+      (* vs_bal = proj_sim_post_mint sim account value. *)
+      unfold proj_sim_post_mint.
+      rewrite <- Hbridge_eq.
+      unfold fun__update_3335.
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      cbn match.
+      (* Outer LowM.Let: walk big body that returns (BlockUnit.Tt, tt). *)
+      eapply RunO.Let.
+      { (* === Prelude 1: getERC20Storage + 6 binders + eq(0,0)=1 === *)
+        eapply RunO.Let.
+        { c; [ apply run_fun__getERC20Storage_2971_returns_anchor | ].
+          apply RunO.Pure. }
+        cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+          apply RunO.Pure. }
+        cbn match.
+        eapply RunO.Let.
+        { simpl LowM.let_.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply run_eq_address_zero_at_zero | ].
+          apply RunO.Pure. }
+        cbn match.
+        (* === Switch 1: δ = 1, take if_branch (TS-write subblock) === *)
+        eapply run_let_state_match_pure_nonzero with (δ_val := 1)
+          (state_after_branch := state_post_ts).
+        { discriminate. }
+        { apply RunO.Pure. }
+        { (* TS-write subblock. *)
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let.
+          { c; [ unfold Stdlib.add; apply RunO.Pure | ]. apply RunO.Pure. }
+          cbn match.
+          (* sload at anchor+2 *)
+          eapply RunO.Let.
+          { c.
+            { apply (run_read_from_storage_split_offset_0_t_uint256_at_anchor_offset
+                       _ _ _ _ (proj_sim sim) slot_totalSupply
+                       ERC20_NAMESPACE_ANCHOR 2 sim.(ERC20.totalSupply)
+                       (totalSupply_offset_binding sim)
+                       (get_storage_proj_sim env state_base memory sim)
+                       (proj_totalSupply_at_slot sim)). }
+            apply RunO.Pure. }
+          cbn match.
+          (* checked_add *)
+          eapply RunO.Let.
+          { c; [ apply (run_checked_add_t_uint256_no_overflow
+                          _ _ _ _ _ H_ts_bound H_value_bound H_no_overflow) | ].
+            apply RunO.Pure. }
+          cbn match.
+          (* sstore at anchor+2 *)
+          eapply RunO.Let.
+          { pose proof (run_update_storage_value_offset_0_t_uint256_to_t_uint256_at_anchor_offset
+                          codes env state_base memory
+                          (proj_sim sim) slot_totalSupply
+                          ERC20_NAMESPACE_ANCHOR 2
+                          (sim.(ERC20.totalSupply) + value)
+                          sim.(ERC20.totalSupply)
+                          (totalSupply_offset_binding sim)
+                          (get_storage_proj_sim env state_base memory sim)
+                          (proj_totalSupply_at_slot sim)
+                          H_sum_bound) as Hsstore.
+            cbv zeta in Hsstore. rewrite Hupd_ts in Hsstore.
+            c; [ exact Hsstore | ]. apply RunO.Pure. }
+          cbn match.
+          apply RunO.Pure. }
+        { (* === Body after first switch === *)
+          cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let.
+          { c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+            apply RunO.Pure. }
+          cbn match.
+          eapply RunO.Let.
+          { simpl LowM.let_.
+            c; [ apply run_cleanup_t_address | ]. cbn match.
+            c; [ apply run_cleanup_t_address | ]. cbn match.
+            c; [ apply (run_eq_address_zero_check _ _ _ account
+                          H_account_bound H_account_nz) | ].
+            apply RunO.Pure. }
+          cbn match.
+          (* === Switch 2: δ = 0, take else_branch (balance-credit) === *)
+          eapply run_let_state_match_pure_zero with
+            (state_after_branch := state_post_bal).
+          { apply RunO.Pure. }
+          { (* Balance-credit subblock. *)
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            (* _1752 := add(anchor, 0) → anchor *)
+            eapply RunO.Let.
+            { c; [ unfold Stdlib.add; apply RunO.Pure | ]. apply RunO.Pure. }
+            cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            (* _1755 := mapping_index_access(anchor+0, account)
+               Note: anchor+0 = anchor since ERC20_NAMESPACE_ANCHOR fits 256 bits.
+               Output: keccak256_tuple2 account anchor.
+               State changes: storage unchanged, memory updates via
+               mapping_index_access_address_post_memory. *)
+            (* Canonize state: with_current_storage env (make_state ...) ... = make_state ... vs_ts *)
+            rewrite CanonizeState.update_storage_eq.
+            (* Pure.add anchor 0 = anchor *)
+            replace (Pure.add ERC20_NAMESPACE_ANCHOR 0) with ERC20_NAMESPACE_ANCHOR.
+            2:{ unfold Pure.add. unfold ERC20_NAMESPACE_ANCHOR.
+                rewrite Z.add_0_r.
+                rewrite Z.mod_small; [reflexivity| split; [discriminate|]; lia]. }
+            eapply RunO.Let.
+            { c.
+              { apply (run_mapping_index_access_t_address_at_make_state
+                         codes env state_base memory vs_ts
+                         ERC20_NAMESPACE_ANCHOR account
+                         H_account_bound). }
+              apply RunO.Pure. }
+            cbn match.
+            (* sload at keccak256_tuple2 account anchor → map_get_u256 of balances *)
+            eapply RunO.Let.
+            { c.
+              { apply (run_read_from_storage_split_offset_0_t_uint256_at_map_anchor
+                         _ _ _ _ vs_ts slot_balances
+                         ERC20_NAMESPACE_ANCHOR
+                         (balances_to_dict sim.(ERC20.balances)) account
+                         Hns_after_ts Hnth_after_ts). }
+              apply RunO.Pure. }
+            cbn match.
+            (* wrapping_add: balanceOf sim account → Pure.add (map_get ...) value *)
+            (* But sload returned map_get_u256 (balances_to_dict ...) account = balanceOf sim account
+               via map_get_balances_eq_balanceOf hypothesis.  Need to rewrite. *)
+            rewrite (map_get_balances_eq_balanceOf sim account).
+            eapply RunO.Let.
+            { c; [ apply run_wrapping_add_t_uint256 | ]. apply RunO.Pure. }
+            cbn match.
+            (* sstore at keccak256_tuple2 account anchor with Pure.add (balanceOf sim account) value.
+               State has memory = memory_post_kc (after mapping_index_access). *)
+            eapply RunO.Let.
+            { pose (memory' := mapping_index_access_address_post_memory env state_base memory vs_ts
+                                 ERC20_NAMESPACE_ANCHOR account).
+              pose proof (run_update_storage_value_offset_0_t_uint256_to_t_uint256_at_map_anchor
+                            codes env state_base memory'
+                            vs_ts slot_balances ERC20_NAMESPACE_ANCHOR
+                            (balances_to_dict sim.(ERC20.balances))
+                            account
+                            (Pure.add (ERC20.balanceOf sim account) value)
+                            Hns_after_ts) as Hsstore_bal.
+              assert (Hget_ts :
+                        State.get_current_storage env
+                          (make_state env state_base memory' vs_ts)
+                        = Some (Storage.of_storable_values vs_ts)).
+              { unfold make_state.
+                apply State.get_current_storage_with_current_storage_eq. }
+              specialize (Hsstore_bal Hget_ts Hnth_after_ts H_balance_bound).
+              cbv zeta in Hsstore_bal. rewrite Hupd_bal in Hsstore_bal.
+              c; [ exact Hsstore_bal | ]. apply RunO.Pure. }
+            cbn match.
+            (* Now state is with_current_storage env (make_state ... vs_ts ...) vs_bal,
+               which we want to canonize back. *)
+            apply RunO.Pure. }
+          { (* Body after second switch — log3 tail + final Pure.
+               State here is state_post_bal (with memory_post_kc and vs_bal).
+               Canonize via with_current_storage rewrite. *)
+            unfold state_post_bal.
+            rewrite CanonizeState.update_storage_eq.
+            cbn match.
+            (* 6 pure binders: _1761, expr_3329, _1762, expr_3330, _1763, expr_3331 *)
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            (* _1764 := topic hash (Transfer event signature, pure literal) *)
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            (* _1765 := convert_t_address_to_t_address 0 → 0 *)
+            eapply RunO.Let.
+            { c.
+              { apply (run_convert_t_address_to_t_address_on_address _ _ _ 0).
+                unfold Address.Valid.t. lia. }
+              apply RunO.Pure. }
+            cbn match.
+            (* _1766 := convert_t_address_to_t_address account → account *)
+            eapply RunO.Let.
+            { c.
+              { apply (run_convert_t_address_to_t_address_on_address
+                         _ _ _ account H_account_bound). }
+              apply RunO.Pure. }
+            cbn match.
+            (* let_state~ 'tt := <log3 body> default~ tt in M.pure (Tt, tt).
+               The log3 body does: allocate_unbounded (mload 64) + abi_encode_tuple
+               + log3 (= M.pure tt) + M.pure (Tt, tt).
+               These all run within the Shallow.let_state with body = M.pure (Tt, tt). *)
+            (* First convert the let_state into its M.strong_let_ form. *)
+            unfold Shallow.let_state at 1.
+            unfold M.strong_let_ at 1, M.generic_let at 1.
+            eapply RunO.Let.
+            { (* The log3 body: walk allocate_unbounded + abi_encode + log3. *)
+              (* _1767 := allocate_unbounded.  Body: let memPtr := 0 in
+                   let~ memPtr := mload 64 in M.pure (Tt, memPtr) +outer M.pure memPtr.
+                 The outermost is LowM.Call allocate_unbounded LowM.Pure. *)
+              eapply RunO.Let.
+              { c.
+                { unfold allocate_unbounded.
+                  unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+                  cbn match.
+                  eapply RunO.Let.
+                  { eapply RunO.Let.
+                    { c.
+                      { apply (run_mload_absorbing_at_make_state
+                                 codes env state_base memory_post_kc vs_bal 64). }
+                      apply RunO.Pure. }
+                    cbn match. apply RunO.Pure. }
+                  cbn match. apply RunO.Pure. }
+                apply RunO.Pure. }
+              cbn match.
+              (* _1768 := abi_encode_tuple_t_uint256__to_t_uint256__fromStack _1767 value. *)
+              eapply RunO.Let.
+              { c.
+                { unfold abi_encode_tuple_t_uint256__to_t_uint256__fromStack.
+                  unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+                  cbn match.
+                  (* Outer pattern-match Let *)
+                  eapply RunO.Let.
+                  { (* big_thing: let~ tail := add(memPtr, 32) in do~ ... in M.pure (Tt, tail). *)
+                    (* let~ tail := add(memPtr, 32) → LowM.Let (LowM.Call add) (fun => ...) *)
+                    eapply RunO.Let.
+                    { c; [ unfold Stdlib.add; apply RunO.Pure | ]. apply RunO.Pure. }
+                    cbn match.
+                    (* do~ abi_encode_t_uint256_to_t_uint256_fromStack ... in M.pure (Tt, tail) *)
+                    eapply RunO.Let.
+                    { (* The do~ has nested let_ structure for value0, pos.  Walk them. *)
+                      simpl LowM.let_.
+                      c; [ unfold Stdlib.add; apply RunO.Pure | ]. cbn match.
+                      c.
+                      { unfold abi_encode_t_uint256_to_t_uint256_fromStack.
+                        unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+                        cbn match.
+                        (* Outer pattern-match Let again *)
+                        eapply RunO.Let.
+                        { (* big_thing: do~ mstore(...) in M.pure (Tt, tt). *)
+                          eapply RunO.Let.
+                          { simpl LowM.let_.
+                            c; [ apply run_cleanup_t_uint256_id | ]. cbn match.
+                            c.
+                            { apply (run_mstore_absorbing_at_make_state
+                                       codes env state_base memory_post_kc vs_bal
+                                       _ _). }
+                            apply RunO.Pure. }
+                          cbn match. apply RunO.Pure. }
+                        cbn match. apply RunO.Pure. }
+                      apply RunO.Pure. }
+                    cbn match. apply RunO.Pure. }
+                  cbn match. apply RunO.Pure. }
+                apply RunO.Pure. }
+              cbn match.
+              eapply RunO.Let.
+              { simpl LowM.let_.
+                c; [ unfold Stdlib.sub; apply RunO.Pure | ]. cbn match.
+                c; [ unfold Stdlib.log3; apply RunO.Pure | ].
+                apply RunO.Pure. }
+              cbn match.
+              apply RunO.Pure. }
+            cbn match.
+            apply RunO.Pure. }
+        }
+      }
+      cbn match.
+      apply RunO.Pure.
+    Qed.
 
     (** OZ ERC20 base body axiom for the burn branch ([to = 0]).
         Audit-time obligation: the body at [StakingVault_shallow.v:10200-10328]
@@ -1327,130 +1820,6 @@ Module ERC20Equivalence.
       exists memory_outer, storage_inner. split.
       - exact Hpost.
       - exact Houter.
-    Qed.
-
-    (** ================================================================
-        Walker leaves for [_mint]'s zero-address check
-        ================================================================ *)
-
-    (** Identity-on-zero leaf via [cleanup_t_rational_0_by_1] passthrough. *)
-    Lemma run_cleanup_t_rational_0_by_1_at_zero codes env state :
-      {{? codes, env, Some state |
-        cleanup_t_rational_0_by_1 0 ⇓ Result.Ok 0
-      | Some state ?}}.
-    Proof.
-      unfold cleanup_t_rational_0_by_1.
-      lu. repeat (lu || cu || p).
-    Qed.
-
-    Lemma run_identity codes env state (v : U256.t) :
-      {{? codes, env, Some state |
-        identity v ⇓ Result.Ok v
-      | Some state ?}}.
-    Proof.
-      unfold identity.
-      lu. repeat (lu || cu || p).
-    Qed.
-
-    Lemma run_cleanup_t_uint160_at_zero codes env state :
-      {{? codes, env, Some state |
-        cleanup_t_uint160 0 ⇓ Result.Ok 0
-      | Some state ?}}.
-    Proof.
-      pose proof (AbiEncoding.AbiEncoding.run_cleanup_t_uint160 codes env state 0) as H.
-      rewrite Z.land_0_l in H. exact H.
-    Qed.
-
-    Lemma run_convert_t_rational_0_by_1_to_t_uint160_at_zero
-        codes env state :
-      {{? codes, env, Some state |
-        convert_t_rational_0_by_1_to_t_uint160 0 ⇓ Result.Ok 0
-      | Some state ?}}.
-    Proof.
-      unfold convert_t_rational_0_by_1_to_t_uint160.
-      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
-      repeat (lazymatch goal with
-        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
-        | |- {{? _, _, _ |
-              LowM.Call (cleanup_t_rational_0_by_1 _) _ ⇓ _ | _ ?}} =>
-            c; [ apply run_cleanup_t_rational_0_by_1_at_zero | ]
-        | |- {{? _, _, _ | LowM.Call (identity _) _ ⇓ _ | _ ?}} =>
-            c; [ apply run_identity | ]
-        | |- {{? _, _, _ | LowM.Call (cleanup_t_uint160 _) _ ⇓ _ | _ ?}} =>
-            c; [ apply run_cleanup_t_uint160_at_zero | ]
-        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
-        | |- _ => s
-        end).
-      all: cbn match.
-      all: try apply RunO.Pure.
-    Qed.
-
-    (** [convert_t_rational_0_by_1_to_t_address 0 = 0].  The conversion
-        chain is [cleanup_t_uint160 . identity . cleanup_t_rational_0_by_1],
-        all of which preserve [0]. *)
-    Lemma run_convert_t_rational_0_by_1_to_t_address_at_zero
-        codes env state :
-      {{? codes, env, Some state |
-        convert_t_rational_0_by_1_to_t_address 0 ⇓ Result.Ok 0
-      | Some state ?}}.
-    Proof.
-      unfold convert_t_rational_0_by_1_to_t_address.
-      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
-      repeat (lazymatch goal with
-        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
-        | |- {{? _, _, _ |
-              LowM.Call (convert_t_rational_0_by_1_to_t_uint160 _) _
-              ⇓ _ | _ ?}} =>
-            c; [ apply run_convert_t_rational_0_by_1_to_t_uint160_at_zero | ]
-        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
-        | |- _ => s
-        end).
-      all: cbn match.
-      all: try apply RunO.Pure.
-    Qed.
-
-    (** [eq(cleanup_t_address account, cleanup_t_address 0) = 0] iff
-        [account] (as a 160-bit value) is nonzero.  We pre-condition
-        on [0 <= account < 2^160 /\ account <> 0] so cleanup is
-        identity. *)
-    Lemma run_eq_address_zero_check
-        codes env state (account : U256.t)
-        (H_account_bound : 0 <= account < 2^160)
-        (H_account_nz : account <> 0) :
-      {{? codes, env, Some state |
-        Stdlib.eq (Z.land account 0xffffffffffffffffffffffffffffffffffffffff)
-                  (Z.land 0 0xffffffffffffffffffffffffffffffffffffffff)
-        ⇓ Result.Ok 0
-      | Some state ?}}.
-    Proof.
-      unfold Stdlib.eq, Pure.eq.
-      (* Z.land 0 _ = 0 *)
-      rewrite Z.land_0_l.
-      (* Z.land account (Z.ones 160) = account given 0 <= account < 2^160 *)
-      change 0xffffffffffffffffffffffffffffffffffffffff with (Z.ones 160).
-      destruct (Z.eq_dec account 0) as [->|Hne]; [contradiction|].
-      rewrite Z.land_ones by lia.
-      rewrite Z.mod_small by lia.
-      (* Now goal: M.pure (if account =? 0 then 1 else 0) ⇓ Ok 0 *)
-      apply Z.eqb_neq in H_account_nz as Hb.
-      rewrite Hb.
-      apply RunO.Pure.
-    Qed.
-
-    (** [eq(cleanup_t_address 0, cleanup_t_address 0) = 1] — the
-        symmetric form for proving "[from = 0]" in the mint branch
-        of [fun__update_3335].  Cleanup of 0 is 0 on both sides, eq
-        of equal values returns 1. *)
-    Lemma run_eq_address_zero_at_zero codes env state :
-      {{? codes, env, Some state |
-        Stdlib.eq (Z.land 0 0xffffffffffffffffffffffffffffffffffffffff)
-                  (Z.land 0 0xffffffffffffffffffffffffffffffffffffffff)
-        ⇓ Result.Ok 1
-      | Some state ?}}.
-    Proof.
-      unfold Stdlib.eq, Pure.eq.
-      rewrite Z.land_0_l.
-      apply RunO.Pure.
     Qed.
 
     (** ================================================================

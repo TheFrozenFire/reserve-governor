@@ -800,11 +800,14 @@ Module FrameworkExtensions.
       to discharge the surrounding [let_state]. *)
 
   (** Absorber: Yul switch where the discriminant evaluates to zero;
-      the [else_branch] (the [δ =? 0] arm) returns Tt mode. *)
+      the [else_branch] (the [δ =? 0] arm) returns Tt mode.  The
+      else_branch may freely change state; [state_after_branch]
+      witnesses its post-state.  The body then resumes from
+      [state_after_branch]. *)
   Lemma run_let_state_match_pure_zero
       (codes : Codes.t) (env : Environment.t)
       {S1 S2 : Set}
-      (state state_after_expr : option RocqOfSolidity.State.t)
+      (state state_after_expr state_after_branch : option RocqOfSolidity.State.t)
       (expr : M.t U256.t)
       (else_branch if_branch : M.t (BlockUnit.t * S1))
       (failure : S1)
@@ -814,8 +817,8 @@ Module FrameworkExtensions.
       (H_expr : {{? codes, env, state | expr ⇓ Result.Ok 0 | state_after_expr ?}})
       (H_else : {{? codes, env, state_after_expr |
                    else_branch ⇓ Result.Ok (BlockUnit.Tt, failure)
-                 | state_after_expr ?}})
-      (H_body : {{? codes, env, state_after_expr |
+                 | state_after_branch ?}})
+      (H_body : {{? codes, env, state_after_branch |
                    snd (body failure) ⇓ output | state' ?}}) :
     {{? codes, env, state |
       Shallow.let_state
@@ -835,11 +838,12 @@ Module FrameworkExtensions.
       nonzero value; the [if_branch] (the [δ <> 0] arm) returns Tt
       mode.  Mirror of [run_let_state_match_pure_zero] for the
       non-zero discriminant case (mint branch of [fun__update_3335]:
-      [eq(0, 0) = 1]). *)
+      [eq(0, 0) = 1]).  The if_branch may freely change state;
+      [state_after_branch] witnesses its post-state. *)
   Lemma run_let_state_match_pure_nonzero
       (codes : Codes.t) (env : Environment.t)
       {S1 S2 : Set}
-      (state state_after_expr : option RocqOfSolidity.State.t)
+      (state state_after_expr state_after_branch : option RocqOfSolidity.State.t)
       (expr : M.t U256.t)
       (δ_val : U256.t)
       (H_δ_nz : δ_val <> 0)
@@ -851,8 +855,8 @@ Module FrameworkExtensions.
       (H_expr : {{? codes, env, state | expr ⇓ Result.Ok δ_val | state_after_expr ?}})
       (H_if : {{? codes, env, state_after_expr |
                  if_branch ⇓ Result.Ok (BlockUnit.Tt, failure)
-               | state_after_expr ?}})
-      (H_body : {{? codes, env, state_after_expr |
+               | state_after_branch ?}})
+      (H_body : {{? codes, env, state_after_branch |
                    snd (body failure) ⇓ output | state' ?}}) :
     {{? codes, env, state |
       Shallow.let_state
