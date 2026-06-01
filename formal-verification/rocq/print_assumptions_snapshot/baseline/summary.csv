@@ -2,10 +2,10 @@ file,module,theorem,lineno,axioms_total,axioms_load_bearing,status
 AccessControlEnumerable.v,AccessControlEnumerableEquivalence,run_fun_getRoleMemberCount_656_equivalent,250,22,10,OK
 AccessControlEnumerable.v,AccessControlEnumerableEquivalence,run_fun_getRoleMember_641_equivalent,612,22,10,OK
 Guardian.v,GuardianEquivalence,run_hasRole_equivalent,3252,22,10,OK
-Guardian.v,GuardianEquivalence,run_grantRole_1468_observed_behavior,5390,1,1,OK
-Guardian.v,GuardianEquivalence,run_grantRole_1359_equivalent,6240,40,28,OK
-Guardian.v,GuardianEquivalence,run_revokeRole_1378_equivalent,9081,28,16,OK
-Guardian.v,GuardianEquivalence,run_cancel_equivalent_make_state,10344,17,5,OK
+Guardian.v,GuardianEquivalence,run_grantRole_1468_observed_behavior,5554,1,1,OK
+Guardian.v,GuardianEquivalence,run_grantRole_1359_equivalent,6404,40,28,OK
+Guardian.v,GuardianEquivalence,run_revokeRole_1378_equivalent,9496,29,17,OK
+Guardian.v,GuardianEquivalence,run_cancel_equivalent_make_state,10759,17,5,OK
 ProposalLib.v,ProposalLibEquivalence,run_fun__governor_679_equivalent,462,10,0,OK
 ProposalLib.v,ProposalLibEquivalence,run_fun__validateProposal_507_equivalent,1263,18,6,OK
 ProposalLib.v,ProposalLibEquivalence,run_fun__saveProposal_580_equivalent,1306,16,4,OK

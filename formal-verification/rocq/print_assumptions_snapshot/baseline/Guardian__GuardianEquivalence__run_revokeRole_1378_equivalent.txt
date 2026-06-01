@@ -1,5 +1,5 @@
 # Theorem: GuardianEquivalence.run_revokeRole_1378_equivalent
-# Source:  Guardian.v:9081
+# Source:  Guardian.v:9496
 # Module:  GuardianEquivalence
 #
 Axioms:
@@ -141,23 +141,6 @@ GuardianEquivalence.run_fun__revokeRole_736_at_proj_sim_member_walker :
       (Some
          (RocqOfSolidity.make_state env state_base memory'
             (GuardianEquivalence.revoke_post_storage role sim account)))
-GuardianEquivalence.post_positions_after_remove :
-  RocqOfSolidity.U256.t ->
-  Guardian.Guardian.State.t ->
-  Guardian.Guardian.Address ->
-  RocqOfSolidity.Dict.t (RocqOfSolidity.U256.t * RocqOfSolidity.U256.t)
-    RocqOfSolidity.U256.t
-GuardianEquivalence.post_length_after_remove :
-  RocqOfSolidity.U256.t ->
-  Guardian.Guardian.State.t ->
-  Guardian.Guardian.Address ->
-  RocqOfSolidity.Dict.t RocqOfSolidity.U256.t RocqOfSolidity.U256.t
-GuardianEquivalence.post_body_after_remove :
-  RocqOfSolidity.U256.t ->
-  Guardian.Guardian.State.t ->
-  Guardian.Guardian.Address ->
-  RocqOfSolidity.Dict.t (RocqOfSolidity.U256.t * RocqOfSolidity.U256.t)
-    RocqOfSolidity.U256.t
 RocqOfSolidity.Memory.of_u256_list :
   list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
 RocqOfSolidity.Storage.of_storable_values :

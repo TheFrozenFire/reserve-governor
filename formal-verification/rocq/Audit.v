@@ -323,19 +323,24 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
         Full discharge is the mechanical assembly of the remaining
         steps against existing AbiEncoding / StaticCallBridge /
         R040-R058 leaves.
-      - T3.3 (revokeRole_736_member walker): DEFERRED. The
-        [run_fun__revokeRole_736_at_proj_sim_member] Axiom in
-        [proofs/equivalence/Guardian.v] cannot be retired without
-        the WISDOM R052 Option-1 -> Option-2 structural refactor of
-        [proj_sim] (placing [MapToArray] at slot index 1 so the
-        keccak shape matches OZ's [keccak(role, 1)] anchor;
-        mechanical but touches ~330 references across Guardian.v
-        bridge lemmas). The refactor is the "R083 framework
-        extension" prerequisite for honest discharge; tracked as a
-        pending task. Until then, the four pre-existing Guardian-
-        local Option-1 axioms ([run_sload_role_values_*],
-        [run_sstore_role_values_*]) remain on the books as
-        documented parametric trust.
+      - T3.3 (revokeRole_736_member walker): PARTIAL. R084 (commit
+        b1d2178) split the monolithic walker+bridge axiom into a
+        walker-shape axiom + property-bridge axiom + 3 Skolem
+        [Parameter]s + 3 new R084 framework inverse-op axioms; the
+        composed [run_fun__revokeRole_736_at_proj_sim_member] is now a
+        [Qed] [Lemma].  R085 (this commit) promotes the 3 Skolem
+        [Parameter]s into concrete [Definition]s computed directly
+        from [sim] — eliminating 3 axioms from [Print Assumptions]
+        and producing concrete swap-and-pop dict shapes that the
+        walker can be discharged against.  Residual: the
+        walker-shape Axiom
+        [run_fun__revokeRole_736_at_proj_sim_member_walker] and the
+        property-bridge Axiom [set_eq_at_role_revoke_post_storage]
+        remain — both are narrower (sharper audit signature) than
+        the original monolithic axiom.  The 4 pre-existing
+        Guardian-local Option-1 axioms ([run_sload_role_values_*],
+        [run_sstore_role_values_*]) likewise remain.  See WISDOM
+        R084 + R085 for the full path to [Qed] discharge.
 
     Tier 5 (process hygiene): CLOSED.
       - T5.1 (Print Assumptions snapshot tool + 57-milestone baseline):

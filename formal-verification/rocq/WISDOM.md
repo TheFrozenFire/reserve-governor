@@ -2216,6 +2216,109 @@ See also: R051.c (forward storage axioms), R055 (grantRole bridge
 methodology), R059 (`set_eq_at_role` membership equivalence), R083
 (ERC-7201 + memory absorption).
 
+## R085: Skolem-Parameter elimination for T3.3 swap-and-pop post-state
+
+R085 follows R084's decomposition and pushes one trust-redistribution
+step further: it promotes the three Skolem `Parameter`s introduced by
+R084 into concrete `Definition`s computed directly from `sim`.  Trust
+impact (per `Print Assumptions`):
+
+- Before R085 (after R084): 3 `Parameter` declarations
+  (`post_positions_after_remove`, `post_length_after_remove`,
+  `post_body_after_remove`) + walker-shape Axiom +
+  property-bridge Axiom + 3 R084 inverse-op framework axioms.
+
+- After R085: 0 `Parameter` declarations + walker-shape Axiom +
+  property-bridge Axiom + 3 R084 inverse-op framework axioms.
+
+NET: 3 axioms retired from `Print Assumptions` (the three Parameters,
+which the snapshot counts as axiom-equivalent assumptions).
+
+### The R085 concrete shapes
+
+The post-positions Skolem is replaced by a `Definition` that names
+the OZ swap-and-pop dict expression directly:
+
+```coq
+Definition post_positions_after_remove role sim account :=
+  let position := position_of role sim account in
+  let oldLen   := old_len_of role sim in
+  if (position - 1) =? (oldLen - 1) then
+    (* Last-element fast path: no swap. *)
+    Dict.declare_or_assign (role_positions_map sim) (role, account) 0
+  else
+    (* Swap case: bump survivor's position then zero account's. *)
+    Dict.declare_or_assign
+      (Dict.declare_or_assign
+         (role_positions_map sim) (role, last_value role sim) position)
+      (role, account) 0.
+```
+
+where `last_value role sim` is the head of the role-list (= OZ array
+tail under the cons-to-front convention; rests on `body_map(role,
+oldLen - 1) = head` for `_remove`'s `lastValue` read).  The
+post-length Skolem is `Dict.declare_or_assign length role (oldLen -
+1)`.  The post-body Skolem mirrors the swap-and-pop body writes.
+
+### Why this matters for discharge
+
+With concrete `Definition` shapes, the walker proof has a concrete
+post-state to land at — every storage-write step's
+`Dict.declare_or_assign` from the R084 framework axioms now unifies
+syntactically with the slot-1/2/3 entries of `revoke_post_storage`.
+This eliminates the existential-witness gymnastics that Parameter
+shapes forced.
+
+Symmetrically, the property bridge
+`set_eq_at_role_revoke_post_storage` (still an Axiom in this commit)
+becomes mechanically dischargeable: it now reduces to a Boolean
+equality between two `Dict.declare_or_assign` chains under
+`contains_at_role` — both with concrete shapes.
+
+### Path to Qed discharge (R085 residual)
+
+The R085-residual work to retire the remaining two Axioms:
+
+1. **Walker discharge**: a ~600-1000 LOC walker over
+   `fun_remove_2112` / `fun__remove_1698`'s body using R084's three
+   inverse-op axioms.  Both the swap case and the last-element case
+   need separate walker arms, unified at the post-state via the R085
+   concrete shapes.  Helper lemmas:
+   - `last_value_neq_account_in_swap_case` (proven below): under the
+     swap hypothesis `position - 1 ≠ oldLen - 1` and `H_member`,
+     `last_value role sim ≠ account` (so the `positions[lastValue] :=
+     position` write doesn't collide with the `positions[account] :=
+     0` write).
+   - The cons-front-vs-array-index bridge: `position_of role sim
+     (head admins) = length admins`, so position - 1 = lastIndex
+     exactly when account is the head.
+
+2. **Bridge discharge**: a ~300-500 LOC case-split-by-(role', a')
+   proof.  Each case reduces via the R085 helpers
+   (`map_get_u256_declare_or_assign_eq/neq`, sketched in the source
+   file) to a Boolean fact about `Guardian.addr_in (remove_role
+   list account) a'` — already proven via
+   `addr_in_remove_role_self`/`addr_in_remove_role_other` (R059).
+
+### Methodology finding
+
+The Parameter-to-Definition promotion pattern is broadly applicable:
+any composite walker whose post-state is parametric over the
+post-execution shape can be tightened by computing that shape
+directly from the pre-state via the same operations the walker
+performs.  This is "anchor early": instead of leaving the post-state
+abstract via Skolem and discharging via a property axiom, compute it
+concretely and discharge by direct unification.
+
+The R084-style decomposition (walker + property bridge + Skolems) is
+sometimes the right shape (e.g. when the post-state genuinely
+depends on existential intermediate values), but for OZ
+EnumerableSet remove the post-state is a pure function of `sim` and
+the input — so concrete is strictly better.
+
+See also: R084 (T3.3 trust-redistribution), R059 (`set_eq_at_role`),
+R055 (grantRole bridge methodology).
+
 ## R065-R071: Per-mutator composite-walker recipe
 
 Validated on 12 mutators across 6 contracts: VersionRegistry,

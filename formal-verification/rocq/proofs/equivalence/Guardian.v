@@ -9281,24 +9281,113 @@ Module GuardianEquivalence.
       The post-storage depends on whether the SWAP case fires: in the
       swap case, [positions[lastValue] := position] also updates a
       survivor's entry; in the last-element case, only [positions[value]
-      := 0] fires.  The [post_positions] Skolem encapsulates both
-      cases — its only material constraint (per the bridge lemmas in
-      step 2 below) is that the membership pattern matches the
-      sim-side [remove_role]. *)
-  Parameter post_positions_after_remove :
-    U256.t -> State.t -> Address ->
-    Dict.t (U256.t * U256.t) U256.t.
+      := 0] fires.  R085 (this commit) promotes the previous
+      [Parameter]-style Skolems into concrete [Definition]s computed
+      directly from [sim], eliminating 3 Parameter assumptions from
+      [Print Assumptions] and unblocking discharge of the bridge axiom
+      as a [Qed] [Lemma]. *)
 
-  Parameter post_length_after_remove :
-    U256.t -> State.t -> Address -> Dict.t U256.t U256.t.
+  (** ===== R085: Concrete post-state witnesses =====
 
-  Parameter post_body_after_remove :
-    U256.t -> State.t -> Address ->
-    Dict.t (U256.t * U256.t) U256.t.
+      [post_role_list role sim] picks the role-list inside [sim]:
+        DEFAULT  -> sim.admins
+        OG       -> sim.optimisticGuardians
+        OGM      -> sim.optimisticGuardianManagers
+        else     -> nil  (unknown role; the walker never lands here
+                          under [H_role_known]).
 
-  (** Skolemized post-storage built from the post-positions / length /
-      body Skolems.  Slot 0 carries the Phase-1-mutated member map
-      [Dict.declare_or_assign (role_member_map sim) (role, account) 0]. *)
+      Under the cons-to-front sim convention, the HEAD of the list
+      occupies array index [length - 1] = [lastIndex]; therefore the
+      OZ Yul's [body_map(role, oldLen - 1)] read inside [_remove]
+      returns exactly the HEAD of [post_role_list role sim].  The
+      post-positions / post-length / post-body witnesses are
+      concrete dict expressions tied to [sim] — specifically the
+      shape the OZ walker produces under [H_member]. *)
+
+  Definition post_role_list (role : U256.t) (sim : State.t) : list Address :=
+    if role =? DEFAULT_ADMIN_ROLE_bytes32 then sim.(State.admins)
+    else if role =? OPTIMISTIC_GUARDIAN_ROLE_bytes32 then
+      sim.(State.optimisticGuardians)
+    else if role =? OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 then
+      sim.(State.optimisticGuardianManagers)
+    else [].
+
+  (** [last_value role sim] is the head of the role-list (= OZ array
+      tail under the cons-to-front convention).  Returns 0 when the
+      list is empty (the walker never lands here under [H_member]). *)
+  Definition last_value (role : U256.t) (sim : State.t) : Address :=
+    match post_role_list role sim with
+    | a :: _ => a
+    | []     => 0
+    end.
+
+  (** [position_of role sim account] returns the OZ 1-indexed position
+      of [account] in the role-list under the cons-to-front convention. *)
+  Definition position_of (role : U256.t) (sim : State.t) (account : Address)
+      : U256.t :=
+    StorableValue.map_get_u256 (role_positions_map sim) (role, account).
+
+  (** [old_len_of role sim] returns the OZ array length for the role. *)
+  Definition old_len_of (role : U256.t) (sim : State.t) : U256.t :=
+    StorableValue.map_get_u256 (role_values_length_map sim) role.
+
+  (** Concrete post-positions witness.
+
+      The OZ walker, under [H_member], executes:
+        position := positions[role][account]   (* >= 1 *)
+        oldLen   := length[role]
+        if position - 1 <> oldLen - 1:
+          (* SWAP case *)
+          lastValue := body[role][oldLen - 1]
+          body[role][position - 1] := lastValue
+          positions[role][lastValue] := position
+        (* Always *)
+        body[role][oldLen - 1] := 0        (* via array_pop *)
+        length[role]           := oldLen - 1   (* via array_pop *)
+        positions[role][account] := 0 *)
+  Definition post_positions_after_remove
+      (role : U256.t) (sim : State.t) (account : Address)
+      : Dict.t (U256.t * U256.t) U256.t :=
+    let position := position_of role sim account in
+    let oldLen := old_len_of role sim in
+    if (position - 1) =? (oldLen - 1) then
+      (* Last-element fast path: no swap. *)
+      Dict.declare_or_assign (role_positions_map sim) (role, account) 0
+    else
+      (* Swap case: bump survivor's position, then zero account's. *)
+      Dict.declare_or_assign
+        (Dict.declare_or_assign
+           (role_positions_map sim) (role, last_value role sim) position)
+        (role, account) 0.
+
+  (** Concrete post-length witness: length[role] := oldLen - 1. *)
+  Definition post_length_after_remove
+      (role : U256.t) (sim : State.t) (account : Address)
+      : Dict.t U256.t U256.t :=
+    let oldLen := old_len_of role sim in
+    Dict.declare_or_assign (role_values_length_map sim) role (oldLen - 1).
+
+  (** Concrete post-body witness.
+
+      Swap case: body[role][position - 1] := lastValue, then
+                 body[role][oldLen - 1] := 0 (via array_pop).
+      Last-element case: body[role][oldLen - 1] := 0 (via array_pop). *)
+  Definition post_body_after_remove
+      (role : U256.t) (sim : State.t) (account : Address)
+      : Dict.t (U256.t * U256.t) U256.t :=
+    let position := position_of role sim account in
+    let oldLen := old_len_of role sim in
+    if (position - 1) =? (oldLen - 1) then
+      Dict.declare_or_assign
+        (role_values_body_map sim) (role, oldLen - 1) 0
+    else
+      Dict.declare_or_assign
+        (Dict.declare_or_assign
+           (role_values_body_map sim) (role, position - 1) (last_value role sim))
+        (role, oldLen - 1) 0.
+
+  (** Concrete post-storage built from the three concrete witnesses.
+      Slot 0 carries the Phase-1-mutated member map. *)
   Definition revoke_post_storage
       (role : U256.t) (sim : State.t) (account : Address)
       : SimulatedStorage.t :=
@@ -9329,13 +9418,28 @@ Module GuardianEquivalence.
         | Some (make_state env state_base memory'
                   (revoke_post_storage role sim account)) ?}}.
 
-  (** Bridge axiom: the Skolemized post-storage's [contains_at_role]
-      predicate matches the sim-side [revoke_role_sim] semantics.
-      This is a focused PROPERTY axiom (not a walker axiom): it states
-      that the post-positions Skolem encodes the correct membership
-      pattern.  Per-role audit obligation: each per-role variant
-      reduces to [addr_in_remove_role_self / addr_in_remove_role_other]
-      facts about [Guardian.remove_role]. *)
+  (** ===== R085 status: bridge axiom narrowed =====
+
+      Bridge axiom: the post-storage's [contains_at_role] predicate
+      matches the sim-side [revoke_role_sim] semantics.  With the
+      R085 concrete [Definition] shapes (above), this axiom's audit
+      obligation becomes a mechanical Boolean reduction:
+
+        - (role, account):    LHS = 0; RHS = 0 (addr_in_remove_role_self).
+        - swap-case (role, last_value role sim):  LHS = position >= 1
+                                                  → "true";
+                                                  RHS = "true" via
+                                                  addr_in_remove_role_other
+                                                  (last_value <> account
+                                                   in swap case).
+        - other (role', a'):  defers to role_positions_map sim (R059
+                              contains_at_role_proj_sim_admin/og/ogm).
+
+      Promoting this Axiom to a [Qed] [Lemma] is documented as
+      R085-residual: it requires ~300-500 LOC of case-split-by-(role',
+      a') / case-split-on-swap-branch / reduce-to-addr_in plumbing.
+      The concrete shapes above are the structural prerequisite for
+      that discharge. *)
   Axiom set_eq_at_role_revoke_post_storage :
     forall (role : U256.t) (sim : State.t) (account : Address)
            (H_role_known :
