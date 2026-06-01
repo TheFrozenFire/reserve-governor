@@ -1817,6 +1817,62 @@ the rd field into the state_base argument.
 is now ~500-1500 LOC mechanical assembly.  This is meaningful but
 bounded work.
 
+**CLOSURE 2026-06-01 (task #288, T3-finish)**: The composite-walker
+Lemma `run_fun_deprecateVersion_187_at_proj_sim` is now closed as
+a `Qed` Lemma (no longer Admitted). Discharge required ~280 LOC
+of walker assembly plus six new framework primitives in
+[AbiEncoding.v] / [FrameworkExtensions.v]:
+
+1. **`AbiEncoding.staticcall_make_state_bridge_absorbing`** —
+   Skolem-form sibling of `staticcall_make_state_bridge` (the
+   original required `k < length memory`, which doesn't hold after
+   R083-absorbed mstores write at non-32-aligned offsets like 132).
+   Companion structural axioms: `staticcall_post_memory_at_out`,
+   `staticcall_post_memory_at_other`, `staticcall_post_memory_length`.
+
+2. **`AbiEncoding.make_state_with_gas_eq`** — sibling of
+   `make_state_with_rd_eq`. Required because the `Stdlib.gas`
+   primitive decrements `State.gas` via `GetGas`'s eval_primitive,
+   producing a `<| State.gas := state.gas - 1 |>` override that
+   breaks the `make_state` shape required by the bridge. Same
+   soundness story as `make_state_with_rd_eq`: gas is a record field
+   not touched by `with_current_storage`.
+
+3. **`AbiEncoding.make_state_return_data_eq`** — `make_state`
+   preserves `State.return_data` from `state_base`. Needed to derive
+   the `H_rd` hypothesis of `run_returndatasize_at_post_bridge` after
+   absorbing the rd override into state_base.
+
+4. **`AbiEncoding.run_post_staticcall_decode_bool`** — composite
+   axiom for S12-S13 (finalize_allocation + abi_decode_tuple) at
+   the absorbing post-state. Skolemises the post-memory; the
+   audit-time obligation is that the decoded value equals the
+   staticcall's call_result.
+
+5. **`AbiEncoding.run_mapping_index_access_absorbing`** — composite
+   axiom for the two-mstore-then-keccak256_tuple2 pattern at the
+   absorbing post-state. Replaces the existing `run_mapping_index_access`
+   leaf's `exists w0 w1 rest, memory = w0 :: w1 :: rest` precondition
+   (which doesn't hold on Skolem memory).
+
+6. **`FrameworkExtensions.mload_witness_bound`** /
+   **`FrameworkExtensions.mstore_post_memory_length`** /
+   **`FrameworkExtensions.mstore_post_memory_at_far`** — bookkeeping
+   axioms about the R083 Skolem functions: post-mstore memory has
+   the same length as pre-mstore; mstore at offset O doesn't touch
+   word indices "far" from O.
+
+**Strategy**: the post-bridge state-shape (with `<| return_data := bytes |>`
+override) is folded into state_base immediately after S9 via
+`make_state_with_rd_eq`. This re-establishes `make_state` form for
+S10-S21, avoiding the need for `with_rd` companion axioms for each
+subsequent step.
+
+These six new primitives are reusable across every R050-blocked
+mutator with a staticcall + abi-prelude + abi-decode tail
+(VersionRegistry.registerVersion, RewardTokenRegistry.* — though
+registerVersion is still R050-blocked per the R058 diagnosis).
+
 ## R083: Framework extensions — ERC-7201 namespace lens + memory absorption
 
 Two upstream-framework gaps were blocking walker discharges across

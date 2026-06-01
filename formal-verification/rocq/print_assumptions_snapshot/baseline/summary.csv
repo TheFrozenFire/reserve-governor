@@ -4,8 +4,8 @@ AccessControlEnumerable.v,AccessControlEnumerableEquivalence,run_fun_getRoleMemb
 Guardian.v,GuardianEquivalence,run_hasRole_equivalent,3252,22,10,OK
 Guardian.v,GuardianEquivalence,run_grantRole_1468_observed_behavior,5554,1,1,OK
 Guardian.v,GuardianEquivalence,run_grantRole_1359_equivalent,6404,40,28,OK
-Guardian.v,GuardianEquivalence,run_revokeRole_1378_equivalent,9496,29,17,OK
-Guardian.v,GuardianEquivalence,run_cancel_equivalent_make_state,10759,17,5,OK
+Guardian.v,GuardianEquivalence,run_revokeRole_1378_equivalent,9392,32,20,OK
+Guardian.v,GuardianEquivalence,run_cancel_equivalent_make_state,10655,17,5,OK
 ProposalLib.v,ProposalLibEquivalence,run_fun__governor_679_equivalent,462,10,0,OK
 ProposalLib.v,ProposalLibEquivalence,run_fun__validateProposal_507_equivalent,1263,18,6,OK
 ProposalLib.v,ProposalLibEquivalence,run_fun__saveProposal_580_equivalent,1306,16,4,OK
@@ -52,7 +52,7 @@ TimelockControllerOptimistic.v,TimelockControllerOptimisticEquivalence,run_fun_c
 UnstakingManager.v,UnstakingManagerEquivalence,run_createLock_make_state,555,1,1,OK
 UnstakingManager.v,UnstakingManagerEquivalence,run_cancelLock_make_state,593,1,1,OK
 UnstakingManager.v,UnstakingManagerEquivalence,run_claimLock_make_state,619,1,1,OK
-VersionRegistry.v,VersionRegistryEquivalence,run_isDeprecated_equivalent_scaffold,362,19,7,OK
-VersionRegistry.v,VersionRegistryEquivalence,run_deployments_equivalent_scaffold,547,19,7,OK
-VersionRegistry.v,VersionRegistryEquivalence,run_deprecateVersion_equivalent_make_state,1700,17,5,OK
-VersionRegistry.v,VersionRegistryEquivalence,run_registerVersion_equivalent_make_state,2116,18,6,OK
+VersionRegistry.v,VersionRegistryEquivalence,run_isDeprecated_equivalent_scaffold,383,19,7,OK
+VersionRegistry.v,VersionRegistryEquivalence,run_deployments_equivalent_scaffold,568,19,7,OK
+VersionRegistry.v,VersionRegistryEquivalence,run_deprecateVersion_equivalent_make_state,1962,38,26,OK
+VersionRegistry.v,VersionRegistryEquivalence,run_registerVersion_equivalent_make_state,2378,18,6,OK

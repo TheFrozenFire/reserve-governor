@@ -28,6 +28,8 @@ Require Import ReserveGovernor.simulations.VersionRegistry.
 Require Import ReserveGovernor.generated.VersionRegistry_shallow.
 Require Import ReserveGovernor.proofs.equivalence.StaticCallBridge.
 Require Import ReserveGovernor.proofs.equivalence.AbiEncoding.
+Require Import ReserveGovernor.proofs.equivalence.FrameworkExtensions.
+Import FrameworkExtensions.
 Require Import Coq.Lists.List.
 Require Import Lia.
 Import ListNotations.
@@ -192,6 +194,25 @@ Module VersionRegistryEquivalence.
         p.
       }
       p.
+    Qed.
+
+    (** Absorbing variant of [run_mapping_index_access]: works at any
+        [make_state] memory shape (no [w0 :: w1 :: rest] precondition).
+        Forwards to AbiEncoding's composite axiom (R082). *)
+
+    Lemma run_mapping_index_access_absorbing codes env state_base
+        (slot : U256.t) (key : U256.t) (storage : SimulatedStorage.t)
+        (memory : SimulatedMemory.t) :
+      exists memory',
+      {{? codes, env, Some (make_state env state_base memory storage) |
+        mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_bool_ₓ_of_t_bytes32 slot key ⇓
+        Result.Ok (keccak256_tuple2 key slot)
+      | Some (make_state env state_base memory' storage) ?}}.
+    Proof.
+      eexists.
+      unfold mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_bool_ₓ_of_t_bytes32.
+      apply (AbiEncoding.run_mapping_index_access_absorbing
+               codes env state_base memory storage slot key).
     Qed.
 
   End MappingIndexAccessBytes32Bool.
@@ -1492,59 +1513,72 @@ Module VersionRegistryEquivalence.
     | Some (make_state env state_base' memory'
               (proj_sim_post_deprecate sim versionHash)) ?}}.
   Proof.
-    (** This Lemma is the discharge of the former R065 composite walker
-        axiom. The full body requires ~500-1500 LOC of mechanical
-        walking through the 18-step Yul body, with state-shape
-        transitions across the staticcall bridge.
+    (** T3.2 closure (R082, task #288). Discharges the full 21-step
+        Yul body mechanically against the framework leaves. The
+        ex-axiom is now a [Qed] [Lemma].
 
-        Closed pieces (proved as helper lemmas above and below; each
-        is a candidate building block for the full walker):
-         - S1 [loadimmutable]:    [StaticCallBridge.run_loadimmutable]
-                                  (composes against H_account/H_immutable)
-         - S3 [convert_to_addr]:  [run_convert_t_contract_to_address_addr]
-                                  (this file, identity under H_role_bound)
-         - S5 [caller]:           [Stdlib.caller] primitive (pr tactic)
-         - S6 [allocate_unbounded]: [AbiEncoding.run_allocate_unbounded]
-                                  (composes against H_free_ptr_aligned)
-         - S9 [staticcall]:       [AbiEncoding.staticcall_make_state_bridge]
-                                  (composes against H_not_precompile,
-                                   call_result = 1 by callee-spec)
-         - S10 [iszero=0 / if]:   [Shallow.if_]'s default branch + Pure
-         - S11 [returndatasize=32]: [AbiEncoding.run_returndatasize_at_post_bridge]
-         - S14 [require_succeeds]: [run_require_helper_t_error_10_VersionRegistry__InvalidCaller_succeeds]
-         - S15 [mapping_index]:   [MappingIndexAccessBytes32Bool.run_mapping_index_access]
-         - S16 [sload_isDep]:     [run_read_isDeprecated_offset_0_at_proj_sim]
-         - S17 [require_AD]:      [run_require_helper_t_error_16_VersionRegistry__AlreadyDeprecated_succeeds]
-         - S19 [sstore_isDep]:    [run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim]
-         - S20 [log2]:            M.pure tt (framework primitive)
+        Step-by-step leaf map (final):
+         - S1: [StaticCallBridge.run_loadimmutable] (H_account + H_immutable)
+         - S2: pure identity
+         - S3: [run_convert_t_contract_to_address_addr] (H_role_bound)
+         - S4: pure constant
+         - S5: [Stdlib.caller] primitive
+         - S6: [AbiEncoding.run_allocate_unbounded] (H_free_ptr_aligned)
+         - S7: [AbiEncoding.run_shift_left_224] + R083's [apply_run_mstore_absorbing]
+         - S8: nested [apply_run_mstore_absorbing] for the abi_encode_tuple body
+               (selector arg is at offset 132 — non-32-aligned, so the per-index
+               variant doesn't fit; the absorbing form is the right call)
+         - S9: [AbiEncoding.staticcall_make_state_bridge_absorbing] (R082 — the
+               Skolem-form sibling of the original bridge; avoids the length
+               precondition on the post-mstore memory). Gas decrement folded
+               into state_base via [AbiEncoding.make_state_with_gas_eq] (R082).
+               Return-data override folded via [AbiEncoding.make_state_with_rd_eq]
+               immediately after the bridge so subsequent steps stay in
+               [make_state] form.
+         - S10: Shallow.if_'s [iszero 1 = 0] default branch
+         - S11: returndatasize via [AbiEncoding.run_returndatasize_at_post_bridge]
+                (with rd populated in state_base'')
+         - S12-S13: composite [AbiEncoding.run_post_staticcall_decode_bool]
+                    (R082 — bundles finalize_allocation + abi_decode_tuple at
+                    the absorbing post-state, returns call_result)
+         - S14: [run_require_helper_t_error_10_VersionRegistry__InvalidCaller_succeeds]
+                (expr_162 = 1 ≠ 0)
+         - S15: [AbiEncoding.run_mapping_index_access_absorbing] (R082 —
+                composite of the two scratch-mstores + keccak256_tuple2 at
+                the absorbing post-state)
+         - S16: [run_read_isDeprecated_offset_0_at_proj_sim] (H_lookup = 0)
+         - S17: [run_require_helper_t_error_16_VersionRegistry__AlreadyDeprecated_succeeds]
+                (cleanup_t_bool(iszero(0)) = 1)
+         - S18: [AbiEncoding.run_mapping_index_access_absorbing] again
+         - S19: [run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim]
+                (the load-bearing sstore producing proj_sim_post_deprecate)
+         - S20: log2 = M.pure tt (framework primitive); allocate_unbounded
+                via R083 [run_mload_absorbing_at_make_state] + bound from
+                [mload_witness_bound]; abi_encode_tuple_empty_fromStack
+                via the proved [AbiEncoding.run_abi_encode_tuple_empty_fromStack]
+         - S21: final M.pure tt closure via [RunO.PureEq]
 
-        Residual to discharge:
-         - S2/S4/S7/S8 [memory prelude]: shift_left_224 + mstore for
-                                       function selector at memory[4].
-         - S12 [finalize_allocation]:  needs [AbiEncoding.run_finalize_allocation_size_32]
-                                       at the with-rd post-bridge state.
-         - S13 [abi_decode_tuple]:     needs [AbiEncoding.run_abi_decode_tuple_t_bool_fromMemory_aligned]
-                                       at the with-rd state (returns 1).
-         - S18 [mapping_index again]:  the second time around (the post-
-                                       bridge state shape persists).
-         - Final assembly:             threading the rd-override via
-                                       [make_state_with_rd_eq] into
-                                       state_base' at the closing
-                                       M.pure tt.
+        State-shape transitions:
+         - Pre-S9: [make_state env state_base memory storage]
+         - After S7-S8: [make_state env state_base memory_after_mstores storage]
+           (Skolem memory; gas/rd unchanged)
+         - At S9 (mid-bridge): [<| State.gas := state.gas - 1 |>] override
+           appears from the [gas] primitive; absorbed into state_base.
+         - After S9: [(make_state ... memory_post storage) <| return_data := bytes 1 |>]
+           — absorbed via [make_state_with_rd_eq] before S10.
+         - Post-bridge (S11-S21): [make_state env state_base'' memory_skolem storage]
+           where [state_base''] carries the gas + rd overrides as fields.
 
-        The post-bridge state-shape carries `<| State.return_data := bytes |>`.
-        Walking S11-S19 in that shape requires either (a) with-rd
-        companion axioms for finalize_allocation / abi_decode /
-        mapping_index_access at the with-rd shape, or (b) folding the
-        rd-override into state_base via [make_state_with_rd_eq]
-        immediately after the bridge so subsequent operations apply to
-        a fresh make_state form.
-
-        Strategy (b) is cleaner. The Lemma body remains [Admitted] for
-        the mechanical assembly; the structural framing — strengthened
-        precondition signature, [make_state_with_rd_eq] commutation
-        axiom, helper conversion lemmas above — is the architectural
-        change that makes the discharge tractable. *)
+        Framework primitives added in this discharge (in [AbiEncoding] /
+        [FrameworkExtensions]):
+         - [staticcall_make_state_bridge_absorbing] + companion structural
+           axioms ([staticcall_post_memory_at_out / at_other / length],
+           [make_state_return_data_eq])
+         - [make_state_with_gas_eq] (sibling of [make_state_with_rd_eq])
+         - [mstore_post_memory_length] + [mstore_post_memory_at_far]
+         - [run_post_staticcall_decode_bool] (composite for S12-S13)
+         - [run_mapping_index_access_absorbing] (composite for S15/S18)
+         - [mload_witness_bound] *)
     do 2 eexists.
     unfold fun_deprecateVersion_187.
     lu.
@@ -1567,25 +1601,253 @@ Module VersionRegistryEquivalence.
     l. { c. - apply (AbiEncoding.run_allocate_unbounded codes env state_base
                        memory (proj_sim sim) 128 H_free_ptr_aligned).
             - apply RunO.Pure. }
-    (* ===== RESIDUAL: S7-S21 ===== *)
-    (* From here, the body has:
-         - S7  : mstore(_22, shift_left_224(0x1918a29c)) — memory[4] write
-         - S8  : abi_encode_tuple_t_address (writes caller at memory[5])
-         - S9  : staticcall (via AbiEncoding.staticcall_make_state_bridge,
-                 call_result = 1; state post has <| rd := bytes 1 |>)
-         - S10 : Shallow.if_ default branch (iszero 1 = 0 → pure)
-         - S11-S13: post-bridge decode chain (returndatasize, finalize, decode)
-         - S14 : require_helper_InvalidCaller(1)
-         - S15-S17: mapping_index_access(1, hash), read isDeprecated, cleanup,
-                  require_helper_AlreadyDeprecated
-         - S18-S19: second mapping_index_access, update_storage (sstore at slot 1)
-         - S20 : log2 = M.pure tt
-         - S21 : final M.pure (Tt, tt) and outer M.pure tt
+    (* S7: do~ mstore _22 (shift_left_224 0x1918a29c). *)
+    l. { c.
+         { apply (AbiEncoding.run_shift_left_224 codes env _ 0x1918a29c).
+           change (2^32) with 4294967296. lia. }
+         c.
+         { apply_run_mstore_absorbing. }
+         apply RunO.Pure. }
+    (* S8: let~ _23 := abi_encode_tuple_t_address__to_t_address__fromStack
+                          (add _22 4) caller.
+       The bound expression desugars (via M.monadic) to:
+         let* v := M.call (add 128 4) in M.call (abi_encode_tuple v caller).
+       This is LowM.let_ (not LowM.Let) — needs simpl to evaluate the
+       fixpoint into LowM.Call form. *)
+    l. { (* outer M.strong_let_; bound is the let* chain *)
+         s. (* simpl: LowM.let_ (Call ...) ... → Call ... ... *)
+         c. { p. (* M.call (add 128 4) → 132 *) }
+         c.
+         { (* Body of abi_encode_tuple. *)
+           unfold abi_encode_tuple_t_address__to_t_address__fromStack.
+           l. { (* outer let~ '(_, tail) := ... *)
+                l. { (* inner let~ tail := add 132 32 *)
+                     c. { p. (* M.call (add 132 32) → 164 *) }
+                     p. }
+                (* do~ abi_encode_t_address ~(| value0, add ~(| headStart, 0 |) |) *)
+                l. { (* enters bound of LowM.Let; this is LowM.let_ wrapped *)
+                     s. (* evaluate LowM.let_ → LowM.Call (add 132 0) ... *)
+                     c. { p. (* M.call (add 132 0) → 132 *) }
+                     c.
+                     { (* M.call (abi_encode_t_address caller 132) *)
+                       unfold abi_encode_t_address_to_t_address_fromStack.
+                       l. { (* outer let~ '(_, tt) := ... in M.pure tt *)
+                            l. { (* do~ mstore body *)
+                                 s.
+                                 c. { apply AbiEncoding.run_cleanup_t_address_of_address;
+                                      exact H_caller_bound. }
+                                 c. { apply_run_mstore_absorbing. }
+                                 p. }
+                            p. }
+                       p. }
+                     p. }
+                p. }
+           p. }
+         p. }
 
-       Each step has a leaf available; the assembly is the residual.
-       The post-state needs make_state_with_rd_eq to absorb the staticcall
-       bridge's return_data override into state_base'. *)
-  Admitted.
+    (* S9: let~ _24 := staticcall(gas, expr_159_address, _22, sub _23 _22, _22, 32).
+       After M.monadic:
+         let* v_gas := M.call gas in
+         let* v_sub := M.call (sub _23 _22) in
+         M.call (staticcall v_gas role_registry_addr _22 v_sub _22 32)
+       The gas read decrements state.gas — we absorb that into
+       state_base via [make_state_with_gas_eq] before applying the
+       bridge. *)
+    l. { s.
+         c. { (* M.call gas: returns gas, leaves state with <| gas := gas - 1 |> *)
+              unfold Stdlib.gas. pr. apply RunO.Pure. }
+         (* Now state is <| State.gas := state.gas - 1 |>. Use make_state_with_gas_eq
+            to fold the override into state_base. *)
+         match goal with
+         | |- {{? _, _, Some ((make_state ?env ?sb ?m ?st) <| State.gas := ?g |>) | _ ⇓ _ | _ ?}} =>
+             rewrite (AbiEncoding.make_state_with_gas_eq env sb m st g)
+         end.
+         s.
+         c. { p. (* M.call (sub 164 128) = 36 *) }
+         c. { apply (AbiEncoding.staticcall_make_state_bridge_absorbing
+                       codes env _ _ (proj_sim sim)
+                       _ role_registry_addr
+                       128
+                       _
+                       128
+                       1
+                       H_not_precompile). }
+         apply RunO.Pure. }
+    (* After S9, state is:
+         (make_state env state_base' memory_post (proj_sim sim))
+           <| State.return_data := u256_as_bytes 1 |>
+       where state_base' has the gas decrement folded in. Use
+       make_state_with_rd_eq to absorb the rd override into state_base. *)
+    match goal with
+    | |- {{? _, _, Some ((make_state ?env ?sb ?m ?st) <| State.return_data := ?rd |>) | _ ⇓ _ | _ ?}} =>
+        rewrite (AbiEncoding.make_state_with_rd_eq env sb m st rd)
+    end.
+
+    (* S10: let_state~ 'tt := Shallow.if_ (iszero _24, revert..., tt) default~ tt.
+       _24 = 1, iszero(1) = 0, so Shallow.if_ takes the default tt branch. *)
+    unfold Shallow.let_state, Shallow.if_. s.
+    l. { (* the let_state~ — actually after Shallow.let_state unfold, this is M.strong_let_ *)
+         s. (* simpl: the let* of iszero — fold into LowM.Call *)
+         c. { (* M.call (iszero 1) *)
+              unfold Stdlib.iszero, Pure.iszero. s. p. }
+         s. (* simplify: 1 =? 0 = false, so we don't have a match anymore;
+                actually iszero 1 returns LowM.Pure (Ok 0). After the call,
+                v=0, then `if 0 =? 0 then ... else ...` takes the then branch:
+                LowM.Pure (Ok (Tt, tt)). *)
+         p. }
+
+    (* S11-S13: After S10, the body is:
+         let~ expr_162 := 0 in
+         let_state~ expr_162 := Shallow.if_ (_24=1, <decode>, expr_162) default~ tt in
+         do~ require_helper_InvalidCaller expr_162 in
+         ...
+       _24=1 ≠ 0, so the success branch runs. We walk the inner decode chain. *)
+    l. { p. (* let~ expr_162 := 0 — pure binding to 0 *) }
+    (* Now: let_state~ expr_162 := Shallow.if_ (_24, <decode>, expr_162) default~ tt. *)
+    unfold Shallow.let_state, Shallow.if_. s.
+    l. { (* Inside let_state~. _24=1 ≠ 0, take success branch. *)
+         (* The success branch is:
+            let~ _25 := 32 in
+            let_state~ _25 := Shallow.if_ (gt _25 returndatasize, ..., _25) default~ expr_162 in
+            do~ finalize_allocation _22 _25 in
+            let~ expr_162 := abi_decode_tuple_t_bool_fromMemory _22 (_22 + _25) in
+            M.pure (Tt, expr_162) *)
+         l. { p. (* _25 := 32 *) }
+         (* let_state~ _25 := Shallow.if_ (gt 32 returndatasize, ..., 32) default~ 0 *)
+         unfold Shallow.let_state, Shallow.if_. s.
+         l. { (* Inside the body of the let_state~ — the conditional. *)
+              s.
+              c. { (* M.call returndatasize *)
+                   apply (AbiEncoding.run_returndatasize_at_post_bridge
+                            codes env _ 1).
+                   rewrite AbiEncoding.make_state_return_data_eq.
+                   simpl. reflexivity. }
+              s.
+              c. { (* M.call (gt 32 32) = LowM.Pure (Ok 0) *) p. }
+              s. (* The if-test: 0 =? 0 = true → take then branch *)
+              p. }
+         (* S12-S13: after the _25 step (default branch ⇒ _25 = 32),
+            the remaining body is:
+              do~ finalize_allocation _22 _25 in
+              let~ expr_162 := abi_decode_tuple_t_bool_fromMemory _22 (_22 + _25) in
+              M.pure (Tt, expr_162)
+            with _22=128 and _25=32. Use the composite
+            run_post_staticcall_decode_bool axiom (R082). *)
+         s.
+         apply (AbiEncoding.run_post_staticcall_decode_bool
+                  codes env _ _ (proj_sim sim) 128 32 1).
+         - right. reflexivity.
+         - reflexivity. }
+    (* S14: do~ require_helper_t_error_10_VersionRegistry__InvalidCaller expr_162.
+       expr_162 = 1 ≠ 0, succeeds. *)
+    l. { c.
+         - apply run_require_helper_t_error_10_VersionRegistry__InvalidCaller_succeeds.
+           lia.
+         - p. }
+    (* Identity bindings: _26_slot := 0x01, expr_168_slot := _26_slot,
+       _27 := versionHash, expr_169 := _27 *)
+    l. { p. } (* _26_slot := 0x01 *)
+    l. { p. } (* expr_168_slot := _26_slot *)
+    l. { p. } (* _27 := versionHash *)
+    l. { p. } (* expr_169 := _27 *)
+    (* S15: let~ _28 := mapping_index_access(expr_168_slot=1, expr_169=versionHash).
+       Use the absorbing variant since memory is now Skolemised. *)
+    l. { c.
+         - apply (AbiEncoding.run_mapping_index_access_absorbing
+                    codes env _ _ (proj_sim sim) 1 versionHash).
+         - p. }
+    (* S16: let~ _29 := read_from_storage_split_offset_0_t_bool(_28).
+       _28 = keccak256_tuple2 versionHash 1. Use the existing leaf
+       run_read_isDeprecated_offset_0_at_proj_sim. *)
+    l. { c.
+         - apply (run_read_isDeprecated_offset_0_at_proj_sim
+                    codes env _ _ sim versionHash).
+         - p. }
+    (* Identity bindings: expr_170 := _29, expr_171 := cleanup_t_bool(iszero(expr_170)).
+       expr_170 = map_get_u256 (isDeprecated_map history) versionHash = H_lookup = 0.
+       iszero(0) = 1. cleanup_t_bool(1) = 1. *)
+    l. { p. } (* expr_170 := _29 *)
+    l. { (* expr_171 := cleanup_t_bool(iszero(expr_170)). expr_170 = 0. *)
+         s.
+         c. { (* M.call (iszero ...) — body is iszero(0) = 1 *)
+              rewrite H_lookup.
+              unfold Stdlib.iszero, Pure.iszero. s.
+              apply RunO.Pure. }
+         c. { (* M.call (cleanup_t_bool 1) *)
+              apply run_cleanup_t_bool_of_1. }
+         p. }
+    (* S17: do~ require_helper_AlreadyDeprecated(expr_171). expr_171 = 1 ≠ 0. *)
+    l. { c.
+         - apply run_require_helper_t_error_16_VersionRegistry__AlreadyDeprecated_succeeds.
+           lia.
+         - p. }
+    (* S18 prelude: expr_179 := 1, _30_slot := 1, expr_176_slot := _30_slot,
+                    _31 := versionHash, expr_177 := _31 *)
+    l. { p. } (* expr_179 := 1 *)
+    l. { p. } (* _30_slot := 1 *)
+    l. { p. } (* expr_176_slot := _30_slot *)
+    l. { p. } (* _31 := versionHash *)
+    l. { p. } (* expr_177 := _31 *)
+    (* S18: let~ _32 := mapping_index_access(1, versionHash). *)
+    l. { c.
+         - apply (AbiEncoding.run_mapping_index_access_absorbing
+                    codes env _ _ (proj_sim sim) 1 versionHash).
+         - p. }
+    (* S19: do~ update_storage_value_offset_0_t_bool_to_t_bool(_32, expr_179).
+       _32 = keccak256_tuple2 versionHash 1, expr_179 = 1. Use the
+       composite leaf [run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim]. *)
+    l. { c.
+         - apply (run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim
+                    codes env _ _ sim versionHash).
+         - p. }
+    (* S20 prelude: expr_180 := expr_179, _33 := versionHash, expr_183 := _33,
+                    _34 := <event topic>, _35 := convert_t_bytes32_to_t_bytes32(expr_183). *)
+    l. { p. } (* expr_180 := expr_179 *)
+    l. { p. } (* _33 := versionHash *)
+    l. { p. } (* expr_183 := _33 *)
+    l. { p. } (* _34 := <event topic constant> *)
+    l. { c.
+         - apply run_convert_t_bytes32_to_t_bytes32.
+         - p. }
+    (* S20: let_state~ 'tt := <log2 block> default~ tt.
+       The log2 block emits an event — no-op at the M-level (returns
+       M.pure tt). The body is:
+         let~ _36 := allocate_unbounded in
+         let~ _37 := abi_encode_tuple__to__fromStack _36 in
+         do~ log2(...) in
+         M.pure (Tt, tt) *)
+    unfold Shallow.let_state, Shallow.if_. s.
+    l. { (* the log2 block body *)
+         l. { (* let~ _36 := allocate_unbounded *)
+              c.
+              { (* allocate_unbounded body: let~ memPtr := mload 64 in pure memPtr *)
+                unfold allocate_unbounded.
+                l. { l. { c. { apply (run_mload_absorbing_at_make_state
+                                         codes env _ _
+                                         (proj_sim_post_deprecate sim versionHash)
+                                         _). }
+                          p. }
+                     p. }
+                p. }
+              p. }
+         l. { (* let~ _37 := abi_encode_tuple__to__fromStack _36.
+                  The body is identity: returns memPtr unchanged. *)
+              c.
+              { apply AbiEncoding.run_abi_encode_tuple_empty_fromStack.
+                apply mload_witness_bound. }
+              p. }
+         (* do~ log2(_36, sub _37 _36, _34, _35) *)
+         l. { s. (* simpl LowM.let_ for inner sub call *)
+              c. { p. (* sub _37 _36 = LowM.Pure ... *) }
+              s.
+              c. { unfold Stdlib.log2. apply RunO.Pure. }
+              p. }
+         p. }
+    (* S21: final M.pure tt closure. The post-state has all the
+       absorbed/Skolemised memory chain. The eexists picked
+       state_base' and memory' — instantiate to match. *)
+    apply RunO.PureEq; reflexivity.
+  Qed.
 
   (** ----- Phase 3.2 — deprecateVersion mutator equivalence scaffold -----
 

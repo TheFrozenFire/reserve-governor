@@ -1,87 +1,182 @@
 # Theorem: VersionRegistryEquivalence.run_deprecateVersion_equivalent_make_state
-# Source:  VersionRegistry.v:1700
+# Source:  VersionRegistry.v:1962
 # Module:  VersionRegistryEquivalence
 #
 Axioms:
+RocqOfSolidity.CanonizeState.with_current_storage_twice_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (storage1 storage2 : RocqOfSolidity.Storage.t),
+  RocqOfSolidity.State.with_current_storage environment
+    (RocqOfSolidity.State.with_current_storage environment state storage1)
+    storage2 =
+  RocqOfSolidity.State.with_current_storage environment state storage2
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-VersionRegistryEquivalence.run_fun_deprecateVersion_187_at_proj_sim :
+AbiEncoding.AbiEncoding.staticcall_post_memory :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedMemory.t
+AbiEncoding.AbiEncoding.staticcall_make_state_bridge_absorbing :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
-    (sim : VersionRegistry.VersionRegistry.State.t)
     (memory : RocqOfSolidity.SimulatedMemory.t)
-    (versionHash role_registry_addr : RocqOfSolidity.U256.t)
-    (account : RocqOfSolidity.Account.t),
-  VersionRegistry.VersionRegistry.is_owner_or_emergency
-    env.(RocqOfSolidity.Environment.caller) = true ->
-  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
-  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
-    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (g addr in_ insize out call_result : RocqOfSolidity.U256.t),
+  RocqOfSolidity.Stdlib.precompile_output addr nil = None ->
+  let state_post :=
+    RecordUpdate.set RocqOfSolidity.State.return_data
+      (RocqOfSolidity.Memory.u256_as_bytes call_result)
+      (RocqOfSolidity.make_state env state_base
+         (AbiEncoding.AbiEncoding.staticcall_post_memory env state_base
+            memory storage out call_result) storage) in
+  RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok call_result)
+    (Some (RocqOfSolidity.make_state env state_base memory storage))
+    (RocqOfSolidity.Stdlib.staticcall g addr in_ insize out
        (BinNums.Zpos
           (BinNums.xO
+             (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))))
+    (Some state_post)
+RocqOfSolidity.Storage.run_sstore_map_u256 :
+  forall (values : list RocqOfSolidity.StorableValue.t) 
+    (index : nat) (key value : RocqOfSolidity.U256.t)
+    (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t),
+  RocqOfSolidity.State.get_current_storage environment state =
+  Some (RocqOfSolidity.Storage.of_storable_values values) ->
+  match List.nth_error values index with
+  | Some (RocqOfSolidity.StorableValue.Map map) =>
+      let map' := RocqOfSolidity.Dict.declare_or_assign map key value in
+      match
+        RocqOfSolidity.List.update_nth values index
+          (RocqOfSolidity.StorableValue.Map map')
+      with
+      | Some values' =>
+          let state' :=
+            RocqOfSolidity.State.with_current_storage environment state
+              (RocqOfSolidity.Storage.of_storable_values values') in
+          RocqOfSolidity.RunO.t codes environment
+            (RocqOfSolidity.Result.Ok tt) (Some state)
+            (RocqOfSolidity.Stdlib.sstore
+               (RocqOfSolidity.keccak256_tuple2 key (BinInt.Z.of_nat index))
+               value) (Some state')
+      | None => True
+      end
+  | _ => True
+  end
+RocqOfSolidity.Storage.run_sload_map_u256 :
+  forall (values : list RocqOfSolidity.StorableValue.t) 
+    (index : nat)
+    (map : RocqOfSolidity.Dict.t RocqOfSolidity.U256.t RocqOfSolidity.U256.t)
+    (key : RocqOfSolidity.U256.t) (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : option RocqOfSolidity.State.t),
+  List.nth_error values index = Some (RocqOfSolidity.StorableValue.Map map) ->
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok
+       (RocqOfSolidity.StorableValue.map_get_u256 map key)) state
+    (RocqOfSolidity.Stdlib.sload
+       (RocqOfSolidity.keccak256_tuple2 key (BinInt.Z.of_nat index))) state
+AbiEncoding.AbiEncoding.run_post_staticcall_decode_bool :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (memPtr size call_result : RocqOfSolidity.U256.t),
+  call_result = BinNums.Z0 \/ call_result = BinNums.Zpos BinNums.xH ->
+  size =
+  BinNums.Zpos
+    (BinNums.xO
+       (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))) ->
+  let body :=
+    RocqOfSolidity.M.strong_let_
+      (RocqOfSolidity.M.call
+         (VersionRegistry_shallow.ReserveOptimisticGovernanceVersionRegistry_271.ReserveOptimisticGovernanceVersionRegistry_271_deployed.finalize_allocation
+            memPtr size))
+      (fun _ : unit =>
+       RocqOfSolidity.M.strong_let_
+         (RocqOfSolidity.M.let_
+            (RocqOfSolidity.M.call (RocqOfSolidity.Stdlib.add memPtr size))
+            (fun v : RocqOfSolidity.U256.t =>
+             RocqOfSolidity.M.call
+               (VersionRegistry_shallow.ReserveOptimisticGovernanceVersionRegistry_271.ReserveOptimisticGovernanceVersionRegistry_271_deployed.abi_decode_tuple_t_bool_fromMemory
+                  memPtr v)))
+         (fun expr_162 : RocqOfSolidity.U256.t =>
+          RocqOfSolidity.LowM.Pure
+            (RocqOfSolidity.Result.Ok (RocqOfSolidity.BlockUnit.Tt, expr_162))))
+    in
+  RocqOfSolidity.RunO.t codes env
+    (RocqOfSolidity.Result.Ok (RocqOfSolidity.BlockUnit.Tt, call_result))
+    (Some (RocqOfSolidity.make_state env state_base memory storage)) body
+    (Some
+       (RocqOfSolidity.make_state env state_base
+          (AbiEncoding.AbiEncoding.post_staticcall_decode_post_memory env
+             state_base memory storage memPtr call_result) storage))
+FrameworkExtensions.FrameworkExtensions.run_mstore_absorbing_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (offset value : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok tt)
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+    (RocqOfSolidity.Stdlib.mstore offset value)
+    (Some
+       (RocqOfSolidity.make_state environment state_base
+          (FrameworkExtensions.FrameworkExtensions.mstore_post_memory
+             environment state_base memory storage offset value) storage))
+FrameworkExtensions.FrameworkExtensions.run_mload_absorbing_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (offset : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok
+       (FrameworkExtensions.FrameworkExtensions.mload_witness environment
+          state_base memory storage offset))
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+    (RocqOfSolidity.Stdlib.mload offset)
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+RocqOfSolidity.Memory.run_mload :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t) (words : list RocqOfSolidity.U256.t)
+    (index : nat) (word : RocqOfSolidity.U256.t),
+  List.nth_error words index = Some word ->
+  state.(RocqOfSolidity.State.memory) =
+  RocqOfSolidity.Memory.of_u256_list words ->
+  RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok word)
+    (Some state)
+    (RocqOfSolidity.Stdlib.mload
+       (BinInt.Z.mul
+          (BinNums.Zpos
              (BinNums.xO
-                (BinNums.xO
-                   (BinNums.xO
-                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
-  RocqOfSolidity.StorableValue.map_get_u256
-    (VersionRegistryEquivalence.isDeprecated_map
-       sim.(VersionRegistry.VersionRegistry.State.history)) versionHash =
-  BinNums.Z0 ->
-  RocqOfSolidity.Dict.get
-    (RocqOfSolidity.make_state env state_base memory
-       (VersionRegistryEquivalence.proj_sim sim))
-    .(RocqOfSolidity.State.accounts) env.(RocqOfSolidity.Environment.address) =
-  Some account ->
-  RocqOfSolidity.Dict.get account.(RocqOfSolidity.Account.immutables)
-    (BinNums.Zpos
-       (BinNums.xO
-          (BinNums.xO
-             (BinNums.xO
-                (BinNums.xO
-                   (BinNums.xO
-                      (BinNums.xO
-                         (BinNums.xO
-                            (BinNums.xO
-                               (BinNums.xO
-                                  (BinNums.xO
-                                     (BinNums.xO
-                                        (BinNums.xO
-                                           (BinNums.xO
-                                              (BinNums.xO
-                                                 (BinNums.xO
-                                                 (BinNums.xO
-                                                 (BinNums.xO (...))))))))))))))))))) =
-  Some role_registry_addr ->
-  RocqOfSolidity.Stdlib.precompile_output role_registry_addr nil = None ->
-  BinInt.Z.le BinNums.Z0 role_registry_addr /\
-  BinInt.Z.lt role_registry_addr
-    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
-       (BinNums.Zpos
-          (BinNums.xO
-             (BinNums.xO
-                (BinNums.xO
-                   (BinNums.xO
-                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
-  List.nth_error memory 2 =
-  Some
-    (BinNums.Zpos
-       (BinNums.xO
-          (BinNums.xO
-             (BinNums.xO
-                (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))))) ->
-  5 < length memory ->
-  exists
-    (state_base' : RocqOfSolidity.State.t) (memory' : RocqOfSolidity.SimulatedMemory.t),
-    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
-      (Some
-         (RocqOfSolidity.make_state env state_base memory
-            (VersionRegistryEquivalence.proj_sim sim)))
-      (VersionRegistry_shallow.ReserveOptimisticGovernanceVersionRegistry_271.ReserveOptimisticGovernanceVersionRegistry_271_deployed.fun_deprecateVersion_187
-         versionHash)
-      (Some
-         (RocqOfSolidity.make_state env state_base' memory'
-            (VersionRegistryEquivalence.proj_sim_post_deprecate sim
-               versionHash)))
+                (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))
+          (BinInt.Z.of_nat index))) (Some state)
+AbiEncoding.AbiEncoding.run_mapping_index_access_absorbing :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (slot key : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes env
+    (RocqOfSolidity.Result.Ok (RocqOfSolidity.keccak256_tuple2 key slot))
+    (Some (RocqOfSolidity.make_state env state_base memory storage))
+    (VersionRegistry_shallow.ReserveOptimisticGovernanceVersionRegistry_271.ReserveOptimisticGovernanceVersionRegistry_271_deployed.mapping_index_access_t_mappingₓ_t_bytes32_ₓ_t_bool_ₓ_of_t_bytes32
+       slot key)
+    (Some
+       (RocqOfSolidity.make_state env state_base
+          (AbiEncoding.AbiEncoding.mapping_index_access_post_memory env
+             state_base memory storage key slot) storage))
 VersionRegistryEquivalence.proj_sim_deprecate_at_observes :
   forall (sim : VersionRegistry.VersionRegistry.State.t) 
     (i : nat) (e : VersionRegistry.VersionRegistry.VersionEntry.t),
@@ -94,16 +189,94 @@ VersionRegistryEquivalence.proj_sim_deprecate_at_observes :
        (VersionRegistry.VersionRegistry.deprecate_at sim i))
     (VersionRegistryEquivalence.proj_sim_post_deprecate sim
        e.(VersionRegistry.VersionRegistry.VersionEntry.versionHash))
+AbiEncoding.AbiEncoding.post_staticcall_decode_post_memory :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedMemory.t
 RocqOfSolidity.Memory.of_u256_list :
   list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
 RocqOfSolidity.Storage.of_storable_values :
   list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+FrameworkExtensions.FrameworkExtensions.mstore_post_memory :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedMemory.t
+FrameworkExtensions.FrameworkExtensions.mload_witness_bound :
+  forall (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (offset : RocqOfSolidity.U256.t),
+  BinInt.Z.le BinNums.Z0
+    (FrameworkExtensions.FrameworkExtensions.mload_witness env state_base
+       memory storage offset) /\
+  BinInt.Z.lt
+    (FrameworkExtensions.FrameworkExtensions.mload_witness env state_base
+       memory storage offset)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))))))
+FrameworkExtensions.FrameworkExtensions.mload_witness :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
+AbiEncoding.AbiEncoding.mapping_index_access_post_memory :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedMemory.t
+AbiEncoding.AbiEncoding.make_state_with_rd_eq :
+  forall (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t) 
+    (rd : list BinNums.Z),
+  RecordUpdate.set RocqOfSolidity.State.return_data rd
+    (RocqOfSolidity.make_state env state_base memory storage) =
+  RocqOfSolidity.make_state env
+    (RecordUpdate.set RocqOfSolidity.State.return_data rd state_base) memory
+    storage
+AbiEncoding.AbiEncoding.make_state_with_gas_eq :
+  forall (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t) 
+    (g : RocqOfSolidity.U256.t),
+  RecordUpdate.set RocqOfSolidity.State.gas g
+    (RocqOfSolidity.make_state env state_base memory storage) =
+  RocqOfSolidity.make_state env
+    (RecordUpdate.set RocqOfSolidity.State.gas g state_base) memory storage
+AbiEncoding.AbiEncoding.make_state_return_data_eq :
+  forall (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t),
+  (RocqOfSolidity.make_state env state_base memory storage)
+  .(RocqOfSolidity.State.return_data) =
+  state_base.(RocqOfSolidity.State.return_data)
 PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
 PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+RocqOfSolidity.keccak256_tuple2 :
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
 VersionRegistry.VersionRegistry.is_owner_or_emergency :
   VersionRegistry.VersionRegistry.Address -> bool
 VersionRegistryEquivalence.isDeprecated_map_get_at_hash_of_entry :
@@ -120,6 +293,33 @@ VersionRegistryEquivalence.isDeprecated_map_get_at_hash_of_entry :
    then BinNums.Zpos BinNums.xH
    else BinNums.Z0)
 PrimInt63.int : Set
+RocqOfSolidity.Address.implies_and_mask :
+  forall address : RocqOfSolidity.Address.t,
+  RocqOfSolidity.Address.Valid.t address ->
+  address =
+  BinInt.Z.land address
+    (BinInt.Z.sub
+       (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+          (BinNums.Zpos
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH)))))))))
+       (BinNums.Zpos BinNums.xH))
+RocqOfSolidity.get_memory_make_state_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t),
+  (RocqOfSolidity.make_state environment state memory storage)
+  .(RocqOfSolidity.State.memory) = RocqOfSolidity.Memory.of_u256_list memory
+RocqOfSolidity.State.get_current_storage_with_current_storage_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t) (storage : RocqOfSolidity.Storage.t),
+  RocqOfSolidity.State.get_current_storage environment
+    (RocqOfSolidity.State.with_current_storage environment state storage) =
+  Some storage
 PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
 PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 VersionRegistry.VersionRegistry.Version : Set
