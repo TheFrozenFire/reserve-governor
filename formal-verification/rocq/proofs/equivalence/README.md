@@ -55,53 +55,55 @@ loads simulations and proofs unconditionally; equivalence
 files are listed in a tier below them and are skipped in clean
 checkouts that haven't run the regen step.
 
-## Target ordering
+## Status (current)
 
-The realistic order — smallest substantive contracts first —
-is:
+Every contract listed in `notes/equivalence_phase4_decision.md` is a
+work target. The heavyweights (StakingVault, ReserveOptimisticGovernor,
+ProposalLib, OptimisticSelectorRegistry, TimelockControllerOptimistic)
+are in scope alongside the smaller contracts.
 
-1. **ThrottleLib** (~90 KB of generated IR) — pure arithmetic,
-   single mutating operation, ideal proof-of-method target.
-2. **UnstakingManager** (~280 KB) — per-lock state machine
-   with three operations.
-3. **VersionRegistry**, **RewardTokenRegistry** (~260 KB each)
-   — owner-gated registries with simple invariants.
-4. **Guardian** (~740 KB) — two-tier cancellation auth.
+Per-file status:
 
-The heavyweight contracts (StakingVault, ReserveOptimisticGovernor,
-ProposalLib, OptimisticSelectorRegistry) inline substantial
-OpenZeppelin machinery and would each be a multi-week proof
-engineering effort. They stay parked until the methodology is
-established on the small targets.
+- **Closed (per-mutator Qeds via composite-walker-axiom + R055/R059/R067/R069/R070/R071/R095/R103):**
+  ThrottleLib, UnstakingManager (createLock/claimLock + Phase A for
+  cancelLock), VersionRegistry, RewardTokenRegistry, Guardian
+  (grantRole, revokeRole, cancel), AccessControlEnumerable,
+  TimelockControllerOptimistic, OptimisticSelectorRegistry, StakingVaultAdmin.
+- **Partial / in progress:** ProposalLib (4/5 walkers closed; final 4
+  in flight via #308), ReserveOptimisticGovernor (T2.3 GovernorBase
+  wired; R087 Blockers 1/3/4 remain), StakingVaultExchange (Phase A
+  closed via R100/R101; Phase B needs sim extension for unmodeled
+  slots), UnstakingManager cancelLock (T-VAULT trust obligation per
+  R102 needs resolution).
+- **Framework primitives:** R082 (staticcall) in `StaticCallBridge.v`,
+  R083 (memory + ERC-7201 anchors) and R088 (arbitrary-U256-slot
+  storage) in `FrameworkExtensions.v`, R091 (delegatecall) and R093
+  (SafeERC20 absorbing bridge) in `StaticCallBridge.v` / `AbiEncoding.v`.
 
-## Status
+## Reusable apparatus
 
-Equivalence proofs landed (May 2026):
+- `ThrottleLib_Leaves.v` — `declare_or_assign_pair_cons_step`,
+  `declare_or_assign_Z_cons_step`, `two_sstores_pass_through_nonmatch`,
+  the storage-slot lemmas. The same shape transfers to any
+  struct-valued mapping.
+- `Common.v` — `set_eq_at_role`, `set_eq_in_registry` (R059
+  membership equivalence for EnumerableSet swap-and-pop).
+- `StaticCallBridge.v`, `AbiEncoding.v`, `FrameworkExtensions.v` —
+  absorbing primitives for external calls, ABI encoding/decoding,
+  and arbitrary slot access. Extend these when a new framework gap
+  surfaces; don't introduce per-contract trust axioms when the
+  underlying primitive could be added here once.
 
-- **ThrottleLib.v**: full storage projection (20+ leaves); both
-  view-function theorems (`run_getProposalsAvailable_equivalent_make_state`
-  and the public-wrapper variant) close with Qed. The structural
-  projection-update lemma `throttles_packed_set_throttle_two_sstores`
-  closes with Qed (WISDOM R034). The mutator
-  `run_consumeProposalCharge_make_state` has its prelude composed
-  and walker partial; remaining is side-condition layering for the
-  leaf applications.
-- **Sandbox.v**: toy proofs verifying the apparatus (Stdlib.timestamp
-  R020, RunO.CallContract R021 — both upstream patches landed in
-  TheFrozenFire/rocq-of-solidity:feat/env-block-context).
-- **VersionRegistry.v**: equivalence scaffold theorem stated
-  (`run_isDeprecated_equivalent_scaffold` — view function over
-  flat Map slot 1); body Admitted pending walker composition.
-- **UnstakingManager.v**: three theorems (createLock, cancelLock,
-  claimLock) with placeholder bodies. Real Yul references blocked
-  by WISDOM R035 (shallow_embed.py switch-binding bug).
-- **RewardTokenRegistry.v** / **Guardian.v**: substrate ready
-  (shallow forms compile, projections defined). Full equivalence
-  parked behind Phase 4 decision (notes/equivalence_phase4_decision.md)
-  — requires OZ EnumerableSet / AccessControlEnumerable mechanization.
+## Methodology references
 
-Reusable apparatus (in ThrottleLib.v): `declare_or_assign_pair_cons_step`,
-`declare_or_assign_Z_cons_step`, `two_sstores_pass_through_nonmatch`,
-the storage-slot lemmas. The same shape transfers to any
-struct-valued mapping (UnstakingManager.locks, StakingVault rewards,
-Governor proposals) once those equivalence proofs come online.
+Read these `WISDOM.md` entries before designing a closure path for a
+new contract:
+
+- R082 / R091 / R093 — absorbing primitives for staticcall,
+  delegatecall, and SafeERC20.
+- R083 / R088 — memory anchors and arbitrary-slot storage primitives.
+- R099 — Parameter→Definition refactor for `proj_post_X` (eliminates
+  the Skolem-mismatch barrier across `proj_sim` and `sstore_post_storage`).
+- R100 — modifier-wrapper sub-axiom narrowing for inner-body walkers.
+- R103 — deterministic-post-storage wrappers (the canonical template
+  for inheritor-walker discharge).
