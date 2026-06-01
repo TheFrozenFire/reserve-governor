@@ -2673,6 +2673,195 @@ template), R065-R071 (per-mutator composite walker recipe), R070
 (ProposalLib walker structure), R086 (concurrent UnstakingManager
 SafeERC20/linkersymbol gap).
 
+## R088: Arbitrary-U256-slot storage absorption — ProposalLib framework gap
+
+**Task #293 (T3.2-ProposalLib, 2026-06-01)** attempted to extend the
+R082 discharge methodology from VersionRegistry's
+`deprecateVersion_187` to ProposalLib's five composite walker Axioms
+(`_saveProposal_580`, `_validateProposal_507`, `proposeOptimistic_179`,
+`proposePessimistic_288`, `transitionToPessimistic_400`). Diagnosis:
+**R082+R083's framework primitives are necessary but NOT sufficient
+for the ProposalLib walkers**. One additional structural gap blocks
+EVERY walker before any mechanical step can fire.
+
+### The structural gap
+
+ProposalLib is a Solidity LIBRARY. Each public function takes the
+target storage slot as a `slot : U256.t` parameter rather than
+operating on a fixed (literal `Z.of_nat n`) storage index. The
+caller — ReserveOptimisticGovernor — passes
+`proposalCore_slot = keccak256(pid, proposalCoresAnchor)` (or a
+similar keccak-derived address) at invocation. The library then
+reads/writes storage via:
+
+- `read_from_storage_split_offset_20_t_uint48(proposalCore_slot + 0)`
+  → `Stdlib.sload (proposalCore_slot + 0)`
+- `update_storage_value_offset_0_t_address_to_t_address(proposalCore_slot + 0, value)`
+  → `Stdlib.sload (proposalCore_slot + 0); ... ; Stdlib.sstore (proposalCore_slot + 0, new_value)`
+- ditto for offsets 20 and 26 (the packed uint48 voteStart and uint32
+  voteDuration fields of the OZ `ProposalCore` struct)
+
+The upstream framework's storage axioms pin the slot expression:
+
+  - `Storage.run_sstore_u256` pins to `Z.of_nat index` (literal slot)
+  - `Storage.run_sstore_map_u256` pins to `keccak256_tuple2 key (Z.of_nat index)`
+  - `Storage.run_sstore_map2_u256` pins to
+    `keccak256_tuple2 key2 (keccak256_tuple2 key1 (Z.of_nat index))`
+  - R083's `run_sstore_map2_u256_at_anchor` pins to
+    `keccak256_tuple2 key2 (keccak256_tuple2 key1 anchor)`
+
+NONE of these unify with an opaque `slot : U256.t` library parameter.
+Coq cannot infer that the parameter happens to land in any specific
+shape — that fact lives in the CALLER and is not visible to the
+library walker.
+
+### The R088 framework primitive
+
+Mirrors R082's `staticcall_make_state_bridge_absorbing` and R083 Gap 2
+(memory absorption) in spirit: introduce a Skolem-absorbing pair for
+arbitrary-U256 sstore/sload at `make_state` states. Defined in
+`proofs/equivalence/FrameworkExtensions.v` (Gap 3 section):
+
+```coq
+Parameter sstore_post_storage :
+  Environment.t -> State.t -> SimulatedMemory.t -> SimulatedStorage.t ->
+  U256.t -> U256.t -> SimulatedStorage.t.
+
+Axiom run_sstore_absorbing_at_make_state :
+  forall codes env state_base memory storage slot value,
+  {{? codes, env, Some (make_state env state_base memory storage) |
+    Stdlib.sstore slot value ⇓ Result.Ok tt
+  | Some (make_state env state_base memory
+            (sstore_post_storage env state_base memory storage slot value))
+  ?}}.
+
+Parameter sload_witness :
+  Environment.t -> State.t -> SimulatedMemory.t -> SimulatedStorage.t ->
+  U256.t -> U256.t.
+
+Axiom run_sload_absorbing_at_make_state :
+  forall codes env state_base memory storage slot,
+  {{? codes, env, Some (make_state env state_base memory storage) |
+    Stdlib.sload slot ⇓
+      Result.Ok (sload_witness env state_base memory storage slot)
+  | Some (make_state env state_base memory storage) ?}}.
+```
+
+Plus length-preservation (`sstore_post_storage_length`) and witness
+bound (`sload_witness_bound`).
+
+Soundness story is identical to R083 Gap 1: upstream's
+`Storage.of_storable_values` is `Admitted` and the framework's
+projection function is unspecified beyond the existing pinned-shape
+axioms. Adding axioms about the projection's behaviour at arbitrary
+slot expressions is consistent so long as no two axioms force
+contradictory values at the same slot. Here the new axiom is
+strictly weaker than the pinned variants (it Skolemizes the post-
+storage rather than pinning it), so it is consistent with all
+existing pinned-shape axioms.
+
+### Audit-time obligation per use site
+
+Each library walker that consumes these primitives carries the
+per-target observational bridge obligation: the library's
+post-storage observably equals the caller's post-projection at the
+slots the library wrote. This is the standard R040 + R055 + R067
+obligation shape — the walker's post-storage is opaque; the bridge
+axiom witnesses pointwise equality with the sim's post-projection at
+the slot(s) the library wrote.
+
+### Status as of 2026-06-01
+
+The framework primitive is added; baseline build remains green. The
+five ProposalLib walker Axioms are NOT yet discharged in this commit
+because each requires substantial additional per-walker mechanical
+assembly:
+
+  - `_saveProposal_580`: ~28 structural steps PLUS each of 3
+    `update_storage_value_offset_*` helper bodies expands to ~10
+    sub-steps (sload + bit ops + sstore), plus an event-emission tail
+    with a 10-field `abi_encode_tuple` + `log1`. Estimated: 500-800
+    LOC of mechanical assembly per the R082 template, plus 3 new
+    R040-shape wrappers for the `update_storage_value_offset_*`
+    helpers.
+
+  - `_validateProposal_507`: success-branch elision via H_success
+    skips the `governor.state()` staticcall + revert path, but the
+    body still has the initial sload at `proposalCore_slot + 0`, then
+    calldata reads, an internal `fun__isValidDescriptionForProposer`
+    call (itself a substantial body with string operations + hex
+    parsing), multiple `require_helper`s, and array-length checks
+    via `access_calldata_tail`. The internal helper is the
+    load-bearing residual.
+
+  - `transitionToPessimistic_400`: one sstore of the sentinel +
+    `string.concat` of CONFIRMATION_PREFIX with the description (a
+    memory-heavy helper), 4 external staticcalls, and a call to
+    `_saveProposal_580` for the new proposal.
+
+  - `proposeOptimistic_179` / `proposePessimistic_288`: each calls
+    `_validateProposal_507` + `_saveProposal_580` plus 2-4 staticcalls
+    + per-target loop validation. They are essentially
+    `_validateProposal + _saveProposal + staticcall chain`, so they
+    discharge mechanically ONCE `_validateProposal` and
+    `_saveProposal` are closed.
+
+### Recommended path forward
+
+1. **Use the R088 absorbing primitives in the walker bodies** for
+   the arbitrary-slot sstores/sloads.
+
+2. **Add R040-shape wrappers** for the three
+   `update_storage_value_offset_*` helpers. Each wrapper bundles the
+   helper's body (`sload + and/or bit ops + sstore`) into a single
+   leaf returning the absorbed post-storage. Cost: ~80 LOC each, 240
+   LOC total.
+
+3. **Add an R040-shape wrapper for `read_from_storage_split_offset_20_t_uint48`**
+   (and the `_26_t_uint32` sibling) that bundles `sload + bit-shift
+   extraction` into a single leaf returning the extracted field
+   value. Cost: ~50 LOC each.
+
+4. **Discharge `_saveProposal_580` first** using these wrappers. The
+   walker body becomes a straight chain of memory reads, the 3 store
+   wrappers, plus the event-emission tail. Estimated total: 500-700
+   LOC.
+
+5. **Discharge `_validateProposal_507` next.** Requires either
+   discharging `fun__isValidDescriptionForProposer_651` (a separate
+   workstream — string parsing) or axiomatizing its return value
+   pointwise per the sim's `is_valid_description_for_proposer` field.
+
+6. **Discharge `transitionToPessimistic_400`** using the R088
+   primitives plus the `_saveProposal_580` Lemma plus the 4
+   staticcall callee specs.
+
+7. **Discharge `proposeOptimistic_179` / `proposePessimistic_288`**
+   as a thin composition over the above.
+
+### Methodology finding
+
+The "Solidity library function operates on caller-passed storage
+slots" pattern is genuinely new for the framework. Prior discharges
+(VersionRegistry / Guardian / RewardTokenRegistry / StakingVaultAdmin)
+all operated on FIXED storage projections — the slot index was a
+literal `Z.of_nat n` or a namespace-anchored keccak chain.
+ProposalLib breaks this assumption because the library is invoked via
+delegatecall by the caller, against the caller's storage, at a
+slot the CALLER picks.
+
+The R088 absorbing pattern is the analogue of R082's
+`staticcall_make_state_bridge_absorbing` and R083 Gap 2 (memory
+absorption) for the storage axis. Together they form a consistent
+"Skolem absorbers" family that the framework can deploy whenever a
+walker step's post-state is more cleanly characterized by an
+existential than by a pinned expression.
+
+See also: R040 (wrapper-shape sstore), R082 (staticcall absorption),
+R083 (memory absorption + namespace anchors), R067 (composite-walker
+template), R070 (ProposalLib walker structure), R087 (ROG composite
+walker — depends on ProposalLib walkers closing first).
+
 ## R065-R071: Per-mutator composite-walker recipe
 
 Validated on 12 mutators across 6 contracts: VersionRegistry,

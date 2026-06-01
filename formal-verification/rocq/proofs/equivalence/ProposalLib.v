@@ -78,9 +78,11 @@ Require Import ReserveGovernor.simulations.ProposalLib.
 Require Import ReserveGovernor.generated.ProposalLib_shallow.
 Require Import ReserveGovernor.proofs.equivalence.StaticCallBridge.
 Require Import ReserveGovernor.proofs.equivalence.AbiEncoding.
+Require Import ReserveGovernor.proofs.equivalence.FrameworkExtensions.
 
 Import Stdlib.
 Import RunO.
+Import FrameworkExtensions.
 
 Open Scope Z_scope.
 
@@ -578,6 +580,246 @@ Module ProposalLibEquivalence.
       rewrite <- uint32_implies_and_mask by exact H_v.
       cbn.
       repeat (lu || cu || p).
+  Qed.
+
+  (** ========================================================
+        R088 — wrapper Lemmas for ProposalLib storage helpers
+      ========================================================
+
+      Per R088 (see WISDOM), ProposalLib operates on caller-passed
+      `slot : U256.t` parameters that the framework's pinned-shape
+      storage axioms cannot match. The R088 absorbing primitives
+      (`run_sstore_absorbing_at_make_state`,
+      `run_sload_absorbing_at_make_state`) close the gap by Skolemizing
+      the post-storage. The wrappers below bundle each Yul helper body
+      into a single leaf returning the Skolem post-state, mirroring
+      R040's wrapper-shape sstore leaves.
+
+      These leaves are the consumed inputs for `_saveProposal_580`'s
+      walker discharge. *)
+
+  (** ----- Wrapper for [update_storage_value_offset_0_t_address_to_t_address] -----
+
+      Body:
+        let convertedValue := convert_t_address_to_t_address value in
+        do sstore slot
+          (update_byte_slice_20_shift_0 (sload slot)
+             (prepare_store_t_address convertedValue)) in
+        M.pure tt
+
+      Where `convert_t_address_to_t_address` and `prepare_store_t_address`
+      are identity-on-address-range, `update_byte_slice_20_shift_0`
+      composes bit-ops to insert the address into the low 20 bytes of
+      the slot.
+
+      Result: the post-state is `make_state env state_base memory s'`
+      where `s'` is the R088 Skolem post-storage carrying the sstore
+      effect. *)
+
+  Lemma run_update_storage_value_offset_0_t_address_to_t_address_absorbing
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot value : U256.t)
+      (H_value_bound : 0 <= value < 2^160) :
+    let state := make_state env state_base memory storage in
+    exists storage_post,
+    {{? codes, env, Some state |
+      update_storage_value_offset_0_t_address_to_t_address slot value
+        ⇓ Result.Ok tt
+    | Some (make_state env state_base memory storage_post) ?}}.
+  Proof.
+    cbv zeta.
+    unfold update_storage_value_offset_0_t_address_to_t_address.
+    eexists.
+    lu.
+    (* convertedValue := convert_t_address_to_t_address value (identity under bound) *)
+    l. { c. { apply run_convert_t_address_to_t_address; exact H_value_bound. }
+         p. }
+    (* do~ sstore slot (...) — the body computes the new word via
+       update_byte_slice_20_shift_0(sload slot, prepare_store_t_address value),
+       then sstore writes it.
+
+       Walk: M.monadic gives
+         let* v_sload := sload slot in
+         let* v_prep := prepare_store_t_address convertedValue in
+         let* v_new := update_byte_slice_20_shift_0 v_sload v_prep in
+         sstore slot v_new *)
+    l. { s.
+         c. { apply (run_sload_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         s.
+         c. { (* prepare_store_t_address value: body is `let ret := value in M.pure ret` *)
+              unfold prepare_store_t_address.
+              repeat (lu || cu || p). }
+         s.
+         c. { (* update_byte_slice_20_shift_0 (sload slot) prepared_value *)
+              unfold update_byte_slice_20_shift_0.
+              repeat (lu || cu || p). }
+         s.
+         c. { apply (run_sstore_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         p.
+       }
+    p.
+  Qed.
+
+  (** ----- Wrapper for [update_storage_value_offset_20_t_uint48_to_t_uint48] -----
+
+      Body: same shape as the offset_0 sibling but with a uint48 input,
+      `shift_left_160` shift and `update_byte_slice_6_shift_20` mask. *)
+
+  Lemma run_update_storage_value_offset_20_t_uint48_to_t_uint48_absorbing
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot value : U256.t)
+      (H_value_bound : 0 <= value < 2^48) :
+    let state := make_state env state_base memory storage in
+    exists storage_post,
+    {{? codes, env, Some state |
+      update_storage_value_offset_20_t_uint48_to_t_uint48 slot value
+        ⇓ Result.Ok tt
+    | Some (make_state env state_base memory storage_post) ?}}.
+  Proof.
+    cbv zeta.
+    unfold update_storage_value_offset_20_t_uint48_to_t_uint48.
+    eexists.
+    lu.
+    (* convertedValue := convert_t_uint48_to_t_uint48 value (identity under bound) *)
+    l. { c. { apply run_convert_t_uint48_to_t_uint48; exact H_value_bound. }
+         p. }
+    l. { s.
+         c. { apply (run_sload_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         s.
+         c. { unfold prepare_store_t_uint48.
+              repeat (lu || cu || p). }
+         s.
+         c. { unfold update_byte_slice_6_shift_20.
+              repeat (lu || cu || p). }
+         s.
+         c. { apply (run_sstore_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         p. }
+    p.
+  Qed.
+
+  (** ----- Wrapper for [update_storage_value_offset_26_t_uint32_to_t_uint32] -----
+
+      Body: same shape as siblings, with uint32 input. *)
+
+  Lemma run_update_storage_value_offset_26_t_uint32_to_t_uint32_absorbing
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot value : U256.t)
+      (H_value_bound : 0 <= value < 2^32) :
+    let state := make_state env state_base memory storage in
+    exists storage_post,
+    {{? codes, env, Some state |
+      update_storage_value_offset_26_t_uint32_to_t_uint32 slot value
+        ⇓ Result.Ok tt
+    | Some (make_state env state_base memory storage_post) ?}}.
+  Proof.
+    cbv zeta.
+    unfold update_storage_value_offset_26_t_uint32_to_t_uint32.
+    eexists.
+    lu.
+    l. { c. { apply run_convert_t_uint32_to_t_uint32; exact H_value_bound. }
+         p. }
+    l. { s.
+         c. { apply (run_sload_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         s.
+         c. { unfold prepare_store_t_uint32.
+              repeat (lu || cu || p). }
+         s.
+         c. { unfold update_byte_slice_4_shift_26.
+              repeat (lu || cu || p). }
+         s.
+         c. { apply (run_sstore_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         p. }
+    p.
+  Qed.
+
+  (** ----- Wrapper for [read_from_storage_split_offset_20_t_uint48] -----
+
+      Body: `sload slot; extract_from_storage_value_offset_20_t_uint48 v`.
+      The extraction shifts right by 160 then masks to uint48.
+
+      Result: the post-state's storage is UNCHANGED (sload only);
+      the returned value is a Skolem witness derived from the slot. *)
+
+  Definition read_uint48_offset_20_witness
+      (env : Environment.t) (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot : U256.t) : U256.t :=
+    Pure.and (Pure.shr 160 (sload_witness env state_base memory storage slot))
+             0xffffffffffff.
+
+  Lemma run_read_from_storage_split_offset_20_t_uint48_absorbing
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot : U256.t) :
+    let state := make_state env state_base memory storage in
+    {{? codes, env, Some state |
+      read_from_storage_split_offset_20_t_uint48 slot ⇓
+        Result.Ok
+          (read_uint48_offset_20_witness env state_base memory storage slot)
+    | Some state ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_storage_split_offset_20_t_uint48,
+           read_uint48_offset_20_witness.
+    lu.
+    l. { s.
+         c. { apply (run_sload_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         s.
+         c. { unfold extract_from_storage_value_offset_20_t_uint48.
+              repeat (lu || cu || p). }
+         p. }
+    p.
+  Qed.
+
+  (** ----- Wrapper for [read_from_storage_split_offset_26_t_uint32] -----
+
+      Same shape, with offset 26 and uint32 extraction. *)
+
+  Definition read_uint32_offset_26_witness
+      (env : Environment.t) (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot : U256.t) : U256.t :=
+    Pure.and (Pure.shr 208 (sload_witness env state_base memory storage slot))
+             0xffffffff.
+
+  Lemma run_read_from_storage_split_offset_26_t_uint32_absorbing
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot : U256.t) :
+    let state := make_state env state_base memory storage in
+    {{? codes, env, Some state |
+      read_from_storage_split_offset_26_t_uint32 slot ⇓
+        Result.Ok
+          (read_uint32_offset_26_witness env state_base memory storage slot)
+    | Some state ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_storage_split_offset_26_t_uint32,
+           read_uint32_offset_26_witness.
+    lu.
+    l. { s.
+         c. { apply (run_sload_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         s.
+         c. { unfold extract_from_storage_value_offset_26_t_uint32.
+              repeat (lu || cu || p). }
+         p. }
+    p.
   Qed.
 
   (** ====================================================================

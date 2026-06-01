@@ -464,4 +464,131 @@ Module FrameworkExtensions.
         [ exact H_binding | reflexivity ]
     end.
 
+  (** ====================================================================
+      Gap 3 -- Arbitrary-U256-slot storage absorption (R088)
+      ====================================================================
+
+      Solidity LIBRARY functions (e.g. ProposalLib) take storage slots
+      as `slot : U256.t` PARAMETERS rather than being pinned to literal
+      `Z.of_nat n` indices.  Such libraries are invoked by external
+      contracts via delegatecall (the library code runs against the
+      caller's storage) on caller-derived slot expressions (often
+      themselves keccak256-derived).
+
+      Upstream's [Storage.run_sload_u256] / [run_sstore_u256] pin the
+      slot to `Z.of_nat index`; R083's anchor primitives pin it to
+      `keccak256_tuple2 k1 (keccak256_tuple2 k2 anchor)`.  Neither
+      shape unifies with an opaque `U256.t` library parameter — Coq
+      has no way to infer that the parameter lands in any specific
+      shape.
+
+      The Skolem-absorbing pattern (mirroring R082's
+      `staticcall_make_state_bridge_absorbing` and R083 Gap 2 memory
+      absorbers) closes the gap:
+        - An [Stdlib.sstore] at an arbitrary slot produces a Skolem
+          post-storage; both shape and storage cells are absorbed into
+          the Skolem function.
+        - An [Stdlib.sload] at an arbitrary slot returns a Skolem
+          witness; the storage is unchanged.
+
+      Both leave [make_state] form, so they compose mechanically with
+      every walker downstream of the call site.
+
+      Soundness argument: upstream's [Storage.of_storable_values] is
+      [Admitted].  Adding axioms describing the projection's behaviour
+      at OTHER slot expressions is consistent so long as no two axioms
+      force contradictory values at the same slot.  The new
+      [run_sstore_absorbing_at_make_state] axiom describes the
+      projection at slot expressions that don't match any existing
+      pinned shape; the Skolem post-storage [sstore_post_storage] is
+      the witness that "some new SimulatedStorage.t carries the write."
+
+      Companion structural axioms — [sstore_post_storage_length],
+      [sload_witness_bound] — expose the bookkeeping facts callers
+      need.
+
+      AUDIT-TIME OBLIGATION per use site: each library walker that
+      consumes these primitives carries the per-target observational
+      bridge obligation: the library's post-storage observably equals
+      the caller's post-projection at the slots the library wrote.
+      This is the standard R040 + R055 + R067 obligation shape — the
+      walker's post-storage is opaque; the bridge axiom witnesses
+      pointwise equality with the sim's post-projection.
+
+      Where to use these:
+        - ProposalLib's [_saveProposal_580] (3 sstores at
+          proposalCore_slot + offsets 0, 20, 26).
+        - ProposalLib's [transitionToPessimistic_400] (sstore of the
+          [TRANSITIONED_VETO_THRESHOLD] sentinel at the
+          optimisticProposal_slot + offset).
+        - ProposalLib's [_validateProposal_507] (sload of voteStart
+          at proposalCore_slot + 0, offset 20).
+        - Any future Solidity-library function operating on
+          caller-passed storage slots. *)
+
+  (** Skolem post-storage produced by an [sstore] at an arbitrary U256
+      slot against a [make_state]-shaped state.  Existentially
+      witnesses the new SimulatedStorage.t carrying the write. *)
+  Parameter sstore_post_storage :
+    Environment.t -> State.t -> SimulatedMemory.t -> SimulatedStorage.t ->
+    U256.t -> U256.t -> SimulatedStorage.t.
+
+  Axiom run_sstore_absorbing_at_make_state :
+    forall (codes : Codes.t) (environment : Environment.t)
+           (state_base : State.t)
+           (memory : SimulatedMemory.t)
+           (storage : SimulatedStorage.t)
+           (slot : U256.t) (value : U256.t),
+    {{? codes, environment,
+        Some (make_state environment state_base memory storage) |
+      Stdlib.sstore slot value ⇓ Result.Ok tt
+    | Some (make_state environment state_base memory
+              (sstore_post_storage environment state_base memory storage
+                                   slot value)) ?}}.
+
+  (** Length-preservation: the Skolem post-storage has the same
+      length as the input.  Audit obligation: library sstores write
+      at slot expressions whose backing storage cell already exists
+      in the projection (the caller's pre-storage already lists every
+      slot the library will write). *)
+  Axiom sstore_post_storage_length :
+    forall env state_base memory storage slot value,
+    List.length (sstore_post_storage env state_base memory storage slot value)
+    = List.length storage.
+
+  (** Skolem witness returned by an [sload] at an arbitrary U256 slot
+      against a [make_state]-shaped state.  Returns an opaque U256.t
+      whose value is pinned only at audit-time per-target. *)
+  Parameter sload_witness :
+    Environment.t -> State.t -> SimulatedMemory.t -> SimulatedStorage.t ->
+    U256.t -> U256.t.
+
+  Axiom run_sload_absorbing_at_make_state :
+    forall (codes : Codes.t) (environment : Environment.t)
+           (state_base : State.t)
+           (memory : SimulatedMemory.t)
+           (storage : SimulatedStorage.t)
+           (slot : U256.t),
+    {{? codes, environment,
+        Some (make_state environment state_base memory storage) |
+      Stdlib.sload slot ⇓
+        Result.Ok (sload_witness environment state_base memory storage slot)
+    | Some (make_state environment state_base memory storage) ?}}.
+
+  (** Bound on the [sload_witness] Skolem: 0 ≤ witness < 2^256.
+      Storage cells in the EVM hold a 256-bit value. *)
+  Axiom sload_witness_bound :
+    forall env state_base memory storage slot,
+    0 <= sload_witness env state_base memory storage slot < 2^256.
+
+  (** Absorb an [Stdlib.sstore] at any U256 slot.  Post-storage is
+      Skolemized via [sstore_post_storage]. *)
+  Ltac apply_run_sstore_absorbing :=
+    apply run_sstore_absorbing_at_make_state.
+
+  (** Absorb an [Stdlib.sload] at any U256 slot.  Witness is
+      Skolemized via [sload_witness]. *)
+  Ltac apply_run_sload_absorbing :=
+    apply run_sload_absorbing_at_make_state.
+
 End FrameworkExtensions.
