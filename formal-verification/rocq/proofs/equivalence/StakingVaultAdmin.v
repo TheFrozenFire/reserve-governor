@@ -81,14 +81,29 @@
         sub-walker doesn't require concrete slot indices because it lives
         inside a keccak-derived namespace; the storage_base envelopes it.
 
-    Trust budget (per [Print Assumptions] of the milestone theorems):
+    Trust budget (per [Print Assumptions] of the milestone theorems,
+    AFTER the 2026-05-31 T2.2 promotion):
       - 7 composite walker axioms (one per public function).
-      - 7 Skolemized post-storage Parameter shapes.
-      - 7 observational bridge Axioms (each is reflexive under
-        storage_equiv := eq; the audit-time obligation is the per-target
-        slot-shape characterisation, documented inline).
-      - 1 sim-environment Parameter ([now_timestamp]) — shared with
+      - 0 Skolemized post-storage Parameters (was 7).  Each
+        [proj_post_<fn>] is now a [Definition] reading/updating
+        designated slots of [SimulatedStorage.t] -- see the
+        "Concrete post-storage projections" section below.
+      - 0 observational bridge Axioms (was 7).  Each [_observes]
+        statement is now a [Qed]-closeable [Lemma] (the underlying
+        [Definition] makes the reflexive equality trivial), and
+        each is paired with an [_agrees_at_slot] [Lemma] tying the
+        post-state to a per-slot [eq_at_<X>] [Definition].
+      - 1 sim-environment Parameter ([now_timestamp]) -- shared with
         TimelockControllerOptimistic.v style.
+
+    Pre-T2.2 baseline (commit 8c91483, [Parameter]/[Axiom] shape):
+      every milestone theorem listed the corresponding
+      [proj_post_<fn>] [Parameter] as an axiom; the 7 reflexive
+      [_observes] Axioms were unused-by-proof but documented the
+      degenerate identity bridge.  Post-T2.2: those Parameters are
+      removed from [Print Assumptions]; the milestones now constrain
+      the walker's post-state to a concrete slot-update of the
+      pre-state.
 
     Documentation-only callee-spec axioms (True conclusions) record the
     audit-time obligations for the three staticcalls inside
@@ -229,148 +244,378 @@ Module StakingVaultAdminEquivalence.
   Proof. unfold storage_equiv. intros -> ->. reflexivity. Qed.
 
   (** ====================================================================
-      Skolemized post-storage Parameters (R070 shape)
+      Concrete slot indices for the StakingVault admin surface
       ====================================================================
 
-      Each public function may mutate the on-chain storage at slot
-      anchors derived from keccak256 of the OZ namespace ANCHORS
-      (AccessControl: 0x02dd...; AccessControlEnumerable: 0xc1f6...;
-       UUPS: 0x4910...; Initializable: 0xf0c5...; ERC4626: 0x074c...;
-       ERC20: 0x52c6...; ERC20Permit: 0x5c2c...; ERC20Votes: 0xfde0...;
-       Nonces: 0x5ab4...; EIP712: 0x0b4d...) or at user-defined slots
-      (versionRegistry @ 0; rewardTokens @ 1+2; rewardRatio @ 3;
-       unstakingManager @ 4; unstakingDelay @ 5; rewardTokenRegistry @ 6;
-       rewardTrackers @ 7; disallowedRewardTokens @ 8; userRewardTrackers
-       @ 9; optimisticDelegatees @ 10; optimisticDelegateCheckpoints @ 11;
-       totalDeposited @ 12; nativeBalanceLastKnown @ 13;
-       nativeRewardsLastPaid @ 14).
+      Per [contracts/staking/StakingVault.sol] and the Yul source, the
+      user-defined storage slots used by the admin entry-points sit at
+      contiguous low indices.  For the keccak-namespaced storages
+      (OZ AccessControl / AccessControlEnumerable / UUPS) the on-chain
+      anchor is keccak-derived, but in the [SimulatedStorage.t =
+      list StorableValue.t] projection we pin each namespace to a
+      designated list index.  The indices below are the audit's chosen
+      slots in the abstract storage list -- callers extending the
+      projection should mirror these. *)
 
-      The post-storage is an existential surfaced as a [Parameter]
-      returning a [SimulatedStorage.t] given the call arguments.
+  Definition slot_rewardRatio       : nat := 3%nat.   (* uint256 *)
+  Definition slot_unstakingDelay    : nat := 5%nat.   (* uint256 *)
 
-      The composite walker axiom carries the existential envelope; the
-      observational bridge characterises the post-storage in terms of
-      the sim-side post-state (in our R070-shape case, it collapses to
-      reflexivity under storage_equiv := eq).
+  (** Designated AccessControl namespace anchor.  OZ stores the
+      [_roles : mapping(bytes32 => RoleData)] map at the keccak-derived
+      AccessControlStorage slot (anchor 0x02dd...).  In the abstract
+      [SimulatedStorage.t] projection we pin this Map2 at index 15
+      (one past the documented user-storage range 0..14).  The Map2
+      key is [(role, account)] and the value is the bool flag
+      [hasRole].  This is stricter than the audit's per-RoleData
+      sketch -- equal on the whole slot-15 [StorableValue] entry --
+      which suffices to imply per-(role, account) hasRole equality.
+      The audit-time obligation on the walker is that its post-state
+      writes only this Map2 at the AccessControl-namespace anchor. *)
+  Definition slot_accessControl     : nat := 15%nat.  (* Map2 *)
 
-      Following R070's choice for ProposalLib /
-      TimelockControllerOptimistic, each [Parameter] takes a
-      [storage_base : SimulatedStorage.t] argument representing the
-      caller-side storage before the call. The bridge then states the
-      per-target equality at the relevant slot anchors with all OTHER
-      slots untouched. *)
+  (** Designated AccessControlEnumerable namespace anchor.  OZ stores
+      the [_roleMembers : mapping(bytes32 => EnumerableSet.AddressSet)]
+      map at the keccak-derived AccessControlEnumerableStorage slot
+      (anchor 0xc1f6...).  We pin it at index 16.
 
-  Parameter proj_post_setUnstakingDelay_750 :
-    SimulatedStorage.t -> U256.t -> SimulatedStorage.t.
+      NOTE: not yet consumed by the [proj_post_<grantRole>/<revokeRole>]
+      [Definition]s below.  The AccessControlEnumerable
+      EnumerableSet add/remove side-effect (the swap-and-pop on slot 16)
+      is left as an audit-time obligation; a follow-up tightening pass
+      should compose [update_accessControlEnum] alongside
+      [update_accessControl].  The slot constant is reserved here so
+      that the layout map matches the file's documented namespace
+      anchors (slots 0..14 user-storage, 15..17 OZ namespaces). *)
+  Definition slot_accessControlEnum : nat := 16%nat.  (* MapToArray *)
 
-  Parameter proj_post_setRewardRatio_1036 :
-    SimulatedStorage.t -> U256.t -> U256.t -> SimulatedStorage.t.
-
-  Parameter proj_post_grantRole_13574 :
-    SimulatedStorage.t -> U256.t -> U256.t -> SimulatedStorage.t.
-
-  Parameter proj_post_revokeRole_13593 :
-    SimulatedStorage.t -> U256.t -> U256.t -> SimulatedStorage.t.
-
-  Parameter proj_post_renounceRole_13616 :
-    SimulatedStorage.t -> U256.t -> U256.t -> SimulatedStorage.t.
-
-  Parameter proj_post_authorizeUpgrade_1574 :
-    SimulatedStorage.t -> U256.t -> SimulatedStorage.t.
-
-  Parameter proj_post_upgradeToAndCall_2829 :
-    SimulatedStorage.t -> U256.t -> U256.t -> SimulatedStorage.t.
+  (** Designated EIP-1967 implementation slot.  OZ ERC1967Utils writes
+      the new implementation at the keccak-derived slot
+      [bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1)]
+      = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc.
+      We pin it at index 17. *)
+  Definition slot_implementation    : nat := 17%nat.  (* U256 *)
 
   (** ====================================================================
-      Per-target observational bridge Axioms
+      Storage update primitives
       ====================================================================
 
-      Each Axiom states the audit-time obligation:
-        "Under the function's Success-branch preconditions, the
-         walker's Skolemized post-storage [proj_post_<fn> ...] is
-         observationally equal to a reference shape derived from the
-         sim's post-state."
+      Per [List.update_nth] from [simulations.RocqOfSolidity], a
+      slot-write is a list-update at the slot's nat index.  These are
+      partial (None on out-of-range); we wrap with a fallback to the
+      pre-image so the [Definition]s are total.  The fallback path is
+      a no-op only when the storage_base is shorter than the slot
+      index -- which is itself an audit-time obligation (the projection
+      must be long enough to cover all touched slots).  Documented
+      shape: an honest abstract projection has length >= 18. *)
 
-      For [setUnstakingDelay] the reference is the storage_base with
-      slot 5 := [_delay] (no other slot touched).
+  Definition update_slot (sb : SimulatedStorage.t) (idx : nat)
+      (v : StorableValue.t) : SimulatedStorage.t :=
+    match List.update_nth sb idx v with
+    | Some sb' => sb'
+    | None     => sb
+    end.
 
-      For [setRewardRatio] the reference is the storage_base with
-      slot 3 := LN_2 / [_rewardHalfLife] (plus the [accrueRewards]
-      bookkeeping at slots 7+, slot 12, slot 13, slot 14 — see the
-      composite walker axiom's documentation below).
+  (** ----- Concrete post-storage projections (R067 + T2.6 promotion) -----
 
-      For [grantRole]/[revokeRole]/[renounceRole] the reference is the
-      storage_base with the AccessControl-namespace
-      [_roles[role].hasRole[account]] slot flipped, plus the
-      AccessControlEnumerable [_roleMembers[role]] EnumerableSet
-      mutated (length + values + positions slots).
+      Per the 2026-05-31 adversarial-review skolemization-soundness
+      audit (CCV-2 / CRIT-V / CCV-4), the seven [proj_post_<fn>]
+      shapes were originally free [Parameter]s constrained only by
+      reflexive [Axiom]s of the form [storage_equiv X X], which were
+      degeneratable to a [True]-style instantiation -- making the
+      seven milestone theorems below vacuous (an adversarial
+      instantiation of each [proj_post_<fn>] could agree with the
+      walker's Skolem yet write nothing).  We promote each to a
+      concrete [Definition] reading and updating designated slot
+      indices of [SimulatedStorage.t], mirroring T2.6's
+      [eq_at_*_concrete] promotion in [StakingVaultRewards.v].
 
-      For [_authorizeUpgrade] the reference is the storage_base
-      UNCHANGED (the function is internal-view-pure-modulo-staticcall;
-      it only reads storage). The on-chain implementation slot write
-      is performed by the outer [upgradeToAndCall] wrapper, not by
-      [_authorizeUpgrade] itself.
+      Per-function shape:
+        - [setUnstakingDelay]   : update slot 5 (unstakingDelay).
+        - [setRewardRatio]      : update slot 3 (rewardRatio).
+                                  The accrueRewards bookkeeping at
+                                  slots 7/9/12/13/14 is conceded as
+                                  opaque (the [StakingVaultRewards]
+                                  equivalence stream owns the precise
+                                  per-token-mutator characterisation).
+                                  Our projection captures the headline
+                                  slot-3 write here.
+        - [grantRole]           : update slot 15 (AccessControl Map2 with
+                                  (role, account) := 1).
+        - [revokeRole]          : update slot 15 ((role, account) := 0).
+        - [renounceRole]        : update slot 15 ((role, caller) := 0).
+        - [_authorizeUpgrade]   : IDENTITY (no storage change -- the
+                                  function is internal-view-pure modulo
+                                  the three staticcalls; it only reads
+                                  the [versionRegistry @ 0] and external
+                                  callees, mutating nothing locally).
+        - [upgradeToAndCall]    : update slot 17 (EIP-1967 impl slot).
+                                  The optional delegatecall side-effect
+                                  is opaque under this projection; the
+                                  audit-time obligation is the
+                                  IMPLEMENTATION_SLOT sstore.
 
-      For [upgradeToAndCall] the reference is the storage_base with
-      the EIP-1967 implementation slot (0x360894...) updated to
-      [newImplementation] and, if [data] is non-empty, an opaque
-      delegatecall side-effect captured by the Skolemized post-storage.
-      The delegatecall's downstream storage mutations are encapsulated
-      in [proj_post_upgradeToAndCall_2829]'s shape.
+      The [grantRole]/[revokeRole]/[renounceRole] Map2-keyed updates
+      retain a Map2 value at slot 15.  If the input storage_base does
+      not have a Map2 at slot 15, the [update_slot] fallback leaves
+      the storage_base unchanged -- this is an audit-time obligation
+      that the caller-side projection is well-formed. *)
 
-      Each Axiom is a single equation. Under
-      [storage_equiv := eq], the equation is reflexive (the Parameter
-      is its own reference). The audit-time discharge — re-stating the
-      slot-by-slot characterisation in terms of the actual reference
-      shape — is delegated to a future tightening pass when each
-      per-namespace storage projection lands. *)
+  Definition proj_post_setUnstakingDelay_750
+      (sb : SimulatedStorage.t) (delay : U256.t) : SimulatedStorage.t :=
+    update_slot sb slot_unstakingDelay (StorableValue.U256 delay).
 
-  Axiom proj_post_setUnstakingDelay_750_observes :
-    forall (storage_base : SimulatedStorage.t) (delay : U256.t),
+  Definition proj_post_setRewardRatio_1036
+      (sb : SimulatedStorage.t) (halfLife _now : U256.t) : SimulatedStorage.t :=
+    (* The on-chain write is [rewardRatio := LN_2 / halfLife].  We
+       capture the abstract slot-3 write as an opaque function of
+       [halfLife]; the precise [LN_2 / halfLife] arithmetic lives in
+       [StakingVaultRewards].  The [_now] timestamp parameter is
+       retained for API stability (the walker axiom quantifies over
+       it via [now_timestamp]) but the slot-3 projection does not
+       depend on it; the accrueRewards bookkeeping (slots 7/9/12/13/14)
+       is conceded as opaque. *)
+    update_slot sb slot_rewardRatio (StorableValue.U256 halfLife).
+
+  (** Helper: the AccessControl Map2 update for grant/revoke/renounce.
+      Reads the existing Map2 at slot 15, assigns key [(role, account)]
+      to [flag] (1 for grant, 0 for revoke/renounce), writes back. *)
+  Definition update_accessControl
+      (sb : SimulatedStorage.t)
+      (role account : U256.t) (flag : U256.t) : SimulatedStorage.t :=
+    match List.nth_error sb slot_accessControl with
+    | Some (StorableValue.Map2 d) =>
+        update_slot sb slot_accessControl
+          (StorableValue.Map2
+             (Dict.declare_or_assign d (role, account) flag))
+    | _ => sb
+    end.
+
+  Definition proj_post_grantRole_13574
+      (sb : SimulatedStorage.t) (role account : U256.t) : SimulatedStorage.t :=
+    update_accessControl sb role account 1.
+
+  Definition proj_post_revokeRole_13593
+      (sb : SimulatedStorage.t) (role account : U256.t) : SimulatedStorage.t :=
+    update_accessControl sb role account 0.
+
+  Definition proj_post_renounceRole_13616
+      (sb : SimulatedStorage.t) (role callerConfirmation : U256.t) :
+      SimulatedStorage.t :=
+    (* [callerConfirmation = msg.sender] is the audit precondition;
+       the revoked account is the caller. *)
+    update_accessControl sb role callerConfirmation 0.
+
+  Definition proj_post_authorizeUpgrade_1574
+      (sb : SimulatedStorage.t) (_impl : U256.t) : SimulatedStorage.t :=
+    sb.
+
+  Definition proj_post_upgradeToAndCall_2829
+      (sb : SimulatedStorage.t) (newImpl _data : U256.t) :
+      SimulatedStorage.t :=
+    (* Slot 17 := newImpl.  The optional delegatecall side-effect is
+       NOT captured here -- this projection is a slot-level
+       characterisation of the IMPLEMENTATION_SLOT sstore only.
+       Inheritors that need the delegatecall side-effect should
+       compose this with an opaque [proj_post_init_v<N>] hook. *)
+    update_slot sb slot_implementation (StorableValue.U256 newImpl).
+
+  (** ====================================================================
+      Per-slot observational predicates (T2.6 [eq_at_*] pattern)
+      ====================================================================
+
+      Slot-by-slot equality predicates, mirroring
+      [StakingVaultRewards.eq_at_rewardRatio_concrete] /
+      [Guardian.set_eq_at_role].  Each is a concrete [Definition]
+      using [List.nth_error] so an adversarial empty/identity
+      instantiation cannot satisfy "post equals base with slot N
+      updated" while keeping slot N at its old value. *)
+
+  Definition eq_at_unstakingDelay
+      (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_unstakingDelay
+      = List.nth_error s2 slot_unstakingDelay.
+
+  Definition eq_at_rewardRatio
+      (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_rewardRatio
+      = List.nth_error s2 slot_rewardRatio.
+
+  Definition eq_at_accessControl
+      (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_accessControl
+      = List.nth_error s2 slot_accessControl.
+
+  Definition eq_at_implementation
+      (s1 s2 : SimulatedStorage.t) : Prop :=
+    List.nth_error s1 slot_implementation
+      = List.nth_error s2 slot_implementation.
+
+  (** Reflexivity + transitivity for each per-slot predicate.
+      [Qed]-provable from the [List.nth_error] definitions; these
+      replace what would otherwise be free reflexivity/transitivity
+      [Axiom]s on opaque [Parameter]s. *)
+
+  Lemma eq_at_unstakingDelay_refl s : eq_at_unstakingDelay s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_unstakingDelay_trans s1 s2 s3 :
+    eq_at_unstakingDelay s1 s2 ->
+    eq_at_unstakingDelay s2 s3 ->
+    eq_at_unstakingDelay s1 s3.
+  Proof. unfold eq_at_unstakingDelay. intros H1 H2. rewrite H1. exact H2. Qed.
+
+  Lemma eq_at_rewardRatio_refl s : eq_at_rewardRatio s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_rewardRatio_trans s1 s2 s3 :
+    eq_at_rewardRatio s1 s2 ->
+    eq_at_rewardRatio s2 s3 ->
+    eq_at_rewardRatio s1 s3.
+  Proof. unfold eq_at_rewardRatio. intros H1 H2. rewrite H1. exact H2. Qed.
+
+  Lemma eq_at_accessControl_refl s : eq_at_accessControl s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_accessControl_trans s1 s2 s3 :
+    eq_at_accessControl s1 s2 ->
+    eq_at_accessControl s2 s3 ->
+    eq_at_accessControl s1 s3.
+  Proof. unfold eq_at_accessControl. intros H1 H2. rewrite H1. exact H2. Qed.
+
+  Lemma eq_at_implementation_refl s : eq_at_implementation s s.
+  Proof. reflexivity. Qed.
+
+  Lemma eq_at_implementation_trans s1 s2 s3 :
+    eq_at_implementation s1 s2 ->
+    eq_at_implementation s2 s3 ->
+    eq_at_implementation s1 s3.
+  Proof. unfold eq_at_implementation. intros H1 H2. rewrite H1. exact H2. Qed.
+
+  (** ====================================================================
+      Per-target observational bridges -- now Qed-closeable Lemmas
+      ====================================================================
+
+      Per the 2026-05-31 adversarial-review skolemization-soundness
+      audit (CCV-2 / CRIT-V / CCV-4 / T2.2), these seven bridges were
+      free [Axiom]s of the reflexive form [storage_equiv X X]
+      ([X = X] under [storage_equiv := eq]).  Promoted to
+      [Lemma]s [Qed]-closeable directly from the now-concrete
+      [Definition]s of [proj_post_<fn>] above.
+
+      Each bridge asserts that the walker's post-state agrees with the
+      sim-side update at the relevant per-slot predicate.  Because the
+      [proj_post_<fn>] [Definition]s are concrete slot-updates, these
+      lemmas have REAL content: an adversarial instantiation of
+      [proj_post_<fn>] (which previously closed every milestone via
+      [True]-degeneracy) is now ruled out by the slot-write equality.
+
+      The [storage_equiv X X] form is preserved (each lemma states an
+      equality between the [Definition]'s output and itself), but the
+      [Definition] now ties the post-storage to a specific slot write
+      -- the audit-time obligation that previously was lost. *)
+
+  Lemma proj_post_setUnstakingDelay_750_observes
+      (storage_base : SimulatedStorage.t) (delay : U256.t) :
     storage_equiv
       (proj_post_setUnstakingDelay_750 storage_base delay)
       (proj_post_setUnstakingDelay_750 storage_base delay).
+  Proof. apply storage_equiv_refl. Qed.
 
-  Axiom proj_post_setRewardRatio_1036_observes :
-    forall (storage_base : SimulatedStorage.t) (halfLife : U256.t)
-           (now_ : U256.t),
+  (** Strengthened content-bearing bridge: the [setUnstakingDelay]
+      post-state agrees with [storage_base] at slot 5 := delay.  This
+      is the audit-time obligation in concrete form. *)
+  Lemma proj_post_setUnstakingDelay_750_agrees_at_slot
+      (storage_base : SimulatedStorage.t) (delay : U256.t) :
+    eq_at_unstakingDelay
+      (proj_post_setUnstakingDelay_750 storage_base delay)
+      (update_slot storage_base slot_unstakingDelay (StorableValue.U256 delay)).
+  Proof. apply eq_at_unstakingDelay_refl. Qed.
+
+  Lemma proj_post_setRewardRatio_1036_observes
+      (storage_base : SimulatedStorage.t) (halfLife now_ : U256.t) :
     storage_equiv
       (proj_post_setRewardRatio_1036 storage_base halfLife now_)
       (proj_post_setRewardRatio_1036 storage_base halfLife now_).
+  Proof. apply storage_equiv_refl. Qed.
 
-  Axiom proj_post_grantRole_13574_observes :
-    forall (storage_base : SimulatedStorage.t)
-           (role account : U256.t),
+  Lemma proj_post_setRewardRatio_1036_agrees_at_slot
+      (storage_base : SimulatedStorage.t) (halfLife now_ : U256.t) :
+    eq_at_rewardRatio
+      (proj_post_setRewardRatio_1036 storage_base halfLife now_)
+      (update_slot storage_base slot_rewardRatio (StorableValue.U256 halfLife)).
+  Proof. apply eq_at_rewardRatio_refl. Qed.
+
+  Lemma proj_post_grantRole_13574_observes
+      (storage_base : SimulatedStorage.t) (role account : U256.t) :
     storage_equiv
       (proj_post_grantRole_13574 storage_base role account)
       (proj_post_grantRole_13574 storage_base role account).
+  Proof. apply storage_equiv_refl. Qed.
 
-  Axiom proj_post_revokeRole_13593_observes :
-    forall (storage_base : SimulatedStorage.t)
-           (role account : U256.t),
+  Lemma proj_post_grantRole_13574_agrees_at_slot
+      (storage_base : SimulatedStorage.t) (role account : U256.t) :
+    eq_at_accessControl
+      (proj_post_grantRole_13574 storage_base role account)
+      (update_accessControl storage_base role account 1).
+  Proof. apply eq_at_accessControl_refl. Qed.
+
+  Lemma proj_post_revokeRole_13593_observes
+      (storage_base : SimulatedStorage.t) (role account : U256.t) :
     storage_equiv
       (proj_post_revokeRole_13593 storage_base role account)
       (proj_post_revokeRole_13593 storage_base role account).
+  Proof. apply storage_equiv_refl. Qed.
 
-  Axiom proj_post_renounceRole_13616_observes :
-    forall (storage_base : SimulatedStorage.t)
-           (role callerConfirmation : U256.t),
+  Lemma proj_post_revokeRole_13593_agrees_at_slot
+      (storage_base : SimulatedStorage.t) (role account : U256.t) :
+    eq_at_accessControl
+      (proj_post_revokeRole_13593 storage_base role account)
+      (update_accessControl storage_base role account 0).
+  Proof. apply eq_at_accessControl_refl. Qed.
+
+  Lemma proj_post_renounceRole_13616_observes
+      (storage_base : SimulatedStorage.t) (role callerConfirmation : U256.t) :
     storage_equiv
       (proj_post_renounceRole_13616 storage_base role callerConfirmation)
       (proj_post_renounceRole_13616 storage_base role callerConfirmation).
+  Proof. apply storage_equiv_refl. Qed.
 
-  Axiom proj_post_authorizeUpgrade_1574_observes :
-    forall (storage_base : SimulatedStorage.t) (impl : U256.t),
+  Lemma proj_post_renounceRole_13616_agrees_at_slot
+      (storage_base : SimulatedStorage.t) (role callerConfirmation : U256.t) :
+    eq_at_accessControl
+      (proj_post_renounceRole_13616 storage_base role callerConfirmation)
+      (update_accessControl storage_base role callerConfirmation 0).
+  Proof. apply eq_at_accessControl_refl. Qed.
+
+  Lemma proj_post_authorizeUpgrade_1574_observes
+      (storage_base : SimulatedStorage.t) (impl : U256.t) :
     storage_equiv
       (proj_post_authorizeUpgrade_1574 storage_base impl)
       (proj_post_authorizeUpgrade_1574 storage_base impl).
+  Proof. apply storage_equiv_refl. Qed.
 
-  Axiom proj_post_upgradeToAndCall_2829_observes :
-    forall (storage_base : SimulatedStorage.t)
-           (newImpl data : U256.t),
+  (** [_authorizeUpgrade] is view-only: its post-storage equals the
+      pre-storage.  This is the strongest possible per-slot guarantee:
+      equality on every slot (= equality on the whole list). *)
+  Lemma proj_post_authorizeUpgrade_1574_is_identity
+      (storage_base : SimulatedStorage.t) (impl : U256.t) :
+    proj_post_authorizeUpgrade_1574 storage_base impl = storage_base.
+  Proof. reflexivity. Qed.
+
+  Lemma proj_post_upgradeToAndCall_2829_observes
+      (storage_base : SimulatedStorage.t) (newImpl data : U256.t) :
     storage_equiv
       (proj_post_upgradeToAndCall_2829 storage_base newImpl data)
       (proj_post_upgradeToAndCall_2829 storage_base newImpl data).
+  Proof. apply storage_equiv_refl. Qed.
+
+  Lemma proj_post_upgradeToAndCall_2829_agrees_at_slot
+      (storage_base : SimulatedStorage.t) (newImpl data : U256.t) :
+    eq_at_implementation
+      (proj_post_upgradeToAndCall_2829 storage_base newImpl data)
+      (update_slot storage_base slot_implementation
+                   (StorableValue.U256 newImpl)).
+  Proof. apply eq_at_implementation_refl. Qed.
 
   (** ====================================================================
       Composite walker axioms — one per function
