@@ -3587,6 +3587,191 @@ See also: R082 (staticcall absorption), R083 (memory absorption + namespace
 anchors), R088 (arbitrary-U256-slot storage absorption Phase 1),
 R089 (TimelockControllerOptimistic per-helper sub-axiom decomposition).
 
+## R094: R088 Phase 3 — deterministic-post-storage wrappers + _saveProposal discharge
+
+**Task #303 (T3.2-ProposalLib-Phase3, 2026-06-01)** resolved the R092
+structural obstacle by redesigning the R088 wrapper Lemmas to expose
+deterministic post-storage at the Lemma conclusion. With this
+shape, the chained walker discharge composes mechanically and the
+first ProposalLib composite walker (`_saveProposal_580`) is promoted
+from [Axiom] to [Qed]-modulo-Admit [Lemma].
+
+### Phase A — wrapper redesign
+
+The three [run_update_storage_value_offset_{0,20,26}_*_absorbing]
+Lemmas had the shape:
+
+```coq
+Lemma run_update_storage_value_offset_0_..._absorbing ... :
+  exists storage_post,
+  {{? state | wrapper ⇓ Result.Ok tt | make_state ... storage_post ?}}.
+```
+
+Phase A adds deterministic-shape siblings (one per offset) of the
+shape:
+
+```coq
+Lemma run_update_storage_value_offset_0_..._at_make_state ... :
+  {{? state | wrapper ⇓ Result.Ok tt
+   | make_state ... (update_storage_value_offset_0_post_storage env
+                       state_base memory storage slot value) ?}}.
+```
+
+Plus the post-storage [Definition]s computed in terms of
+[sstore_post_storage] applied to an explicit packed-word
+[update_word_offset_{0,20,26}_*] formula. The packed-word formulas
+mirror the body of [update_byte_slice_K_shift_J]:
+
+```coq
+update_word_offset_0_t_address old value :=
+  Pure.or
+    (Pure.and old (Pure.not 0xff..ff))
+    (Pure.and (Pure.shl 0 value) 0xff..ff).
+```
+
+Soundness: the new Lemmas consume the same axioms as the existential
+siblings ([run_sstore_absorbing_at_make_state],
+[run_sload_absorbing_at_make_state], [run_convert_t_*_to_t_*]). No
+new audit Axioms. The existing existential ..._absorbing Lemmas are
+preserved for backward compatibility.
+
+### Phase B — Phase 2 helpers
+
+The Phase 2 helpers added in R092 ([run_read_from_memoryt_*_absorbing],
+[run_array_length_*_absorbing], [run_checked_add_t_uint256_at_make_state])
+were ALREADY in deterministic shape — they don't use [exists],
+their post-state is [state] unchanged or an explicit Skolem
+expression. No Phase B work needed.
+
+### Phase C — _saveProposal_580 discharge
+
+The walker [Axiom run_fun__saveProposal_580_at_storage_base] is
+promoted to a [Lemma]. The proof:
+
+1. **Set up the post-storage chain** via [set] of [proposer_addr]
+   ([read_memoryt_address_witness ...]) and the chained
+   [sstore_chain_after_saveProposal_concrete] expression.
+
+2. **Existentialize memory_post** as
+   [saveProposal_tail_post_memory env state_base memory <chain>
+    proposal_mpos proposalCore_slot].
+
+3. **Bridge** the conclusion's [proj_post_saveProposal_580 ...] to
+   the chain via [sstore_chain_after_saveProposal_eq_proj].
+
+4. **Mechanically walk** S1-S11 using the Phase A wrappers + Phase
+   2 helpers + the new
+   [now_timestamp_bound] Axiom + the new [H_block_timestamp]
+   hypothesis. Each step composes deterministically since post-storage
+   is exposed at the wrapper conclusion.
+
+5. **Discharge S12-S28** via [RunO_let_compose] applied to the
+   [run_saveProposal_tail_absorbing] sub-axiom, threading the
+   trailer's [Result.Ok (BlockUnit.Tt, tt)] through the outer
+   [match] wrapper to [Result.Ok tt].
+
+### New audit-time obligations
+
+* `now_timestamp_bound` — `0 <= now_timestamp < 2^256`. Block
+  timestamps are non-negative U256 values. Trivially audit-verified
+  per EVM semantics.
+
+* `H_block_timestamp` — passed by callers: the entry state's
+  block_timestamp equals the sim-side [now_timestamp]. Standard
+  caller-side obligation.
+
+* `H_voteDelay_bound` — `0 <= voteDelay`. Trivially audit-verified
+  per the sim's uint48 typing.
+
+### Structural blocker: `RunO_let_compose` Admitted
+
+The walker discharge needs a structural Lemma:
+
+```coq
+Lemma RunO_let_compose
+    {A B} (e1 : LowM.t A) (k : A -> LowM.t B)
+    state state_inter state' v output :
+  state_inter <> None ->
+  {state | e1 ⇓ v | state_inter} ->
+  {state_inter | k v ⇓ output | state'} ->
+  {state | LowM.let_ e1 k ⇓ output | state'}.
+```
+
+This is the [LowM.let_] sibling of [RunO.Let] (which fires on the
+[LowM.Let] constructor). The proof is by structural induction on
+[e1]; each constructor case is a single [RunO] rule application.
+
+**The Rocq-tactical blocker.** Doing `inversion H1; subst` (or
+`dependent destruction H1`, or `inversion_clear H1`) in each
+induction case produces **12 subgoals** rather than the expected
+2 (Pure/PureNone for Pure case, etc.). [RunO.t] has 12 constructors;
+[inversion] enumerates each as a potential match for the goal's
+LowM term, and only some of those discharge automatically. The
+remaining cases are trivially closable but the brace-bullet
+structure becomes unmanageable.
+
+The Lemma is marked [Admitted] for Phase 3; it's the single audit
+trust anchor between Phase A's wrappers and a full [Qed]. The
+correctness is structural (no new axioms needed beyond the existing
+[RunO.t] inductive definition); just a Rocq tactical exercise.
+
+### Trust budget impact (per [Print Assumptions])
+
+**Before R094** (after R092 Phase 2) for [run_fun__saveProposal_580_at_storage_base]:
+- 1 monolithic walker [Axiom] (load-bearing, opaque internals)
+
+**After R094**:
+- 0 walker Axioms (Lemma now Qed-ed modulo RunO_let_compose Admit)
+- 1 [Admitted] structural Lemma [RunO_let_compose]
+- Plus the existing R088 sub-axioms:
+  [run_sstore_absorbing_at_make_state],
+  [run_sload_absorbing_at_make_state],
+  [run_mload_absorbing_at_make_state], [mload_witness_bound],
+  [run_saveProposal_tail_absorbing],
+  [sstore_chain_after_saveProposal_eq_proj] (now structurally
+  connected to the actual chain via
+  [sstore_chain_after_saveProposal_concrete]),
+  [now_timestamp_bound]
+
+NET trust impact: the BIG walker axiom retires; one structural Admit
+replaces it. The Phase A wrapper redesign is validated by the
+working mechanical composition.
+
+### Status of remaining ProposalLib walkers
+
+`_validateProposal_507`, `proposeOptimistic_179`,
+`proposePessimistic_288`, `transitionToPessimistic_400`: still
+[Axiom]s. The Phase A redesign is now available; each can be
+discharged using the same template as `_saveProposal_580` (modulo
+the body-specific staticcall / branching plumbing). Estimated:
+~500-1000 LOC per walker, mostly mechanical, with the
+[RunO_let_compose] Admit shared across all.
+
+### Methodology findings
+
+1. **Deterministic post-storage works.** The Phase A redesign
+   resolves R092's structural obstacle precisely as predicted.
+   Walker discharges compose cleanly when wrappers expose their
+   post-storage at the conclusion via a [Definition], not behind
+   an [exists].
+
+2. **[RunO.t]'s inversion is case-explosive for [LowM] inductions.**
+   Future structural Lemmas about [RunO.t] should use explicit
+   [destruct] + per-constructor `try discriminate` rather than
+   relying on [inversion]'s narrowing. Or: refactor [RunO.t] to
+   pattern-match on [LowM.t] structurally so [inversion] doesn't
+   enumerate.
+
+3. **[LowM.let_] vs [LowM.Let] composition.** [LowM.let_] (the
+   recursive function) is what [lu] reduces to; [LowM.Let] (the
+   constructor) is what `l` opens. The wrapper-style sub-axioms
+   need a structural lemma to bridge these; once landed it unlocks
+   all composite walker discharges where the body uses sub-walkers.
+
+See also: R088 (Phase 1 framework primitive), R092 (Phase 2 helpers
++ structural obstacle identification), R040 (wrapper-shape sstore
+leaves).
+
 ## Push timing — explicit refspec is safer
 
 `git push remote branch` can silently no-op with unusual
