@@ -57,6 +57,7 @@ mocks/Nonces.v
 mocks/ReentrancyGuard.v
 mocks/EnumerableSet.v
 mocks/Votes.v
+mocks/ERC4626.v
 
 # --- ProposerThrottle ---
 simulations/ProposerThrottle.v
@@ -277,6 +278,7 @@ proofs/equivalence/Nonces.v
 proofs/equivalence/EnumerableSet.v
 proofs/equivalence/Checkpoints.v
 proofs/equivalence/Votes.v
+proofs/equivalence/ERC4626.v
 proofs/equivalence/ECDSA.v
 proofs/equivalence/ProposalLib.v
 proofs/equivalence/SelectorRegistry.v
