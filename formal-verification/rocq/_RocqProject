@@ -263,7 +263,7 @@ generated/TimelockControllerOptimistic_shallow.v
 # `From ReserveGovernor Require Import generated.StakingVault_shallow`
 # (or ReserveOptimisticGovernor_shallow). Uncomment the lines below
 # to make them part of the default full-tree build:
-# generated/StakingVault_shallow.v
+generated/StakingVault_shallow.v
 generated/ReserveOptimisticGovernor_shallow.v
 proofs/equivalence/Common.v
 proofs/equivalence/StaticCallBridge.v
@@ -291,3 +291,4 @@ proofs/equivalence/TimelockControllerBase.v
 proofs/equivalence/TimelockControllerOptimistic.v
 proofs/equivalence/ReserveOptimisticGovernor.v
 proofs/equivalence/StakingVaultExchange.v
+proofs/equivalence/StakingVaultRewards.v

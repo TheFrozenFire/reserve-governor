@@ -83,6 +83,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R064: `AbiEncoding.v` module
 - R065-R071: Per-mutator composite-walker recipe (validated on 12 mutators across 6 contracts)
 - R077: ReserveOptimisticGovernor mutator equivalence (Wave 1 — sim Qed + walker scaffold; Wave 2 binding pending GOV-BASE)
+- R083: StakingVault rewards equivalence — multi-token accrual + R063 safeTransfer + zero-first reentrancy lift
 
 ### Common pitfalls
 - R020: `Stdlib.timestamp` semantics (RESOLVED)
@@ -1474,6 +1475,94 @@ been briefed against descriptions that diverged from actual source.
 **Discipline:** first action of any equivalence-proof task is to read
 the actual `contracts/.../X.sol` source. If the brief is wrong, file
 a WISDOM note (or update the task) and proceed against truth.
+
+## R079: StakingVault rewards equivalence — multi-token accrual + ERC20 + zero-first reentrancy
+
+Validates the R067 / R069 composite-walker recipe on the
+StakingVault rewards path, which combines THREE patterns:
+
+1. **Multi-token mapping accrual.** The contract maintains
+   per-token [RewardInfo] (5 slots: payoutLastPaid, rewardIndex,
+   balanceAccounted, balanceLastKnown, totalClaimed) and
+   per-(token, user) [UserRewardInfo] (2 slots: lastRewardIndex,
+   accruedRewards). Slot layout: keccak256(token, 7) for
+   RewardInfo and keccak256(user, keccak256(token, 9)) for
+   UserRewardInfo. Two levels of keccak indirection ↔
+   `proofs/equivalence/StakingVaultRewards.v` keccak bound axioms
+   `keccak256_tuple2_offset_bound` + `keccak256_nested_offset_bound`.
+
+2. **R063 staticcall composition for safeTransfer.** The
+   `claimRewards` body ends each per-token iteration with an
+   `IERC20(token).safeTransfer(msg.sender, claimable)` call —
+   structurally identical to R063's `staticcall` composite but
+   using `call` (the SafeERC20 wrapper) since `transfer` mutates
+   the token's storage. Callee-spec axiom
+   `safeTransfer_4922_callee_spec` pairs the on-chain success
+   with the sim's `safeTransfer_success_spec_concrete`. The
+   companion sim layer `simulations/StakingVaultRewardsERC20.v`
+   carries the bookkeeping (balance decrement) at the mock-ERC20
+   level; the equivalence-layer obligation is "the vault's OWN
+   storage is preserved" (the token's storage is outside
+   `proj_sim`).
+
+3. **Reentrancy zero-first invariant lift.** The `claimRewards`
+   body writes `accruedRewards := 0` BEFORE the safeTransfer
+   external call (the load-bearing comment at StakingVault.sol:359).
+   The sim-level invariant is mechanized as
+   `proofs/StakingVaultRewardsReentrancy.v` (REN-1..REN-5);
+   the equivalence-layer re-exports those theorems in Section 8
+   of `proofs/equivalence/StakingVaultRewards.v`, plus
+   `claim_each_token_concrete_single_zero` and
+   `claim_each_token_concrete_single_totalClaimed` Qeds that
+   apply the sim invariants to the equivalence-layer sim
+   transformer. Both close against PrimInt63 framework axioms
+   only.
+
+**Layout.** Two-tier file:
+
+- Sections 1-3 are **slot-agnostic**: a sim aggregator
+  ([GlobalRewardState] over `perToken` / `perUser` dicts +
+  [rewardTokens] enumerable set), pure-Coq transformers
+  ([set_reward_ratio_sim], [poke_sim_full], [claim_sim_full]),
+  and a parameterized Section over [accrue_for_token] with
+  walker-template helper lemmas (ratio / tokens preservation
+  across the accrual fold). Closes Qed against PrimInt63 only.
+
+- Sections 4-8 are **concrete StakingVault inheritor**: binds
+  the shallow form's `fun_setRewardRatio_1036`, `fun_poke_1082`,
+  `fun_claimRewards_1010` via composite walker axioms, with
+  Skolemized post-storages and observational bridge axioms
+  per the R067 / R069 budget.
+
+**Trust budget per mutator** (matches R067 recipe):
+- 1 composite walker axiom
+- 1 Skolemized post-storage Parameter
+- 1 observational bridge axiom (conjunction over 3 slot
+  families: rewardRatio / rewardInfo / userReward)
+- Plus shared callee specs:
+  - `accessControl_checkRole_returns` (AccessControl modifier)
+  - `rewardTokenRegistry_isRegistered_returns` (R063 staticcall)
+  - `safeTransfer_4922_callee_spec` (R063 ERC20 call)
+- Plus shared infra: `keccak256_tuple2_offset_bound`,
+  `keccak256_nested_offset_bound`, the projection lens
+  [proj_sim_concrete] + 3 observational predicates with refl
+  axioms.
+
+Total **30 axioms** per the headline `Print Assumptions` of the
+milestone Qeds, dominated by Skolemized post-storages /
+observational predicates / callee specs — same R067 / R069
+budget shape as RewardTokenRegistry and SelectorRegistry.
+
+**Cross-pollination with other Wave 2 agents.** The
+[proj_sim_concrete] lens is left abstract precisely because
+StakingVault inherits ERC4626 (deposit/withdraw share math) +
+ERC20Votes (Trace208 checkpoints) + AccessControl — the full
+projection must compose with the other Wave 2 slices' projections
+on slots 0-1 (ERC4626 cache + ERC20 supply / balances), slots
+4-5 (unstakingManager / delay), slots 10-11 (optimistic
+delegation checkpoints). Each downstream concrete instantiation
+inherits the rewards-side observational predicates without
+re-deriving them.
 
 ---
 
