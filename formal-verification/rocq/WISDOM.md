@@ -105,6 +105,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R103: Deterministic-post-storage wrapper template
 - R104: Walker Axiom→Lemma rename (when wrapper layer not yet built)
 - R106: Sim widening to match modifier writes (preliminary to discharge)
+- R107: Shallow.let_state / Shallow.if_ structural absorbers (Yul if-revert shape)
 
 ### Common pitfalls and resolved issues
 - R020/R021/R035/R041/R042/R046/R073/R074: shallow_embed.py + framework bugs (RESOLVED upstream)
@@ -1469,6 +1470,66 @@ side-effects.
 
 Final discharge of modifier wrappers still requires sim-internal map
 widening (R101 Option A) or OZ-base mechanization (Option B).
+
+## R107: Shallow.let_state / Shallow.if_ structural absorbers
+
+Yul `if (cond) revert(...)` patterns produce the canonical post-cond-
+discharged shape
+
+```
+let_state~ 'tt := Shallow.if_ cond <revert_block> tt default~ tt in <continuation>
+```
+
+Once we prove `cond = 0`, the `Shallow.if_` reduces by computation to
+`M.pure (BlockUnit.Tt, tt)` (its definition: `if condition =? 0 then
+pure (Tt, failure) else success`).  The outer `Shallow.let_state` then
+desugars to a `LowM.Let` over the BlockUnit dispatch — which produces
+~50 lines of nested `match` cases (four BlockUnit constructors × the
+nested continuation), none of which `cbn match` reduces alone.
+
+**Absorber** (Qed Lemma in `proofs/equivalence/FrameworkExtensions.v`):
+
+```coq
+Lemma run_shallow_let_state_pure_BlockUnit_Tt
+    {S1 S2 : Set}
+    (state : option State.t) (x : S1)
+    (body : S1 -> S2 * Shallow.t S2)
+    (output : Result.t (BlockUnit.t * S2))
+    (state' : option State.t)
+    (H : {{? codes, env, state | snd (body x) ⇓ output | state' ?}}) :
+  {{? codes, env, state |
+    Shallow.let_state (M.pure (BlockUnit.Tt, x)) body ⇓ output | state' ?}}.
+Proof.
+  unfold Shallow.let_state, M.strong_let_, M.generic_let, M.pure.
+  eapply RunO.Let.
+  - apply RunO.Pure.
+  - cbn match. exact H.
+Qed.
+```
+
+Plus the composite sibling `run_shallow_let_state_if_zero` that bakes
+in the `Shallow.if_ 0 ...` reduction step (one tactic call instead of
+two).
+
+**Why a structural Lemma, not an inlined tactic.** The `cbn match`
+tactic doesn't reduce through the `let~` (which is `M.strong_let_ =
+generic_let LowM.Let`), and unfolding `Shallow.let_state` produces a
+goal with the full BlockUnit dispatch that the walker engine can't
+easily unify against.  The absorber bundles the unfold + the
+constructor `RunO.Let` + the `Result.Ok` continuation match into one
+forward-direction rewrite.
+
+**Soundness.** No new audit-time axioms — both absorbers are Qed
+Lemmas proven from `RunO.Let` + `RunO.Pure` + reduction.
+
+**Reuse.** Any Yul `if (cond) revert(...)` walker landing after
+`cond` has been proven zero discharges its structural residual with
+one `apply run_shallow_let_state_if_zero` (or
+`run_shallow_let_state_pure_BlockUnit_Tt` if the let_state body is
+already simplified past the `Shallow.if_`).  First consumer:
+`run_fun__mint_3368_equivalent` (task #314, NET 0 new audit Axioms
+for the headline theorem).  Future consumers: every `_burn` /
+`_transfer` / `_approve` / `validator_revert_*` walker shape.
 
 ---
 

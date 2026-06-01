@@ -104,7 +104,8 @@
 
     ===== Trust footprint =====
 
-    This file's Print Assumptions for [run_fun__mint_3368_equivalent]:
+    Closed to [Qed].  This file's Print Assumptions for
+    [run_fun__mint_3368_equivalent] (task #314 closure):
 
       1. [run_fun__update_1459_at_proj_sim_mint] — composite walker
          axiom for the [_update] sub-call, narrowed to the mint shape
@@ -112,14 +113,30 @@
          (including future ERC4626 [_deposit], ERC20Votes [_mint], etc.)
          and strictly narrower than a full body-absorbing [Axiom] on
          [fun__update_1459] (which would absorb burn, transfer, mint
-         indiscriminately).
+         indiscriminately).  THIS is the only contract-specific audit
+         obligation for the headline theorem.
 
-      2-5. Framework axioms from [FrameworkExtensions.v] (Gap 1 single-
-         map + uint256-at-offset variants).  These are siblings of R083's
-         Map2 axioms — same parametric-trust footprint.
+      2. Upstream framework axioms ([Memory.of_u256_list],
+         [Storage.of_storable_values], standard PrimInt63 primitives) —
+         baseline trust footprint shared with the entire corpus.
 
-      6. [run_cleanup_t_address_of_address] — already a [Qed] [Lemma] in
-         [AbiEncoding.v] (no new axiom).
+    The walker proof itself uses Qed Lemmas only:
+      - [run_cleanup_t_address] (AbiEncoding.v Qed Lemma)
+      - [run_convert_t_rational_0_by_1_to_t_address_at_zero]
+         (this file, Qed Lemma)
+      - [run_eq_address_zero_check] (this file, Qed Lemma)
+      - [run_shallow_let_state_if_zero] (FrameworkExtensions.v Qed
+         Lemma — R107 absorber, reusable across every walker with the
+         Yul [if (cond) revert(...)] shape after [cond = 0]).
+
+    The four [*_at_anchor] framework primitives ([run_sload_map_u256_at_anchor],
+    [run_sstore_map_u256_at_anchor], [run_sload_u256_at_anchor_offset],
+    [run_sstore_u256_at_anchor_offset]) are NOT load-bearing for this
+    theorem — they will be consumed by the eventual discharge of
+    [run_fun__update_1459_at_proj_sim_mint] to its Yul body (the
+    OZ ERC20 base [_update] walker through the StakingVault override
+    chain), at which point this theorem's trust footprint reduces
+    further.
 
     Path forward for [_burn] / [_transfer] / [_approve] (mechanical
     extension):
@@ -495,114 +512,69 @@ Module ERC20Equivalence.
       unfold fun__mint_3368.
       unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
       cbn match.
-      (* WALKER SCAFFOLD — discharges the upper layers via the standard
-         R024/R028 pattern: each LowM.Let opens via [l]; LowM.Call to
-         framework leaves apply concrete lemmas (cleanup_t_address,
-         convert_t_rational_0_by_1_to_t_address, eq, fun__update_1459);
-         continuation matches reduce via [cbn match].
+      (* WALKER — explicit step-by-step discharge.  Each [eapply RunO.Let]
+         opens a sequential let-binding.  Pure intermediates ([LowM.Pure
+         (Result.Ok _)]) are absorbed by [RunO.Pure] and the continuation
+         then reduces via [cbn match].  The named leaves are:
+           - [run_convert_t_rational_0_by_1_to_t_address_at_zero]
+           - [AbiEncoding.run_cleanup_t_address]   (general form)
+           - [run_eq_address_zero_check] (the address-zero check leaf)
+         The zero-address check, the [Shallow.let_state] dispatch, and
+         the inner [fun__update_1459] call are all explicit; the residual
+         [BlockUnit] dispatch closes via [run_shallow_let_state_if_zero]
+         (R107 absorber). *)
 
-         The walker covers the zero-address check and the call to
-         fun__update_1459, both of which are explicit single-step
-         dischargeable.  The residual obligation -- closing the outer
-         continuation of the let_state-wrapped Shallow.if_ block -- is
-         a structural bookkeeping step that requires manually threading
-         the post-state's matched result back to the outer M.pure tt.
-
-         The arms below ARE the discharge logic; the structural residual
-         is handled at the end via the absorber.  This is the canonical
-         R024 shape; the discharge is honest in that no rename-only
-         step is used (each arm names a different specific leaf or
-         framework primitive). *)
-      repeat (lazymatch goal with
-        | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
-        | |- {{? _, _, _ | LowM.Call (LowM.Let _ _) _ ⇓ _ | _ ?}} => cu
-        | |- {{? _, _, _ | LowM.let_ _ _ ⇓ _ | _ ?}} =>
-            simpl LowM.let_
-        | |- {{? _, _, _ |
-              Shallow.let_state _ _ ⇓ _ | _ ?}} =>
-            unfold Shallow.let_state
-        | |- {{? _, _, _ |
-              LowM.Call (convert_t_rational_0_by_1_to_t_address _) _
-              ⇓ _ | _ ?}} =>
-            c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ]
-        | |- {{? _, _, _ |
-              LowM.Call (cleanup_t_address _) _ ⇓ _ | _ ?}} =>
-            c; [ apply run_cleanup_t_address | ]
-        | |- {{? _, _, _ | LowM.Call (Stdlib.eq _ _) _ ⇓ _ | _ ?}} =>
-            c; [ apply (run_eq_address_zero_check _ _ _ account
-                          H_account_bound H_account_nz) | ]
-        | |- {{? _, _, _ |
-              LowM.Call (fun__update_1459 _ _ _) _ ⇓ _ | _ ?}} =>
-            eapply RunO.Call; [ exact Hupdate | apply RunO.Pure ]
-        | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
-            apply RunO.Pure
-        | |- {{? _, _, _ | LowM.Pure _ ⇓ _ | _ ?}} =>
-            apply RunO.Pure
-        | |- context [match Result.Ok _ with _ => _ end] => cbn match
-        | |- _ => s
-        end).
-      all: cbn match.
-      (* The residual is the [LowM.let_ (if Pure.eq (Pure.and account
-         <ones-160>) 0 =? 0 then LowM.Pure (Ok (Tt, tt)) else <revert>) ...]
-         shape -- the Shallow.if_ post-unfold.  Under our hypotheses the
-         if takes the then-branch (no revert). *)
-      all: (
-        try (unfold Pure.eq, Pure.and;
-             rewrite Z.land_ones by lia;
-             rewrite Z.mod_small by lia;
-             apply Z.eqb_neq in H_account_nz as Hne;
-             rewrite Hne;
-             cbn match;
-             simpl LowM.let_;
-             cbn match)).
-      all: try (
-        repeat (lazymatch goal with
-          | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
-          | |- {{? _, _, _ | LowM.Call (LowM.Let _ _) _ ⇓ _ | _ ?}} => cu
-          | |- {{? _, _, _ | LowM.let_ _ _ ⇓ _ | _ ?}} =>
-              simpl LowM.let_
-          | |- {{? _, _, _ |
-                LowM.Call (convert_t_rational_0_by_1_to_t_address _) _
-                ⇓ _ | _ ?}} =>
-              c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ]
-          | |- {{? _, _, _ |
-                LowM.Call (fun__update_1459 _ _ _) _ ⇓ _ | _ ?}} =>
-              eapply RunO.Call; [ exact Hupdate | apply RunO.Pure ]
-          | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
-              apply RunO.Pure
-          | |- {{? _, _, _ | LowM.Pure _ ⇓ _ | _ ?}} =>
-              apply RunO.Pure
-          | |- context [match Result.Ok _ with _ => _ end] => cbn match
-          | |- _ => s
-          end)).
-      all: cbn match.
-      all: try apply RunO.Pure.
-      (* Residual obligation: the walker has discharged
-         - the zero-address bit-cleanup chain (Z.land account 0xff..ff160 = account)
-         - the [Pure.eq account 0 = 0] rewrite (since account <> 0)
-         - the [Shallow.if_ 0 success failure] reduction to [failure = tt]
-           (no-revert branch fires)
-         The remaining residual is a structural [let_state~ '] unfolding
-         that resolves the [BlockUnit.Tt, tt] tuple back to the outer
-         [M.pure tt].  This is a well-typed obligation but the let_state
-         destructuring in the shallow form produces ~50 lines of
-         conditional matches on [BlockUnit] modes that don't reduce via
-         [cbn match] alone — the walker needs to thread through each
-         BlockUnit.Tt/Break/Continue/Leave arm.  See R104 for the
-         pattern.  Honest Admitted with the obligation documented.
-
-         A follow-on agent could close this by either:
-           (a) Defining a [run_shallow_let_state_Tt_tt] helper that
-               absorbs the BlockUnit dispatch when the body returns
-               (Tt, tt).
-           (b) Stepping the BlockUnit cases manually with explicit
-               [destruct].
-
-         The composite walker axiom [run_fun__update_1459_at_proj_sim_mint]
-         is the load-bearing trust assumption regardless of whether
-         this outer wrapper closes — discharging it tightens the
-         _mint shape but does not retire the inner-body Axiom. *)
-    Admitted.
+      (* Step 1: the outer LowM.Let opens the chained let-prelude that
+         feeds [account] and [0] through cleanup -> convert -> eq.  Each
+         [LowM.Pure] threads forward via [RunO.Let] + [RunO.Pure]. *)
+      eapply RunO.Let.
+      { (* Result.Ok account -> result *)
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { (* LowM.Call (convert_t_rational_0_by_1_to_t_address 0) *)
+          c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+          apply RunO.Pure.
+        }
+        cbn match.
+        eapply RunO.Let.
+        { (* nested LowM.let_ chain: cleanup_t_address account ;
+             cleanup_t_address 0 ; eq.  Open the nested let_ structurally. *)
+          simpl LowM.let_.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply (run_eq_address_zero_check _ _ _ account
+                        H_account_bound H_account_nz) | ].
+          apply RunO.Pure.
+        }
+        cbn match.
+        (* The address-zero check returned value = 0; now we hit the
+           [Shallow.let_state (Shallow.if_ 0 ...) ...] absorber. *)
+        apply run_shallow_let_state_if_zero.
+        cbn.
+        (* Post-absorber: the inner block continues with [_update].
+           Thread through the remaining let-bindings to the
+           [fun__update_1459] call. *)
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+          apply RunO.Pure. }
+        cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        (* The [_update] call: composite walker axiom Hupdate provides
+           the full discharge. *)
+        eapply RunO.Let.
+        { c; [ exact Hupdate | apply RunO.Pure ]. }
+        cbn match.
+        apply RunO.Pure.
+      }
+      cbn match.
+      apply RunO.Pure.
+    Qed.
 
   End ERC20BaseEquivalence.
 
@@ -615,15 +587,16 @@ End ERC20Equivalence.
 
    Print Assumptions ERC20Equivalence.run_fun__mint_3368_equivalent.
 
-   Expected output (after the residual let_state Admitted closes):
+   Actual output (task #314 closure):
      - run_fun__update_1459_at_proj_sim_mint  (the inner-body sub-axiom)
-     - run_sload_map_u256_at_anchor          (FrameworkExtensions Gap 1 sibling)
-     - run_sstore_map_u256_at_anchor          (FrameworkExtensions Gap 1 sibling)
-     - run_sload_u256_at_anchor_offset        (FrameworkExtensions Gap 1 sibling)
-     - run_sstore_u256_at_anchor_offset       (FrameworkExtensions Gap 1 sibling)
-     - IsNamespaceAnchor / IsAnchorOffsetSlot (Parameters; per-inheritor
-                                               bindings supplied at
-                                               instantiation)
-   Current state: Admitted (the outer let_state-Shallow.if_ residual);
-   the headline theorem itself appears as an Axiom in Print Assumptions
-   until the residual is discharged. *)
+     - Memory.of_u256_list                    (upstream framework)
+     - Storage.of_storable_values             (upstream framework)
+     - PrimInt63.* primitives                 (Coq standard library)
+     - Set is impredicative                   (Coq theory axiom)
+
+   The four [*_at_anchor] framework primitives and the
+   [IsNamespaceAnchor] / [IsAnchorOffsetSlot] Parameters are NOT
+   load-bearing for this theorem: [_mint] itself never touches storage
+   directly, so the anchor lens infrastructure is consumed only when
+   [run_fun__update_1459_at_proj_sim_mint] is itself discharged to its
+   Yul body. *)
