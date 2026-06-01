@@ -1,0 +1,71 @@
+# Theorem: ReserveOptimisticGovernorEquivalence.run_castVote_equivalent
+# Source:  ReserveOptimisticGovernor.v:1217
+# Module:  ReserveOptimisticGovernorEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+ReserveOptimisticGovernorEquivalence.run_fun_castVote_4378_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (proposalId support : RocqOfSolidity.U256.t)
+    (voter : Governor.Governor.Address) (weight : RocqOfSolidity.U256.t)
+    (p_sim : Governor.Governor.Proposal.t),
+  env.(RocqOfSolidity.Environment.caller) = voter ->
+  BinInt.Z.le BinNums.Z0 voter /\
+  BinInt.Z.lt voter
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  p_sim.(Governor.Governor.Proposal.pid) = proposalId ->
+  Governor.Governor.observe p_sim
+    ReserveOptimisticGovernorEquivalence.now_timestamp =
+  Governor.Governor.PhaseActive \/
+  Governor.Governor.observe p_sim
+    ReserveOptimisticGovernorEquivalence.now_timestamp =
+  Governor.Governor.PhaseStdActive ->
+  (p_sim.(Governor.Governor.Proposal.isOptimistic) = true ->
+   support = BinNums.Z0) ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists
+    (memory' : RocqOfSolidity.SimulatedMemory.t) (result : RocqOfSolidity.U256.t),
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok result)
+      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+      (ReserveOptimisticGovernor_shallow.ReserveOptimisticGovernor_1302.ReserveOptimisticGovernor_1302_deployed.fun_castVote_4378
+         proposalId support)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (ReserveOptimisticGovernorEquivalence.proj_post_castVote_4378
+               storage_base proposalId voter support weight
+               ReserveOptimisticGovernorEquivalence.now_timestamp)))
+ReserveOptimisticGovernorEquivalence.proj_post_castVote_4378 :
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  Governor.Governor.Address ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+ReserveOptimisticGovernorEquivalence.now_timestamp : RocqOfSolidity.U256.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative

@@ -1,0 +1,78 @@
+# Theorem: RewardTokenRegistryEquivalence.run_registerRewardToken_equivalent_make_state
+# Source:  RewardTokenRegistry.v:1629
+# Module:  RewardTokenRegistryEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+RewardTokenRegistryEquivalence.run_fun_registerRewardToken_101_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (sim : RewardTokenRegistry.RewardTokenRegistry.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (token : RocqOfSolidity.U256.t),
+  RewardTokenRegistryEquivalence.is_owner
+    env.(RocqOfSolidity.Environment.caller) = true ->
+  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
+  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  BinInt.Z.le BinNums.Z0 token /\
+  BinInt.Z.lt token
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  token <> BinNums.Z0 ->
+  RocqOfSolidity.StorableValue.map_get_u256
+    (RewardTokenRegistryEquivalence.positions_map sim) token = BinNums.Z0 ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory
+            (RewardTokenRegistryEquivalence.proj_sim sim)))
+      (RewardTokenRegistry_shallow.RewardTokenRegistry_156.RewardTokenRegistry_156_deployed.fun_registerRewardToken_101
+         token)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (RewardTokenRegistryEquivalence.proj_sim_post_register_reward_token
+               sim token)))
+RewardTokenRegistryEquivalence.proj_sim_register_reward_token_observes :
+  forall (sim : RewardTokenRegistry.RewardTokenRegistry.State.t)
+    (token : RewardTokenRegistry.RewardTokenRegistry.Address),
+  RewardTokenRegistryEquivalence.set_eq_in_registry
+    (RewardTokenRegistryEquivalence.proj_sim_post_register_reward_token sim
+       token)
+    (RewardTokenRegistryEquivalence.proj_sim
+       (RewardTokenRegistryEquivalence.register_token_sim sim token))
+RewardTokenRegistryEquivalence.proj_sim_post_register_reward_token :
+  RewardTokenRegistry.RewardTokenRegistry.State.t ->
+  RewardTokenRegistry.RewardTokenRegistry.Address ->
+  RocqOfSolidity.SimulatedStorage.t
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+RewardTokenRegistryEquivalence.is_owner : RocqOfSolidity.U256.t -> bool
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative

@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# print-assumptions-snapshot — capture `Print Assumptions` for every
+# milestone Theorem under `proofs/equivalence/*.v`, write the output
+# to per-theorem text files, and diff against a checked-in baseline.
+#
+# Motivation
+# ----------
+# The audit story for the equivalence-proof tier depends on each
+# milestone closing against a small, *named* set of trust axioms.
+# `Print Assumptions <Theorem>` is the kernel-level oracle for that:
+# it lists exactly the `Axiom`s, `Parameter`s, and `Hypothesis`es a
+# proof transitively depends on. Up to now, audit reviewers ran the
+# command ad-hoc; this script turns it into a falsifiable artefact.
+#
+# What it does
+# ------------
+# 1. Walks every `.v` under `formal-verification/rocq/proofs/equivalence/`
+#    and extracts every `Theorem` whose name matches the milestone
+#    convention (run_*_equivalent, run_*_make_state, etc.), recording
+#    its enclosing Module so we have a fully-qualified Coq name.
+# 2. Generates one Coq driver file per equivalence module that
+#    `Require Import`s the module and runs `Print Assumptions
+#    <ModuleName>.<theorem>` for each milestone in that module.
+# 3. Runs `coqc` on each driver, capturing stdout to a per-theorem
+#    `.txt` under `<out_dir>/`.
+# 4. Builds a summary CSV (one row per milestone) listing the total
+#    axiom count and the "load-bearing" axiom count — total minus
+#    kernel primitives (PrimInt63.*, of_u256_list, of_storable_values,
+#    Set is impredicative).
+# 5. If a baseline snapshot exists, diffs each per-theorem file and
+#    reports drift: new axioms, removed axioms, or count changes.
+#
+# Usage
+# -----
+#   bash formal-verification/scripts/print-assumptions-snapshot          # run + diff
+#   bash formal-verification/scripts/print-assumptions-snapshot --refresh-baseline
+#                                                                       # overwrite baseline
+#   bash formal-verification/scripts/print-assumptions-snapshot --out=<dir>
+#                                                                       # write to custom dir
+#
+# The script does NOT regenerate `rocq/generated/*_shallow.v` — the
+# usual `scripts/rocq-build` precondition applies (i.e. the Rocq tree
+# must compile cleanly first; the snapshot reuses the cached `.vo`s).
+#
+# Env
+# ----
+#   ROCQ_TREE     Path to a built rocq-of-solidity checkout.
+#                 Default: $HOME/git/reserve/formal-verification/rocq-of-solidity
+#   REPO_TREE     Default: two levels up from this script.
+#   OPAM_SWITCH   If set, runs `eval "$(opam env --switch=$OPAM_SWITCH --set-switch)"`
+#                 before invoking coqc. Mirrors rocq-build.
+#   PA_TIMEOUT    Per-driver timeout in seconds. Default 120.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_TREE="${REPO_TREE:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+ROCQ_TREE="${ROCQ_TREE:-$HOME/git/reserve/formal-verification/rocq-of-solidity}"
+GOVERNOR_ROCQ="$REPO_TREE/formal-verification/rocq"
+SNAPSHOT_DIR="$GOVERNOR_ROCQ/print_assumptions_snapshot"
+BASELINE_DIR="$SNAPSHOT_DIR/baseline"
+OUT_DIR="$SNAPSHOT_DIR/current"
+REFRESH_BASELINE=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --refresh-baseline) REFRESH_BASELINE=1 ;;
+    --out=*)            OUT_DIR="${arg#--out=}" ;;
+    --help|-h)
+      sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+      exit 0 ;;
+    *) echo "unknown flag: $arg" >&2; exit 2 ;;
+  esac
+done
+
+# Opam-env load mirrors rocq-build. If coqc is on PATH already (CI),
+# skip the switch dance.
+if [[ -n "${OPAM_SWITCH:-}" ]]; then
+  if ! command -v opam >/dev/null 2>&1; then
+    echo "error: OPAM_SWITCH=$OPAM_SWITCH set but opam not found on PATH" >&2
+    exit 4
+  fi
+  eval "$(opam env --switch="$OPAM_SWITCH" --set-switch)"
+elif ! command -v coqc >/dev/null 2>&1 && command -v opam >/dev/null 2>&1; then
+  eval "$(opam env)"
+fi
+
+if ! command -v coqc >/dev/null 2>&1; then
+  echo "error: coqc not found on PATH. Set OPAM_SWITCH or see README." >&2
+  exit 5
+fi
+if [[ ! -f "$ROCQ_TREE/rocq/RocqOfSolidity/RocqOfSolidity.vo" ]]; then
+  echo "error: rocq-of-solidity not built at $ROCQ_TREE/rocq/RocqOfSolidity." >&2
+  echo "       Run scripts/rocq-build first to verify the tree compiles." >&2
+  exit 3
+fi
+
+# Resolve `timeout` (Linux) or `gtimeout` (macOS coreutils). Same as
+# rocq-build — we need an unbypassable upper bound on coqc invocations.
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_CMD=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_CMD=gtimeout
+else
+  echo "error: no \`timeout\` (Linux) or \`gtimeout\` (macOS) on PATH." >&2
+  echo "       macOS:  brew install coreutils" >&2
+  exit 7
+fi
+PA_TIMEOUT="${PA_TIMEOUT:-120}"
+
+mkdir -p "$OUT_DIR"
+
+# Drive the Python helper to do the heavy lifting: extract milestone
+# names, build the per-module Coq drivers, run them, parse output,
+# write per-theorem files and the summary.
+python3 "$SCRIPT_DIR/print_assumptions_snapshot_impl.py" \
+    --repo "$REPO_TREE" \
+    --rocq-tree "$ROCQ_TREE" \
+    --out "$OUT_DIR" \
+    --timeout "$PA_TIMEOUT" \
+    --timeout-cmd "$TIMEOUT_CMD"
+rc=$?
+
+if [[ $rc -ne 0 ]]; then
+  echo "error: snapshot generation failed (rc=$rc)" >&2
+  exit $rc
+fi
+
+# Diff against baseline (unless we're refreshing).
+if [[ $REFRESH_BASELINE -eq 1 ]]; then
+  echo "==> refreshing baseline at $BASELINE_DIR"
+  rm -rf "$BASELINE_DIR"
+  mkdir -p "$BASELINE_DIR"
+  cp -R "$OUT_DIR"/* "$BASELINE_DIR"/
+  echo "baseline updated. Review the diff in git and commit if intended."
+  exit 0
+fi
+
+if [[ ! -d "$BASELINE_DIR" ]]; then
+  echo "warning: no baseline at $BASELINE_DIR — run with --refresh-baseline to seed one." >&2
+  exit 0
+fi
+
+echo "==> diffing $OUT_DIR against $BASELINE_DIR"
+DRIFT=0
+# Compare per-theorem files. Use diff's exit code to detect drift.
+# We intentionally compare the full file (axiom bodies + counts) so
+# a "shape" change (axiom type signature changed) shows up as a diff.
+for f in "$OUT_DIR"/*.txt; do
+  [[ -e "$f" ]] || continue
+  base_f="$BASELINE_DIR/$(basename "$f")"
+  if [[ ! -f "$base_f" ]]; then
+    echo "  NEW   $(basename "$f")"
+    DRIFT=1
+    continue
+  fi
+  if ! diff -q "$base_f" "$f" >/dev/null 2>&1; then
+    echo "  DRIFT $(basename "$f")"
+    DRIFT=1
+  fi
+done
+# Catch milestones that disappeared.
+for f in "$BASELINE_DIR"/*.txt; do
+  [[ -e "$f" ]] || continue
+  cur_f="$OUT_DIR/$(basename "$f")"
+  if [[ ! -f "$cur_f" ]]; then
+    echo "  GONE  $(basename "$f")"
+    DRIFT=1
+  fi
+done
+
+# Also compare summary.csv — this is the milestone roster, axiom counts.
+if [[ -f "$BASELINE_DIR/summary.csv" && -f "$OUT_DIR/summary.csv" ]]; then
+  if ! diff -q "$BASELINE_DIR/summary.csv" "$OUT_DIR/summary.csv" >/dev/null 2>&1; then
+    echo "  DRIFT summary.csv"
+    DRIFT=1
+  fi
+fi
+
+if [[ $DRIFT -eq 0 ]]; then
+  echo "no drift — current snapshot matches baseline."
+else
+  echo ""
+  echo "drift detected. Inspect the per-file diffs:"
+  echo "  diff -ru $BASELINE_DIR $OUT_DIR"
+  echo ""
+  echo "If the drift is intentional (you added/refined axioms or"
+  echo "discharged old ones), refresh the baseline:"
+  echo "  bash $0 --refresh-baseline"
+  echo "and commit the resulting changes under print_assumptions_snapshot/baseline/."
+  exit 1
+fi

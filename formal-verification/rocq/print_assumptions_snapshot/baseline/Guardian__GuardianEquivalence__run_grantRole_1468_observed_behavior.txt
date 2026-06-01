@@ -1,0 +1,34 @@
+# Theorem: GuardianEquivalence.run_grantRole_1468_observed_behavior
+# Source:  Guardian.v:5390
+# Module:  GuardianEquivalence
+#
+Axioms:
+GuardianEquivalence.run_grantRole_1468_observed_behavior :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t) (sim : Guardian.Guardian.State.t)
+    (role account : RocqOfSolidity.U256.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t),
+  RocqOfSolidity.U256.Valid.t role ->
+  BinInt.Z.le BinNums.Z0 account /\
+  BinInt.Z.lt account
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  let state :=
+    RocqOfSolidity.make_state env state_base memory
+      (GuardianEquivalence.proj_sim sim) in
+  exists state' : RocqOfSolidity.State.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok BinNums.Z0)
+      (Some state)
+      (Guardian_shallow.Guardian_325.Guardian_325_deployed.fun__grantRole_1468
+         role account) (Some state')
+Theory:
+Set is impredicative

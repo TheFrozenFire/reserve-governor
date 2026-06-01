@@ -1,0 +1,94 @@
+# Theorem: StakingVaultAdminEquivalence.run_setNativeRewardRate_equivalent
+# Source:  StakingVaultAdmin.v:1862
+# Module:  StakingVaultAdminEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+StakingVaultAdminEquivalence.run_fun_setRewardRatio_1036_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (halfLife : RocqOfSolidity.U256.t),
+  StakingVaultAdminEquivalence.has_DEFAULT_ADMIN_ROLE
+    env.(RocqOfSolidity.Environment.caller) = true ->
+  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
+  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  BinInt.Z.le
+    (BinNums.Zpos
+       (BinNums.xO
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO
+                            (BinNums.xI
+                               (BinNums.xI
+                                  (BinNums.xO
+                                     (BinNums.xO
+                                        (BinNums.xO
+                                           (BinNums.xI
+                                              (BinNums.xO
+                                                 (BinNums.xI
+                                                 (BinNums.xO BinNums.xH)))))))))))))))))
+    halfLife ->
+  BinInt.Z.le halfLife
+    (BinNums.Zpos
+       (BinNums.xO
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO
+                            (BinNums.xO
+                               (BinNums.xI
+                                  (BinNums.xO
+                                     (BinNums.xI
+                                        (BinNums.xO
+                                           (BinNums.xI
+                                              (BinNums.xI
+                                                 (BinNums.xI
+                                                 (BinNums.xO
+                                                 (BinNums.xO
+                                                 (BinNums.xI (...)))))))))))))))))))) ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+      (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun_setRewardRatio_1036
+         halfLife)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (StakingVaultAdminEquivalence.proj_post_setRewardRatio_1036
+               storage_base halfLife
+               StakingVaultAdminEquivalence.now_timestamp)))
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+StakingVaultAdminEquivalence.now_timestamp : RocqOfSolidity.U256.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+StakingVaultAdminEquivalence.has_DEFAULT_ADMIN_ROLE :
+  RocqOfSolidity.U256.t -> bool
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative

@@ -1,0 +1,13 @@
+# Ignore the "current" working snapshot — that's the per-run output
+# of `scripts/print-assumptions-snapshot`, which the diff against the
+# checked-in `baseline/` is computed from. The baseline IS checked in
+# so future drift is detectable; the current directory is recomputed
+# locally on every run.
+current/
+
+# Driver compilation byproducts (the wrapper cleans these up on
+# success but they may linger on error or partial runs).
+*.vo
+*.vok
+*.vos
+*.glob

@@ -1,0 +1,51 @@
+# Theorem: UnstakingManagerEquivalence.run_createLock_make_state
+# Source:  UnstakingManager.v:555
+# Module:  UnstakingManagerEquivalence
+#
+Axioms:
+UnstakingManagerEquivalence.run_createLock_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (vault_addr caller user : UnstakingManager.UnstakingManager.Address)
+    (amount unlockTime : RocqOfSolidity.U256.t)
+    (sim : UnstakingManager.UnstakingManager.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t),
+  caller = vault_addr ->
+  BinInt.Z.lt
+    (BinInt.Z.add sim.(UnstakingManager.UnstakingManager.State.nextLockId)
+       (BinNums.Zpos BinNums.xH))
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))))))) ->
+  let state :=
+    RocqOfSolidity.make_state env state_base memory
+      (UnstakingManagerEquivalence.proj_sim sim) in
+  let new_lock :=
+    {|
+      UnstakingManager.UnstakingManager.Lock.user := user;
+      UnstakingManager.UnstakingManager.Lock.amount := amount;
+      UnstakingManager.UnstakingManager.Lock.unlockTime := unlockTime;
+      UnstakingManager.UnstakingManager.Lock.claimedAt := BinNums.Z0
+    |} in
+  let new_sim :=
+    {|
+      UnstakingManager.UnstakingManager.State.nextLockId :=
+        BinInt.Z.add sim.(UnstakingManager.UnstakingManager.State.nextLockId)
+          (BinNums.Zpos BinNums.xH);
+      UnstakingManager.UnstakingManager.State.locks :=
+        sim.(UnstakingManager.UnstakingManager.State.locks) ++
+        new_lock :: nil
+    |} in
+  exists state' : RocqOfSolidity.State.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some state)
+      (UnstakingManager_shallow.UnstakingManager_271.UnstakingManager_271_deployed.fun_createLock_144
+         user amount unlockTime) (Some state')
+Theory:
+Set is impredicative

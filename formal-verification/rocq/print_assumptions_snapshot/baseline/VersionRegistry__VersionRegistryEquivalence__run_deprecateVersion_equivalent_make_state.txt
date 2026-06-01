@@ -1,0 +1,127 @@
+# Theorem: VersionRegistryEquivalence.run_deprecateVersion_equivalent_make_state
+# Source:  VersionRegistry.v:1700
+# Module:  VersionRegistryEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+VersionRegistryEquivalence.run_fun_deprecateVersion_187_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (sim : VersionRegistry.VersionRegistry.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (versionHash role_registry_addr : RocqOfSolidity.U256.t)
+    (account : RocqOfSolidity.Account.t),
+  VersionRegistry.VersionRegistry.is_owner_or_emergency
+    env.(RocqOfSolidity.Environment.caller) = true ->
+  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
+  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  RocqOfSolidity.StorableValue.map_get_u256
+    (VersionRegistryEquivalence.isDeprecated_map
+       sim.(VersionRegistry.VersionRegistry.State.history)) versionHash =
+  BinNums.Z0 ->
+  RocqOfSolidity.Dict.get
+    (RocqOfSolidity.make_state env state_base memory
+       (VersionRegistryEquivalence.proj_sim sim))
+    .(RocqOfSolidity.State.accounts) env.(RocqOfSolidity.Environment.address) =
+  Some account ->
+  RocqOfSolidity.Dict.get account.(RocqOfSolidity.Account.immutables)
+    (BinNums.Zpos
+       (BinNums.xO
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO
+                            (BinNums.xO
+                               (BinNums.xO
+                                  (BinNums.xO
+                                     (BinNums.xO
+                                        (BinNums.xO
+                                           (BinNums.xO
+                                              (BinNums.xO
+                                                 (BinNums.xO
+                                                 (BinNums.xO
+                                                 (BinNums.xO (...))))))))))))))))))) =
+  Some role_registry_addr ->
+  RocqOfSolidity.Stdlib.precompile_output role_registry_addr nil = None ->
+  BinInt.Z.le BinNums.Z0 role_registry_addr /\
+  BinInt.Z.lt role_registry_addr
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  List.nth_error memory 2 =
+  Some
+    (BinNums.Zpos
+       (BinNums.xO
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))))) ->
+  5 < length memory ->
+  exists
+    (state_base' : RocqOfSolidity.State.t) (memory' : RocqOfSolidity.SimulatedMemory.t),
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory
+            (VersionRegistryEquivalence.proj_sim sim)))
+      (VersionRegistry_shallow.ReserveOptimisticGovernanceVersionRegistry_271.ReserveOptimisticGovernanceVersionRegistry_271_deployed.fun_deprecateVersion_187
+         versionHash)
+      (Some
+         (RocqOfSolidity.make_state env state_base' memory'
+            (VersionRegistryEquivalence.proj_sim_post_deprecate sim
+               versionHash)))
+VersionRegistryEquivalence.proj_sim_deprecate_at_observes :
+  forall (sim : VersionRegistry.VersionRegistry.State.t) 
+    (i : nat) (e : VersionRegistry.VersionRegistry.VersionEntry.t),
+  VersionRegistry.VersionRegistry.Valid.state sim ->
+  List.nth_error sim.(VersionRegistry.VersionRegistry.State.history) i =
+  Some e ->
+  e.(VersionRegistry.VersionRegistry.VersionEntry.deprecated) = false ->
+  VersionRegistryEquivalence.observationally_eq_storage_vr
+    (VersionRegistryEquivalence.proj_sim
+       (VersionRegistry.VersionRegistry.deprecate_at sim i))
+    (VersionRegistryEquivalence.proj_sim_post_deprecate sim
+       e.(VersionRegistry.VersionRegistry.VersionEntry.versionHash))
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+VersionRegistry.VersionRegistry.is_owner_or_emergency :
+  VersionRegistry.VersionRegistry.Address -> bool
+VersionRegistryEquivalence.isDeprecated_map_get_at_hash_of_entry :
+  forall (sim : VersionRegistry.VersionRegistry.State.t) 
+    (i : nat) (e : VersionRegistry.VersionRegistry.VersionEntry.t),
+  VersionRegistry.VersionRegistry.Valid.state sim ->
+  List.nth_error sim.(VersionRegistry.VersionRegistry.State.history) i =
+  Some e ->
+  RocqOfSolidity.StorableValue.map_get_u256
+    (VersionRegistryEquivalence.isDeprecated_map
+       sim.(VersionRegistry.VersionRegistry.State.history))
+    e.(VersionRegistry.VersionRegistry.VersionEntry.versionHash) =
+  (if e.(VersionRegistry.VersionRegistry.VersionEntry.deprecated)
+   then BinNums.Zpos BinNums.xH
+   else BinNums.Z0)
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+VersionRegistry.VersionRegistry.Version : Set
+Theory:
+Set is impredicative

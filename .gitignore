@@ -34,6 +34,10 @@ Playground.*
 .lia.cache
 .nia.cache
 
+# Python (e.g. formal-verification/scripts/*.py helpers)
+__pycache__/
+*.pyc
+
 # Certora per-run output dirs and build cache
 .certora_internal/
 emv-*-certora-*/

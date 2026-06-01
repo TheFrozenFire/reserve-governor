@@ -1,0 +1,30 @@
+# Theorem: UnstakingManagerEquivalence.run_cancelLock_make_state
+# Source:  UnstakingManager.v:593
+# Module:  UnstakingManagerEquivalence
+#
+Axioms:
+UnstakingManagerEquivalence.run_cancelLock_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (caller : UnstakingManager.UnstakingManager.Address)
+    (lockId : RocqOfSolidity.U256.t)
+    (sim : UnstakingManager.UnstakingManager.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t),
+  (UnstakingManager.UnstakingManager.lock_at sim lockId)
+  .(UnstakingManager.UnstakingManager.Lock.user) = caller ->
+  (UnstakingManager.UnstakingManager.lock_at sim lockId)
+  .(UnstakingManager.UnstakingManager.Lock.claimedAt) = BinNums.Z0 ->
+  let state :=
+    RocqOfSolidity.make_state env state_base memory
+      (UnstakingManagerEquivalence.proj_sim sim) in
+  let new_sim :=
+    UnstakingManager.UnstakingManager.set_lock sim lockId
+      UnstakingManager.UnstakingManager.default_lock in
+  exists state' : RocqOfSolidity.State.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some state)
+      (UnstakingManager_shallow.UnstakingManager_271.UnstakingManager_271_deployed.fun_cancelLock_212
+         lockId) (Some state')
+Theory:
+Set is impredicative

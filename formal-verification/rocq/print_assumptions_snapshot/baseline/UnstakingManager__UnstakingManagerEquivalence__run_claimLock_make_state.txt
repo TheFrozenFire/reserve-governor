@@ -1,0 +1,43 @@
+# Theorem: UnstakingManagerEquivalence.run_claimLock_make_state
+# Source:  UnstakingManager.v:619
+# Module:  UnstakingManagerEquivalence
+#
+Axioms:
+UnstakingManagerEquivalence.run_claimLock_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (lockId now : RocqOfSolidity.U256.t)
+    (sim : UnstakingManager.UnstakingManager.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t),
+  state_base.(RocqOfSolidity.State.block_timestamp) = now ->
+  BinInt.Z.gt
+    (UnstakingManager.UnstakingManager.lock_at sim lockId)
+    .(UnstakingManager.UnstakingManager.Lock.unlockTime) BinNums.Z0 /\
+  BinInt.Z.le
+    (UnstakingManager.UnstakingManager.lock_at sim lockId)
+    .(UnstakingManager.UnstakingManager.Lock.unlockTime) now ->
+  (UnstakingManager.UnstakingManager.lock_at sim lockId)
+  .(UnstakingManager.UnstakingManager.Lock.claimedAt) = BinNums.Z0 ->
+  let state :=
+    RocqOfSolidity.make_state env state_base memory
+      (UnstakingManagerEquivalence.proj_sim sim) in
+  let l := UnstakingManager.UnstakingManager.lock_at sim lockId in
+  let l' :=
+    {|
+      UnstakingManager.UnstakingManager.Lock.user :=
+        l.(UnstakingManager.UnstakingManager.Lock.user);
+      UnstakingManager.UnstakingManager.Lock.amount :=
+        l.(UnstakingManager.UnstakingManager.Lock.amount);
+      UnstakingManager.UnstakingManager.Lock.unlockTime :=
+        l.(UnstakingManager.UnstakingManager.Lock.unlockTime);
+      UnstakingManager.UnstakingManager.Lock.claimedAt := now
+    |} in
+  let new_sim := UnstakingManager.UnstakingManager.set_lock sim lockId l' in
+  exists state' : RocqOfSolidity.State.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some state)
+      (UnstakingManager_shallow.UnstakingManager_271.UnstakingManager_271_deployed.fun_claimLock_270
+         lockId) (Some state')
+Theory:
+Set is impredicative

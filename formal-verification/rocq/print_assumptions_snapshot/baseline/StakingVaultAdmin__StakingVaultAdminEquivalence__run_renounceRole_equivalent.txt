@@ -1,0 +1,60 @@
+# Theorem: StakingVaultAdminEquivalence.run_renounceRole_equivalent
+# Source:  StakingVaultAdmin.v:1993
+# Module:  StakingVaultAdminEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+StakingVaultAdminEquivalence.run_fun_renounceRole_13616_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (role callerConfirmation : RocqOfSolidity.U256.t),
+  callerConfirmation = env.(RocqOfSolidity.Environment.caller) ->
+  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
+  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  BinInt.Z.le BinNums.Z0 role /\
+  BinInt.Z.lt role
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))))))) ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+      (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun_renounceRole_13616
+         role callerConfirmation)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (StakingVaultAdminEquivalence.proj_post_renounceRole_13616
+               storage_base role callerConfirmation)))
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative

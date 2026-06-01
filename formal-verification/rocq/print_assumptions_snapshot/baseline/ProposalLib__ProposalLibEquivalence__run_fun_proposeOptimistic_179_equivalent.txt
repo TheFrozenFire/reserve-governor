@@ -1,0 +1,104 @@
+# Theorem: ProposalLibEquivalence.run_fun_proposeOptimistic_179_equivalent
+# Source:  ProposalLib.v:1350
+# Module:  ProposalLibEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+ProposalLibEquivalence.run_fun_proposeOptimistic_179_at_storage_base :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (proposal_offset proposalCore_slot
+     optimisticParams_offset : RocqOfSolidity.U256.t)
+    (p : ProposalLib.ProposalLib.ProposalData.t)
+    (core : ProposalLib.ProposalLib.ProposalCore.t)
+    (params : ProposalLib.ProposalLib.OptimisticGovernanceParams.t)
+    (roles : ProposalLib.ProposalLib.RoleSet)
+    (reg : ProposalLib.ProposalLib.SelectorRegistry)
+    (is_contract : ProposalLib.ProposalLib.Address -> bool),
+  ProposalLib.ProposalLib.proposeOptimistic p core params roles reg
+    is_contract ProposalLibEquivalence.now_timestamp =
+  ProposalLib.ProposalLib.Result.Success
+    (ProposalLib.ProposalLib.saveProposal p
+       params.(ProposalLib.ProposalLib.OptimisticGovernanceParams.vetoDelay)
+       params.(ProposalLib.ProposalLib.OptimisticGovernanceParams.vetoPeriod)
+       ProposalLibEquivalence.now_timestamp) ->
+  BinInt.Z.le BinNums.Z0
+    (BinInt.Z.add ProposalLibEquivalence.now_timestamp
+       params.(ProposalLib.ProposalLib.OptimisticGovernanceParams.vetoDelay)) /\
+  BinInt.Z.lt
+    (BinInt.Z.add ProposalLibEquivalence.now_timestamp
+       params.(ProposalLib.ProposalLib.OptimisticGovernanceParams.vetoDelay))
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xI BinNums.xH))))))) ->
+  BinInt.Z.le BinNums.Z0
+    params.(ProposalLib.ProposalLib.OptimisticGovernanceParams.vetoPeriod) /\
+  BinInt.Z.lt
+    params.(ProposalLib.ProposalLib.OptimisticGovernanceParams.vetoPeriod)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))) ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+      (ProposalLib_shallow.ProposalLib_680.ProposalLib_680_deployed.fun_proposeOptimistic_179
+         proposal_offset proposalCore_slot optimisticParams_offset)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (ProposalLibEquivalence.proj_post_proposeOptimistic_179
+               storage_base p core params
+               ProposalLibEquivalence.now_timestamp)))
+ProposalLibEquivalence.proj_post_saveProposal_580 :
+  RocqOfSolidity.SimulatedStorage.t ->
+  ProposalLib.ProposalLib.ProposalData.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
+ProposalLibEquivalence.proj_post_proposeOptimistic_179_observes :
+  forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (p : ProposalLib.ProposalLib.ProposalData.t)
+    (core : ProposalLib.ProposalLib.ProposalCore.t)
+    (params : ProposalLib.ProposalLib.OptimisticGovernanceParams.t)
+    (now_ : RocqOfSolidity.U256.t),
+  ProposalLibEquivalence.storage_equiv
+    (ProposalLibEquivalence.proj_post_proposeOptimistic_179 storage_base p
+       core params now_)
+    (ProposalLibEquivalence.proj_post_saveProposal_580 storage_base p
+       params.(ProposalLib.ProposalLib.OptimisticGovernanceParams.vetoDelay)
+       params.(ProposalLib.ProposalLib.OptimisticGovernanceParams.vetoPeriod)
+       now_)
+ProposalLibEquivalence.proj_post_proposeOptimistic_179 :
+  RocqOfSolidity.SimulatedStorage.t ->
+  ProposalLib.ProposalLib.ProposalData.t ->
+  ProposalLib.ProposalLib.ProposalCore.t ->
+  ProposalLib.ProposalLib.OptimisticGovernanceParams.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+ProposalLibEquivalence.now_timestamp : RocqOfSolidity.U256.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+ProposalLib.ProposalLib.has_confirmation_prefix :
+  ProposalLib.ProposalLib.Desc -> bool
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+ProposalLib.ProposalLib.description_proposer :
+  ProposalLib.ProposalLib.Desc -> option ProposalLib.ProposalLib.Address
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+ProposalLib.ProposalLib.Desc : Set
+Theory:
+Set is impredicative

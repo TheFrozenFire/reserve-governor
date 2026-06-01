@@ -1,0 +1,44 @@
+# Theorem: SelectorRegistryEquivalence.run_targets_equivalent_make_state
+# Source:  SelectorRegistry.v:705
+# Module:  SelectorRegistryEquivalence
+#
+Axioms:
+SelectorRegistryEquivalence.targets_view_at_proj_sim :
+  SelectorRegistry.SelectorRegistry.State.t -> RocqOfSolidity.U256.t
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+SelectorRegistryEquivalence.run_fun_targets_191_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (sim : SelectorRegistry.SelectorRegistry.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t),
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists state' : option RocqOfSolidity.State.t,
+    RocqOfSolidity.RunO.t codes env
+      (RocqOfSolidity.Result.Ok
+         (SelectorRegistryEquivalence.targets_view_at_proj_sim sim))
+      (Some
+         (RocqOfSolidity.make_state env state_base memory
+            (SelectorRegistryEquivalence.proj_sim sim)))
+      OptimisticSelectorRegistry_shallow.OptimisticSelectorRegistry_431.OptimisticSelectorRegistry_431_deployed.fun_targets_191
+      state'
+SelectorRegistryEquivalence.proj_sim :
+  SelectorRegistry.SelectorRegistry.State.t ->
+  RocqOfSolidity.SimulatedStorage.t
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative

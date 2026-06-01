@@ -1,0 +1,121 @@
+# Theorem: GuardianEquivalence.run_cancel_equivalent_make_state
+# Source:  Guardian.v:10344
+# Module:  GuardianEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+GuardianEquivalence.run_fun_cancel_238_at_proj_sim_guardian :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t) (sim : Guardian.Guardian.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (governor targets_offset targets_length values_offset values_length
+     calldatas_offset calldatas_length
+     descriptionHash : RocqOfSolidity.U256.t)
+    (key : Guardian.Guardian.ProposalKey.t)
+    (getProposalId_oracle : Guardian.Guardian.ProposalKey.t ->
+                            RocqOfSolidity.U256.t),
+  Guardian.Guardian.has_admin sim env.(RocqOfSolidity.Environment.caller) =
+  false ->
+  Guardian.Guardian.has_guardian sim env.(RocqOfSolidity.Environment.caller) =
+  true ->
+  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
+  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  BinInt.Z.le BinNums.Z0 governor /\
+  BinInt.Z.lt governor
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  governor <> BinNums.Z0 ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env
+      (RocqOfSolidity.Result.Ok (getProposalId_oracle key))
+      (Some
+         (RocqOfSolidity.make_state env state_base memory
+            (GuardianEquivalence.proj_sim sim)))
+      (Guardian_shallow.Guardian_325.Guardian_325_deployed.fun_cancel_238
+         governor targets_offset targets_length values_offset values_length
+         calldatas_offset calldatas_length descriptionHash)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (GuardianEquivalence.proj_sim sim)))
+GuardianEquivalence.run_fun_cancel_238_at_proj_sim_admin :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t) (sim : Guardian.Guardian.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (governor targets_offset targets_length values_offset values_length
+     calldatas_offset calldatas_length
+     descriptionHash : RocqOfSolidity.U256.t)
+    (key : Guardian.Guardian.ProposalKey.t)
+    (getProposalId_oracle : Guardian.Guardian.ProposalKey.t ->
+                            RocqOfSolidity.U256.t),
+  Guardian.Guardian.has_admin sim env.(RocqOfSolidity.Environment.caller) =
+  true ->
+  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
+  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  BinInt.Z.le BinNums.Z0 governor /\
+  BinInt.Z.lt governor
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  governor <> BinNums.Z0 ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env
+      (RocqOfSolidity.Result.Ok (getProposalId_oracle key))
+      (Some
+         (RocqOfSolidity.make_state env state_base memory
+            (GuardianEquivalence.proj_sim sim)))
+      (Guardian_shallow.Guardian_325.Guardian_325_deployed.fun_cancel_238
+         governor targets_offset targets_length values_offset values_length
+         calldatas_offset calldatas_length descriptionHash)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (GuardianEquivalence.proj_sim sim)))
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+GuardianEquivalence.OPTIMISTIC_GUARDIAN_ROLE_bytes32 : RocqOfSolidity.U256.t
+GuardianEquivalence.OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 :
+  RocqOfSolidity.U256.t
+GuardianEquivalence.DEFAULT_ADMIN_ROLE_bytes32 : RocqOfSolidity.U256.t
+Theory:
+Set is impredicative

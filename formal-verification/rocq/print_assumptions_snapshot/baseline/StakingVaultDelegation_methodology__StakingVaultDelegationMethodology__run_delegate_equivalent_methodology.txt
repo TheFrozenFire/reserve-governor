@@ -1,0 +1,8 @@
+# Theorem: StakingVaultDelegationMethodology.run_delegate_equivalent_methodology
+# Source:  StakingVaultDelegation_methodology.v:1449
+# Module:  StakingVaultDelegationMethodology
+#
+Axioms:
+ECDSA.ECDSA.Domain.deployment_id : Set
+Theory:
+Set is impredicative

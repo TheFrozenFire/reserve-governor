@@ -1,0 +1,81 @@
+# Theorem: SelectorRegistryEquivalence.run_unregisterSelectors_equivalent_make_state
+# Source:  SelectorRegistry.v:548
+# Module:  SelectorRegistryEquivalence
+#
+Axioms:
+SelectorRegistryEquivalence.unregister_batch_sim :
+  SelectorRegistry.SelectorRegistry.State.t ->
+  SelectorRegistryEquivalence.Batch ->
+  SelectorRegistry.SelectorRegistry.State.t
+SelectorRegistryEquivalence.target_in_storage :
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t -> bool
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+SelectorRegistryEquivalence.selector_at_target_in_storage :
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t -> bool
+SelectorRegistryEquivalence.run_fun_unregisterSelectors_180_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (sim : SelectorRegistry.SelectorRegistry.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (batch : SelectorRegistryEquivalence.Batch)
+    (selectorData_offset selectorData_length : RocqOfSolidity.U256.t),
+  SelectorRegistryEquivalence.is_timelock
+    env.(RocqOfSolidity.Environment.caller) = true ->
+  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
+  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory
+            (SelectorRegistryEquivalence.proj_sim sim)))
+      (OptimisticSelectorRegistry_shallow.OptimisticSelectorRegistry_431.OptimisticSelectorRegistry_431_deployed.fun_unregisterSelectors_180
+         selectorData_offset selectorData_length)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (SelectorRegistryEquivalence.proj_sim_post_unregister_selectors
+               sim batch)))
+SelectorRegistryEquivalence.proj_sim_unregister_selectors_observes :
+  forall (sim : SelectorRegistry.SelectorRegistry.State.t)
+    (batch : SelectorRegistryEquivalence.Batch),
+  SelectorRegistryEquivalence.set_eq_in_targets
+    (SelectorRegistryEquivalence.proj_sim_post_unregister_selectors sim batch)
+    (SelectorRegistryEquivalence.proj_sim
+       (SelectorRegistryEquivalence.unregister_batch_sim sim batch)) /\
+  SelectorRegistryEquivalence.set_eq_at_target
+    (SelectorRegistryEquivalence.proj_sim_post_unregister_selectors sim batch)
+    (SelectorRegistryEquivalence.proj_sim
+       (SelectorRegistryEquivalence.unregister_batch_sim sim batch))
+SelectorRegistryEquivalence.proj_sim_post_unregister_selectors :
+  SelectorRegistry.SelectorRegistry.State.t ->
+  SelectorRegistryEquivalence.Batch -> RocqOfSolidity.SimulatedStorage.t
+SelectorRegistryEquivalence.proj_sim :
+  SelectorRegistry.SelectorRegistry.State.t ->
+  RocqOfSolidity.SimulatedStorage.t
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+SelectorRegistryEquivalence.is_timelock : RocqOfSolidity.U256.t -> bool
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative

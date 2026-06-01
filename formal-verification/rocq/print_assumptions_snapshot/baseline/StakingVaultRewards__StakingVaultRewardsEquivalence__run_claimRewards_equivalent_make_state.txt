@@ -1,0 +1,96 @@
+# Theorem: StakingVaultRewardsEquivalence.run_claimRewards_equivalent_make_state
+# Source:  StakingVaultRewards.v:1200
+# Module:  StakingVaultRewardsEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+StakingVaultRewardsEquivalence.safeTransfer_success_spec_concrete :
+  StakingVaultRewardsEquivalence.Address ->
+  StakingVaultRewardsEquivalence.Address -> RocqOfSolidity.U256.t -> Prop
+StakingVaultRewardsEquivalence.run_fun_claimRewards_1010_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (sim : StakingVaultRewardsEquivalence.GlobalRewardState.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (tokens_offset tokens_length : RocqOfSolidity.U256.t)
+    (tokens : list StakingVaultRewardsEquivalence.Address),
+  StakingVaultRewardsEquivalence.wf_caller_bound
+    env.(RocqOfSolidity.Environment.caller) ->
+  StakingVaultRewardsEquivalence.wf_tokens_bound
+    sim.(StakingVaultRewardsEquivalence.GlobalRewardState.rewardTokens) ->
+  StakingVaultRewardsEquivalence.wf_tokens_bound tokens ->
+  (forall t : StakingVaultRewardsEquivalence.Address,
+   List.In t
+     sim.(StakingVaultRewardsEquivalence.GlobalRewardState.rewardTokens) ->
+   StakingVaultRewardsEquivalence.is_registered t = true) ->
+  StakingVaultRewardsEquivalence.wf_claim_request sim
+    env.(RocqOfSolidity.Environment.caller) tokens ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists
+    (memory' : RocqOfSolidity.SimulatedMemory.t) (return_value : RocqOfSolidity.U256.t),
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok return_value)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory
+            (StakingVaultRewardsEquivalence.proj_sim_concrete sim)))
+      (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun_claimRewards_1010
+         tokens_offset tokens_length)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (StakingVaultRewardsEquivalence.proj_sim_post_claimRewards_concrete
+               sim env.(RocqOfSolidity.Environment.caller) tokens)))
+StakingVaultRewardsEquivalence.proj_sim_post_claimRewards_concrete :
+  StakingVaultRewardsEquivalence.GlobalRewardState.t ->
+  StakingVaultRewardsEquivalence.Address ->
+  list StakingVaultRewardsEquivalence.Address ->
+  RocqOfSolidity.SimulatedStorage.t
+StakingVaultRewardsEquivalence.proj_sim_concrete :
+  StakingVaultRewardsEquivalence.GlobalRewardState.t ->
+  RocqOfSolidity.SimulatedStorage.t
+StakingVaultRewardsEquivalence.proj_sim_claimRewards_observes_concrete :
+  forall (sim : StakingVaultRewardsEquivalence.GlobalRewardState.t)
+    (caller : StakingVaultRewardsEquivalence.Address)
+    (tokens : list StakingVaultRewardsEquivalence.Address),
+  StakingVaultRewardsEquivalence.eq_at_rewardRatio_concrete
+    (StakingVaultRewardsEquivalence.proj_sim_post_claimRewards_concrete sim
+       caller tokens)
+    (StakingVaultRewardsEquivalence.proj_sim_concrete
+       (StakingVaultRewardsEquivalence.claim_sim_concrete sim caller tokens)) /\
+  (forall t : StakingVaultRewardsEquivalence.Address,
+   StakingVaultRewardsEquivalence.eq_at_reward_info_concrete
+     (StakingVaultRewardsEquivalence.proj_sim_post_claimRewards_concrete sim
+        caller tokens)
+     (StakingVaultRewardsEquivalence.proj_sim_concrete
+        (StakingVaultRewardsEquivalence.claim_sim_concrete sim caller tokens))
+     t) /\
+  (forall t u : StakingVaultRewardsEquivalence.Address,
+   StakingVaultRewardsEquivalence.eq_at_user_reward_concrete
+     (StakingVaultRewardsEquivalence.proj_sim_post_claimRewards_concrete sim
+        caller tokens)
+     (StakingVaultRewardsEquivalence.proj_sim_concrete
+        (StakingVaultRewardsEquivalence.claim_sim_concrete sim caller tokens))
+     t u)
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+StakingVaultRewardsEquivalence.is_registered :
+  StakingVaultRewardsEquivalence.Address -> bool
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+StakingVaultRewardsEquivalence.accrue_for_token_concrete :
+  StakingVaultRewardsEquivalence.GlobalRewardState.t ->
+  StakingVaultRewardsEquivalence.Address ->
+  StakingVaultRewardsEquivalence.Address ->
+  StakingVaultRewardsEquivalence.GlobalRewardState.t
+Theory:
+Set is impredicative

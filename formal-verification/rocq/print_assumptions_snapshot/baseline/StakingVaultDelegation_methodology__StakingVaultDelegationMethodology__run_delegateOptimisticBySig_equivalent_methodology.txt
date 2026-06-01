@@ -1,0 +1,15 @@
+# Theorem: StakingVaultDelegationMethodology.run_delegateOptimisticBySig_equivalent_methodology
+# Source:  StakingVaultDelegation_methodology.v:1532
+# Module:  StakingVaultDelegationMethodology
+#
+Axioms:
+ECDSA.ECDSA.typed_data_hash :
+  ECDSA.ECDSA.Domain.t -> ECDSA.ECDSA.Hash -> ECDSA.ECDSA.Hash
+ECDSA.ECDSA.recover :
+  ECDSA.ECDSA.Hash -> ECDSA.ECDSA.Signature -> ECDSA.ECDSA.Address
+ECDSA.ECDSA.optimistic_delegation_struct_hash :
+  ECDSA.ECDSA.Address ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t -> ECDSA.ECDSA.Hash
+ECDSA.ECDSA.Domain.deployment_id : Set
+Theory:
+Set is impredicative

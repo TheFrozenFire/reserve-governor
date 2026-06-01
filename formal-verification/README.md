@@ -242,3 +242,33 @@ that don't decay the repository on every contract source change.
 `solc-rocq` selects the fastest available path automatically
 (native binary where one exists, container fallback otherwise);
 the choice can be forced via `SOLC_ROCQ_MODE`.
+
+## Print Assumptions snapshot (audit drift detector)
+
+The equivalence-layer proofs in `rocq/proofs/equivalence/` close
+against a small named set of trust axioms. The
+[`scripts/print-assumptions-snapshot`](scripts/print-assumptions-snapshot)
+script captures `Print Assumptions <Theorem>` for every milestone
+Theorem in that tier, writes one `.txt` per milestone plus a
+summary CSV / markdown table, and diffs against a checked-in
+baseline.
+
+```sh
+# Run + diff (exit 1 on drift, 0 if matches baseline).
+OPAM_SWITCH=rocq820 bash formal-verification/scripts/print-assumptions-snapshot
+
+# Refresh the baseline after intentionally tightening or adding axioms.
+OPAM_SWITCH=rocq820 bash formal-verification/scripts/print-assumptions-snapshot --refresh-baseline
+```
+
+The baseline lives at
+[`rocq/print_assumptions_snapshot/baseline/`](rocq/print_assumptions_snapshot/baseline/)
+— check it in. Per-run output goes to
+`rocq/print_assumptions_snapshot/current/` (gitignored). See
+[`rocq/print_assumptions_snapshot/README.md`](rocq/print_assumptions_snapshot/README.md)
+for the full audit-value framing and refresh discipline.
+
+This is local-runnable instrumentation, not CI-wired. Its value
+is the human-readable diff that surfaces "did this commit add a
+new trust axiom?" — the falsifiable form of Audit.v's Caveat-5
+trust-budget claim.

@@ -1,0 +1,69 @@
+# Theorem: ReserveOptimisticGovernorEquivalence.run_execute_equivalent
+# Source:  ReserveOptimisticGovernor.v:1272
+# Module:  ReserveOptimisticGovernorEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+ReserveOptimisticGovernorEquivalence.run_fun_execute_4145_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (targets_mpos values_mpos calldatas_mpos descriptionHash
+     pid : RocqOfSolidity.U256.t) (isOpt : bool)
+    (p_sim : Governor.Governor.Proposal.t),
+  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
+  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  p_sim.(Governor.Governor.Proposal.pid) = pid ->
+  p_sim.(Governor.Governor.Proposal.isOptimistic) = isOpt ->
+  Governor.Governor.observe p_sim
+    ReserveOptimisticGovernorEquivalence.now_timestamp =
+  Governor.Governor.PhaseSucceeded \/
+  Governor.Governor.observe p_sim
+    ReserveOptimisticGovernorEquivalence.now_timestamp =
+  Governor.Governor.PhaseStdSucceeded \/
+  Governor.Governor.observe p_sim
+    ReserveOptimisticGovernorEquivalence.now_timestamp =
+  Governor.Governor.PhaseStdQueued ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists
+    (memory' : RocqOfSolidity.SimulatedMemory.t) (result : RocqOfSolidity.U256.t),
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok result)
+      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+      (ReserveOptimisticGovernor_shallow.ReserveOptimisticGovernor_1302.ReserveOptimisticGovernor_1302_deployed.fun_execute_4145
+         targets_mpos values_mpos calldatas_mpos descriptionHash)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (ReserveOptimisticGovernorEquivalence.proj_post_execute_4145
+               storage_base pid isOpt
+               ReserveOptimisticGovernorEquivalence.now_timestamp)))
+ReserveOptimisticGovernorEquivalence.proj_post_execute_4145 :
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  bool -> RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+ReserveOptimisticGovernorEquivalence.now_timestamp : RocqOfSolidity.U256.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative

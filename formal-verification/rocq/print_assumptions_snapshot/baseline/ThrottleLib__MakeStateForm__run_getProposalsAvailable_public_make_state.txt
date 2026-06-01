@@ -1,0 +1,154 @@
+# Theorem: MakeStateForm.run_getProposalsAvailable_public_make_state
+# Source:  ThrottleLib.v:1626
+# Module:  MakeStateForm
+#
+Axioms:
+RocqOfSolidity.CanonizeState.update_memory_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (new_memory : list RocqOfSolidity.U256.t),
+  RecordUpdate.set RocqOfSolidity.State.memory
+    (RocqOfSolidity.Memory.of_u256_list new_memory)
+    (RocqOfSolidity.make_state environment state memory storage) =
+  RocqOfSolidity.make_state environment state new_memory storage
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+RocqOfSolidity.Storage.run_sload_u256 :
+  forall (values : list RocqOfSolidity.StorableValue.t) 
+    (index : nat) (value : RocqOfSolidity.U256.t)
+    (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t),
+  RocqOfSolidity.State.get_current_storage environment state =
+  Some (RocqOfSolidity.Storage.of_storable_values values) ->
+  List.nth_error values index =
+  Some (RocqOfSolidity.StorableValue.U256 value) ->
+  RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok value)
+    (Some state) (RocqOfSolidity.Stdlib.sload (BinInt.Z.of_nat index))
+    (Some state)
+RocqOfSolidity.Storage.run_sload_struct_field :
+  forall (values : list RocqOfSolidity.StorableValue.t) 
+    (index : nat)
+    (map : RocqOfSolidity.Dict.t
+             (RocqOfSolidity.U256.t * RocqOfSolidity.U256.t)
+             RocqOfSolidity.U256.t) (key offset : RocqOfSolidity.U256.t)
+    (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : option RocqOfSolidity.State.t),
+  List.nth_error values index =
+  Some (RocqOfSolidity.StorableValue.MapStruct map) ->
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok
+       (RocqOfSolidity.StorableValue.map_get_u256 map (key, offset))) state
+    (RocqOfSolidity.Stdlib.sload
+       (BinInt.Z.add
+          (RocqOfSolidity.keccak256_tuple2 key (BinInt.Z.of_nat index))
+          offset)) state
+RocqOfSolidity.Memory.run_mstore :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t) (words : list RocqOfSolidity.U256.t)
+    (index : nat) (word : RocqOfSolidity.U256.t),
+  match RocqOfSolidity.List.update_nth words index word with
+  | Some words' =>
+      let state' :=
+        RecordUpdate.set RocqOfSolidity.State.memory
+          (RocqOfSolidity.Memory.of_u256_list words') state in
+      RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok tt)
+        (Some state)
+        (RocqOfSolidity.Stdlib.mstore
+           (BinInt.Z.mul
+              (BinNums.Zpos
+                 (BinNums.xO
+                    (BinNums.xO
+                       (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))
+              (BinInt.Z.of_nat index)) word) (Some state')
+  | None => True
+  end
+RocqOfSolidity.run_keccak256_tuple2 :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t) (memory : list RocqOfSolidity.U256.t)
+    (index : nat) (a b : RocqOfSolidity.U256.t),
+  state.(RocqOfSolidity.State.memory) =
+  RocqOfSolidity.Memory.of_u256_list memory ->
+  List.nth_error memory index = Some a ->
+  List.nth_error memory (S index) = Some b ->
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok (RocqOfSolidity.keccak256_tuple2 a b))
+    (Some state)
+    (RocqOfSolidity.Stdlib.keccak256
+       (BinInt.Z.mul
+          (BinNums.Zpos
+             (BinNums.xO
+                (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))
+          (BinInt.Z.of_nat index))
+       (BinInt.Z.mul
+          (BinNums.Zpos
+             (BinNums.xO
+                (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))
+          (BinNums.Zpos (BinNums.xO BinNums.xH)))) 
+    (Some state)
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+MakeStateForm.keccak256_tuple2_offset_bound :
+  forall key index offset : RocqOfSolidity.U256.t,
+  BinInt.Z.le BinNums.Z0 offset /\
+  BinInt.Z.lt offset
+    (BinNums.Zpos
+       (BinNums.xO
+          (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))) ->
+  BinInt.Z.le BinNums.Z0 (RocqOfSolidity.keccak256_tuple2 key index) /\
+  BinInt.Z.lt
+    (BinInt.Z.add (RocqOfSolidity.keccak256_tuple2 key index) offset)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))))))
+RocqOfSolidity.keccak256_tuple2 :
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
+PrimInt63.int : Set
+RocqOfSolidity.Address.implies_and_mask :
+  forall address : RocqOfSolidity.Address.t,
+  RocqOfSolidity.Address.Valid.t address ->
+  address =
+  BinInt.Z.land address
+    (BinInt.Z.sub
+       (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+          (BinNums.Zpos
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH)))))))))
+       (BinNums.Zpos BinNums.xH))
+RocqOfSolidity.get_memory_make_state_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t),
+  (RocqOfSolidity.make_state environment state memory storage)
+  .(RocqOfSolidity.State.memory) = RocqOfSolidity.Memory.of_u256_list memory
+RocqOfSolidity.State.get_current_storage_with_current_storage_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t) (storage : RocqOfSolidity.Storage.t),
+  RocqOfSolidity.State.get_current_storage environment
+    (RocqOfSolidity.State.with_current_storage environment state storage) =
+  Some storage
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative

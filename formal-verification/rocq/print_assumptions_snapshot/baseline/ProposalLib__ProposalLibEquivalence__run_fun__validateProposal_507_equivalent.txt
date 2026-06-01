@@ -1,0 +1,57 @@
+# Theorem: ProposalLibEquivalence.run_fun__validateProposal_507_equivalent
+# Source:  ProposalLib.v:1263
+# Module:  ProposalLibEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+ProposalLibEquivalence.run_fun__validateProposal_507_at_storage_base :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (proposal_offset proposalCore_slot : RocqOfSolidity.U256.t)
+    (p : ProposalLib.ProposalLib.ProposalData.t)
+    (core : ProposalLib.ProposalLib.ProposalCore.t),
+  ProposalLib.ProposalLib.validateProposal p core =
+  ProposalLib.ProposalLib.Result.Success tt ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+      (ProposalLib_shallow.ProposalLib_680.ProposalLib_680_deployed.fun__validateProposal_507
+         proposal_offset proposalCore_slot)
+      (Some (RocqOfSolidity.make_state env state_base memory' storage_base))
+ProposalLibEquivalence.proj_post_validateProposal_507_observes :
+  forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (p : ProposalLib.ProposalLib.ProposalData.t)
+    (core : ProposalLib.ProposalLib.ProposalCore.t),
+  ProposalLibEquivalence.storage_equiv
+    (ProposalLibEquivalence.proj_post_validateProposal_507 storage_base p
+       core) storage_base
+ProposalLibEquivalence.proj_post_validateProposal_507 :
+  RocqOfSolidity.SimulatedStorage.t ->
+  ProposalLib.ProposalLib.ProposalData.t ->
+  ProposalLib.ProposalLib.ProposalCore.t -> RocqOfSolidity.SimulatedStorage.t
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+ProposalLib.ProposalLib.has_confirmation_prefix :
+  ProposalLib.ProposalLib.Desc -> bool
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+ProposalLib.ProposalLib.description_proposer :
+  ProposalLib.ProposalLib.Desc -> option ProposalLib.ProposalLib.Address
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+ProposalLib.ProposalLib.Desc : Set
+Theory:
+Set is impredicative

@@ -1,0 +1,65 @@
+# Theorem: SelectorRegistryEquivalence.run_isAllowed_equivalent_make_state
+# Source:  SelectorRegistry.v:641
+# Module:  SelectorRegistryEquivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+SelectorRegistryEquivalence.selector_at_target_proj_sim_iff_isAllowed :
+  forall (sim : SelectorRegistry.SelectorRegistry.State.t)
+    (target selector : RocqOfSolidity.U256.t),
+  SelectorRegistryEquivalence.selector_at_target_in_storage target selector
+    (SelectorRegistryEquivalence.proj_sim sim) =
+  SelectorRegistry.SelectorRegistry.isAllowed sim target selector
+SelectorRegistryEquivalence.selector_at_target_in_storage :
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t -> bool
+SelectorRegistryEquivalence.run_fun_isAllowed_211_at_proj_sim :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (sim : SelectorRegistry.SelectorRegistry.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (target selector : RocqOfSolidity.U256.t),
+  BinInt.Z.le BinNums.Z0 target /\
+  BinInt.Z.lt target
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  let result :=
+    if
+     SelectorRegistryEquivalence.selector_at_target_in_storage target
+       selector (SelectorRegistryEquivalence.proj_sim sim)
+    then BinNums.Zpos BinNums.xH
+    else BinNums.Z0 in
+  exists state' : option RocqOfSolidity.State.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok result)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory
+            (SelectorRegistryEquivalence.proj_sim sim)))
+      (OptimisticSelectorRegistry_shallow.OptimisticSelectorRegistry_431.OptimisticSelectorRegistry_431_deployed.fun_isAllowed_211
+         target selector) state'
+SelectorRegistryEquivalence.proj_sim :
+  SelectorRegistry.SelectorRegistry.State.t ->
+  RocqOfSolidity.SimulatedStorage.t
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative
