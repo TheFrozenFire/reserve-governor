@@ -263,6 +263,7 @@ proofs/equivalence/ReentrancyGuard.v
 proofs/equivalence/Nonces.v
 proofs/equivalence/EnumerableSet.v
 proofs/equivalence/Checkpoints.v
+proofs/equivalence/Votes.v
 proofs/equivalence/ECDSA.v
 proofs/equivalence/ProposalLib.v
 proofs/equivalence/SelectorRegistry.v

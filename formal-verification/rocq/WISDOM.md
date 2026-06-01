@@ -72,6 +72,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R054: `observationally_eq_storage` per-slot pointwise equality
 - R059: `set_eq_at_role` membership equivalence
 - R051: Composite-axiom shape for milestone Qeds
+- R072: Abstract-base-class equivalence — slot-agnostic helpers + lens
 
 ### The R050 staticcall recipe
 - R063: `staticcall` as composite of existing primitives
@@ -658,6 +659,67 @@ Theorem run_<fn>_equivalent_make_state :
 
 The composite axiom is the audit-time obligation. Trust budget per
 mutator: 2-4 axioms.
+
+## R072: Abstract-base-class equivalence — slot-agnostic helpers
+
+Some OZ bases are **abstract**: they declare storage slots and methods
+but never deploy standalone — every method is inlined by Solc into an
+inheriting contract's shallow form. Examples in this corpus:
+
+- `AccessControl` / `AccessControlEnumerable` (consumed by Guardian)
+- `Nonces`, `ReentrancyGuard`, `EnumerableSet` (pure-fn library)
+- `Votes` (consumed by `ERC20Votes`, planned: StakingVault)
+- `Checkpoints.Trace208` (storage primitive, consumed by Votes)
+
+There's no `<base>_shallow.v` from solc for these — the Yul translation
+lands in the inheritor's shallow form, with slot indices fixed by the
+inheritor's storage layout.
+
+**Pattern** (Option 2 from `notes/votes_equivalence_methodology.md`):
+
+1. The `proofs/equivalence/<Base>.v` file is **slot-agnostic**: it
+   states sim-level lemmas about `mocks/<Base>.v` that hold
+   independently of where the inheritor lays out the base's slots.
+2. The file declares a Section parameterized by the slot indices
+   and a projection lens (`project : SimulatedStorage.t -> Base.State.t`).
+3. Lens-correctness hypotheses are declared as Section variables;
+   inheritors discharge them by `reflexivity` at instantiation.
+4. Walker-arm shapes are documented as comments — they can't be
+   made concrete without a shallow form to point at.
+
+**When this matters:**
+
+- ERC20Votes (#241), StakingVault delegation paths (#256), Governor
+  inheritance chain (#244) — all consume Votes; Votes.v gives them
+  the sim-level reasoning surface as a reusable layer.
+- Future ERC721Votes consumers would re-use the same Votes.v
+  helpers, supplying a different voting-units lens (token count
+  instead of balance).
+
+**How it composes with R055/R059/R063:**
+
+- R055 (membership equivalence): applies when the abstract base
+  uses an EnumerableSet (AccessControlEnumerable does; Votes does
+  not — Votes uses Maps).
+- R059 (set_eq_at_role): same caveat as R055.
+- R063 (staticcall): applies at the *Governor* side when the
+  Governor calls a Votes-bearing token externally (e.g.
+  `IVotes(token).getPastVotes(...)`). The Votes-side helpers
+  compose under the staticcall as a sub-Hoare-triple.
+
+**Trust:** zero new axioms. The slot-agnostic helpers close as
+pure-Coq facts about the mock; the lens hypotheses are discharged
+locally at instantiation time. Total trust budget per inheritor
+remains the standard R051/R055/R063 budget (2-4 composite axioms
+per mutator).
+
+**Existing precedents (all Qed today):**
+
+- `proofs/equivalence/EnumerableSet.v` — 7 sanity lemmas
+- `proofs/equivalence/Nonces.v` — `with_useCheckedNonce` wrapper + 5 lemmas
+- `proofs/equivalence/Checkpoints.v` — 7 sanity lemmas (Trace208)
+- `proofs/equivalence/Votes.v` — 17 sim-level lemmas + Section
+  template + walker documentation
 
 ---
 
