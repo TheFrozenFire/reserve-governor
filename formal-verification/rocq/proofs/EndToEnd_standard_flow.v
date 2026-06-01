@@ -164,7 +164,7 @@ Definition advance_to_std_active (p : Governor.Proposal.t)
      Governor.Proposal.proposer         := p.(Governor.Proposal.proposer);
      Governor.Proposal.voteStart        := p.(Governor.Proposal.voteStart);
      Governor.Proposal.voteDuration     := p.(Governor.Proposal.voteDuration);
-     Governor.Proposal.vetoThresholdTok := p.(Governor.Proposal.vetoThresholdTok);
+     Governor.Proposal.vetoThresholdD18 := p.(Governor.Proposal.vetoThresholdD18);
      Governor.Proposal.againstVotes     := p.(Governor.Proposal.againstVotes);
      Governor.Proposal.phase            := Governor.PhaseStdActive;
      Governor.Proposal.isOptimistic     := p.(Governor.Proposal.isOptimistic);
@@ -330,6 +330,23 @@ Theorem standard_lifecycle_exists
   (* Parent observable as Defeated at t1: in-window and threshold met *)
   t0 + vetoDelay <= t1 ->
   vetoThrTok >= 1 ->
+  (* CRIT-V / T1.4: vetoThrTok is now interpreted as the un-snapped
+     D18 fraction (was: snapped {tok}). The Defeated branch in
+     [observe] short-circuits on TRANSITIONED_VETO_THRESHOLD, so we
+     need vetoThrTok != that sentinel to land in the snap-and-compare
+     branch. Matches the contract's [require(... != TRANSITIONED)]
+     gate at ProposalLib.sol:117. *)
+  vetoThrTok <> Governor.TRANSITIONED_VETO_THRESHOLD ->
+  (* CRIT-V / T1.4: the snap-and-compare branch fires when
+     [againstVotes (= vetoThrTok in this witness) >=
+     vetoThresholdTokOf vetoThrTok pastSupply]. The Math.max(_, 1)
+     snap guarantees the rhs is >= 1, so we need
+     [vetoThrTok >= vetoThresholdTokOf vetoThrTok pastSupply]. For
+     the concrete calibration (vetoThrTok=1, pastSupply=100),
+     [vetoThresholdTokOf 1 100 = max(1, 0) = 1 <= 1 = vetoThrTok];
+     the hypothesis holds trivially. For other calibrations the
+     caller must discharge it. *)
+  vetoThrTok >= Governor.vetoThresholdTokOf vetoThrTok pastSupply ->
   (* Standard vote-window calibration: voteStart + voteDuration <= t3 *)
   t1 + votingDelay + votingPeriod <= t3 ->
   (* Delay above DONE_TIMESTAMP collision (#122) *)
@@ -373,7 +390,8 @@ Theorem standard_lifecycle_exists
       t3 + delay <= t_exec /\
       s5 = s5').
 Proof.
-  intros Hp0 Hps Hunset HdelayGe Hmono HparAct HthrPos Hwin Hdone.
+  intros Hp0 Hps Hunset HdelayGe Hmono HparAct HthrPos HnoSent HsnapLeVotes
+         Hwin Hdone.
   destruct Hmono as (Hm01 & Hm12 & Hm23 & Hm3d & HmdE).
   (* ----- Step 1 -> 2: add_veto with delta = vetoThrTok. ----- *)
   set (p1 := Governor.add_veto p0 vetoThrTok).
@@ -387,7 +405,7 @@ Proof.
   { unfold p1, Governor.add_veto. simpl. rewrite Hp0. simpl. reflexivity. }
   assert (Hp1vd : p1.(Governor.Proposal.voteDuration) = vetoPeriod).
   { unfold p1, Governor.add_veto. simpl. rewrite Hp0. simpl. reflexivity. }
-  assert (Hp1vtt : p1.(Governor.Proposal.vetoThresholdTok) = vetoThrTok).
+  assert (Hp1vD18 : p1.(Governor.Proposal.vetoThresholdD18) = vetoThrTok).
   { unfold p1, Governor.add_veto. simpl. rewrite Hp0. simpl. reflexivity. }
   assert (Hp1av : p1.(Governor.Proposal.againstVotes) = 0 + vetoThrTok).
   { unfold p1, Governor.add_veto. simpl. rewrite Hp0. simpl. reflexivity. }
@@ -395,19 +413,55 @@ Proof.
   { unfold p1, Governor.add_veto. simpl. reflexivity. }
   assert (Hp1ps : p1.(Governor.Proposal.pastSupply) = pastSupply).
   { unfold p1, Governor.add_veto. simpl. rewrite Hp0. simpl. reflexivity. }
-  (* ----- observe p1 t1 = PhaseDefeated (CRIT-G: requires pastSupply != 0) ----- *)
+  (* ----- observe p1 t1 = PhaseDefeated ------
+     STATEMENT CHANGED (CRIT-V / T1.4): the [vetoThresholdTok] field
+     is gone — the snapped {tok} is computed LIVE per call. The proof
+     now walks the new cascade: pending → sentinel → pastSupply==0
+     → LIVE snap-and-compare. The headline-theorem precondition
+     [pastSupply != 0] AND [vetoThrTok != Sentinel] (the new
+     [HnoSent] hypothesis added at T1.4) are what keep us in the
+     snap-and-compare branch. *)
   assert (Hobs1 : Governor.observe p1 t1 = Governor.PhaseDefeated).
   { unfold Governor.observe. rewrite Hp1ph. rewrite Hp1vs.
     rewrite Hp1opt.
     assert (Hpre : (t1 <? t0 + vetoDelay) = false)
       by (apply Z.ltb_ge; lia).
     rewrite Hpre.
+    (* sentinel-D18 branch: vetoThrTok != TRANSITIONED is the
+       precondition we added at T1.4. *)
+    assert (Hsentb : (p1.(Governor.Proposal.vetoThresholdD18)
+                       =? Governor.TRANSITIONED_VETO_THRESHOLD) = false).
+    { rewrite Hp1vD18. apply Z.eqb_neq. exact HnoSent. }
+    rewrite Hsentb.
     assert (Hps' : (p1.(Governor.Proposal.pastSupply) =? 0) = false).
     { rewrite Hp1ps. apply Z.eqb_neq. exact Hps. }
     rewrite Hps'.
+    (* Live snap: vetoThresholdTokOf vetoThrTok pastSupply.
+       Math.max-to-1 snap guarantees the result is >= 1, and the
+       calibration's HthrTokPos hypothesis is vetoThrTok >= 1, so
+       the snap may not even fire. Either way, againstVotes (= 0 +
+       vetoThrTok) >= 1 = snapped tok, so the >= comparison holds.
+
+       More carefully: snapped tok =
+       vetoThresholdTokOf vetoThrTok pastSupply
+       = max(1, vetoThrTok * pastSupply / 1e18).
+       Without further hypotheses about how vetoThrTok relates to
+       pastSupply, we cannot say in general that
+       againstVotes >= snapped. We need a stronger calibration
+       hypothesis. The cleanest is to add [HsnapBound]: the
+       snapped tok must be <= the votes the lifecycle adds (i.e.
+       <= vetoThrTok, since p1.againstVotes = vetoThrTok). For the
+       concrete calibration (vetoThrTok=1, pastSupply=100), snapped
+       tok = max(1, 100/1e18) = max(1, 0) = 1 <= vetoThrTok = 1.
+
+       We capture this as the new [HsnapLeVotes] hypothesis added
+       below; without it, the theorem would not hold under the new
+       (live) semantics. *)
     assert (Hge : (p1.(Governor.Proposal.againstVotes) >=?
-                   p1.(Governor.Proposal.vetoThresholdTok)) = true).
-    { rewrite Hp1av, Hp1vtt. apply Z.geb_le. lia. }
+                   Governor.vetoThresholdTokOf
+                     p1.(Governor.Proposal.vetoThresholdD18)
+                     p1.(Governor.Proposal.pastSupply)) = true).
+    { rewrite Hp1av, Hp1vD18, Hp1ps. apply Z.geb_le. lia. }
     rewrite Hge. reflexivity. }
   (* ----- Step 2: transition_to_pessimistic at t1 ----- *)
   set (parent' :=
@@ -415,7 +469,7 @@ Proof.
            Governor.Proposal.proposer         := p1.(Governor.Proposal.proposer);
            Governor.Proposal.voteStart        := p1.(Governor.Proposal.voteStart);
            Governor.Proposal.voteDuration     := p1.(Governor.Proposal.voteDuration);
-           Governor.Proposal.vetoThresholdTok := p1.(Governor.Proposal.vetoThresholdTok);
+           Governor.Proposal.vetoThresholdD18 := Governor.TRANSITIONED_VETO_THRESHOLD;
            Governor.Proposal.againstVotes     := p1.(Governor.Proposal.againstVotes);
            Governor.Proposal.phase            := Governor.PhaseDefeated;
            Governor.Proposal.isOptimistic     := p1.(Governor.Proposal.isOptimistic);
@@ -456,7 +510,7 @@ Proof.
            Governor.Proposal.proposer         := p3.(Governor.Proposal.proposer);
            Governor.Proposal.voteStart        := p3.(Governor.Proposal.voteStart);
            Governor.Proposal.voteDuration     := p3.(Governor.Proposal.voteDuration);
-           Governor.Proposal.vetoThresholdTok := p3.(Governor.Proposal.vetoThresholdTok);
+           Governor.Proposal.vetoThresholdD18 := p3.(Governor.Proposal.vetoThresholdD18);
            Governor.Proposal.againstVotes     := p3.(Governor.Proposal.againstVotes);
            Governor.Proposal.phase            := Governor.PhaseStdSucceeded;
            Governor.Proposal.isOptimistic     := p3.(Governor.Proposal.isOptimistic);
@@ -552,6 +606,8 @@ Corollary standard_lifecycle_reachable
   time_monotone t0 t1 t2 t3 t_exec delay ->
   t0 + vetoDelay <= t1 ->
   vetoThrTok >= 1 ->
+  vetoThrTok <> Governor.TRANSITIONED_VETO_THRESHOLD ->
+  vetoThrTok >= Governor.vetoThresholdTokOf vetoThrTok pastSupply ->
   t1 + votingDelay + votingPeriod <= t3 ->
   Timelock.DONE_TIMESTAMP < t3 + delay ->
   exists (p6 : Governor.Proposal.t) (s5 : Timelock.State.t),
@@ -561,12 +617,14 @@ Corollary standard_lifecycle_reachable
         (IntegrationGovernorTimelock.proposal_to_opid new_pid) t_exec
       = Timelock.OpDone.
 Proof.
-  intros Hp0 Hps Hunset HdelayGe Hmono HparAct HthrPos Hwin Hdone.
+  intros Hp0 Hps Hunset HdelayGe Hmono HparAct HthrPos HnoSent HsnapLeVotes
+         Hwin Hdone.
   pose proof (standard_lifecycle_exists
                 p0 s0 vetoDelay vetoPeriod vetoThrTok pastSupply
                 votingDelay votingPeriod new_pid
                 t0 t1 t2 t3 t_exec delay
-                Hp0 Hps Hunset HdelayGe Hmono HparAct HthrPos Hwin Hdone)
+                Hp0 Hps Hunset HdelayGe Hmono HparAct HthrPos HnoSent
+                HsnapLeVotes Hwin Hdone)
     as Hex.
   destruct Hex as (p1 & p2 & p3 & p4 & p5 & s4 & s5 & parent' &
                    Hp1eq & Htrans & Hp2ph & Hp2opt &
@@ -814,6 +872,11 @@ Proof.
   - exact xcheck_time_monotone.
   - vm_compute. discriminate.
   - vm_compute. discriminate.
+  - (* HnoSent: c_vetoThrTok = 1 != Sentinel = 2^256-1. *)
+    vm_compute. discriminate.
+  - (* HsnapLeVotes: c_vetoThrTok (= 1) >=
+       vetoThresholdTokOf c_vetoThrTok c_pastSupply (= max(1, 100/1e18) = 1). *)
+    vm_compute. discriminate.
   - vm_compute. discriminate.
   - vm_compute. reflexivity.
 Qed.

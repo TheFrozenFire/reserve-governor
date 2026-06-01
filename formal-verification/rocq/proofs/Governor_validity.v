@@ -36,7 +36,7 @@ Lemma add_veto_preserves_validity (p : Proposal.t) (delta : U256.t) :
   Valid.proposal (add_veto p delta).
 Proof.
   intros Hv Hbound.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
+  destruct Hv as [Hpid Hvs Hvd HvD18 Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
@@ -70,7 +70,7 @@ Proof.
   destruct (p.(Proposal.isOptimistic)) eqn:Hopt; [discriminate|].
   destruct (phase_eq p.(Proposal.phase) PhaseStdSucceeded); [|discriminate].
   injection Hok as Hp'. rewrite <- Hp'.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
+  destruct Hv as [Hpid Hvs Hvd HvD18 Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
@@ -83,7 +83,7 @@ Proof.
   destruct (p.(Proposal.isOptimistic)); [discriminate|].
   destruct (phase_eq p.(Proposal.phase) PhaseStdQueued); [|discriminate].
   injection Hok as Hp'. rewrite <- Hp'.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
+  destruct Hv as [Hpid Hvs Hvd HvD18 Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
@@ -96,7 +96,7 @@ Proof.
   destruct (negb p.(Proposal.isOptimistic)); [discriminate|].
   destruct (observe p now); try discriminate.
   injection Hok as Hp'. rewrite <- Hp'.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
+  destruct Hv as [Hpid Hvs Hvd HvD18 Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
@@ -108,7 +108,7 @@ Proof.
   intros Hv Hok. unfold cancel in Hok.
   destruct (p.(Proposal.phase)); try discriminate;
     injection Hok as Hp'; rewrite <- Hp';
-    destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent];
+    destruct Hv as [Hpid Hvs Hvd HvD18 Havotes Hparent Hps];
     constructor; simpl; auto.
 Qed.
 
@@ -123,14 +123,25 @@ Proof.
   destruct (now <? p.(Proposal.voteStart) + p.(Proposal.voteDuration));
     [discriminate|].
   injection Hok as Hp'. rewrite <- Hp'.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
+  destruct Hv as [Hpid Hvs Hvd HvD18 Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
 (** ----- propose_optimistic produces a valid proposal under sane inputs.
     Sane inputs: pid, proposer, the delay/period inputs, and the
-    derived vetoThresholdTok all fit in uint256. The [now + vetoDelay]
-    sum has to fit too. *)
+    stored vetoThresholdD18 (un-snapped fraction) all fit in uint256.
+    The [now + vetoDelay] sum has to fit too.
+
+    STATEMENT CHANGED (CRIT-V / T1.4): the validity claim about the
+    stored threshold field is now on [vetoThresholdD18] directly (the
+    un-snapped D18 fraction), not on a derived [vetoThresholdTok]
+    (which is no longer stored). The
+    [vetoThresholdD18 * pastSupply < 2^256] precondition is no
+    longer required at propose-time — the snapping happens live in
+    [observe], where the multiplication's u256 fit is a separate
+    soundness concern (the snap-to-1 fires precisely to absorb the
+    floor-zero case; overflow on the multiplication itself is bounded
+    by the contract's Solidity 0.8+ checked arithmetic). *)
 Lemma vetoThresholdTokOf_u256 (vetoThresholdD18 pastSupply : U256.t) :
   0 <= vetoThresholdD18 -> 0 <= pastSupply ->
   vetoThresholdD18 * pastSupply < 2^256 ->
@@ -163,14 +174,13 @@ Lemma propose_optimistic_preserves_validity
   U256.Valid.t (now + vetoDelay) ->
   U256.Valid.t vetoPeriod ->
   U256.Valid.t pastSupply ->
-  0 <= vetoThresholdD18 -> 0 <= pastSupply ->
-  vetoThresholdD18 * pastSupply < 2^256 ->
+  U256.Valid.t vetoThresholdD18 ->
   propose_optimistic pid proposer vetoDelay vetoPeriod vetoThresholdD18
     pastSupply throttleCharges targets selectors allow now
   = Result.Success p' ->
   Valid.proposal p'.
 Proof.
-  intros Hpid Hvs Hvd Hps Hv Hs Hbound Hok.
+  intros Hpid Hvs Hvd Hps Hd18 Hok.
   unfold propose_optimistic in Hok.
   destruct (throttleCharges <? 1); [discriminate|].
   destruct (Nat.eqb (length targets) 0); [discriminate|].
@@ -178,7 +188,6 @@ Proof.
   destruct (negb (all_calls_allowed allow targets selectors)); [discriminate|].
   injection Hok as Hp'. rewrite <- Hp'.
   constructor; simpl; auto.
-  - apply vetoThresholdTokOf_u256; assumption.
   - unfold U256.Valid.t. lia.
   - unfold U256.Valid.t. lia.
 Qed.

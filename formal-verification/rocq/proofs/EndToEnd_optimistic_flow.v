@@ -171,13 +171,16 @@ Definition init_slot : U256.t :=
     ====================================================================== *)
 
 (** Step 1: the proposal that [propose_optimistic] would return at
-    the initial calibration. *)
+    the initial calibration.
+
+    NOTE (T1.4): [fresh_optimistic] now takes [vetoThresholdD18] (the
+    un-snapped D18 fraction) rather than the snapped {tok} value.
+    [observe] snaps live on every call. *)
 Definition witness_p1 : Governor.Proposal.t :=
   Governor.fresh_optimistic init_pid init_proposer
                    (init_t0 + init_vetoDelay)
                    init_vetoPeriod
-                   (Governor.vetoThresholdTokOf init_vetoThresholdD18
-                                                init_pastSupply)
+                   init_vetoThresholdD18
                    init_pastSupply.
 
 (** Step 3: the proposal after [execute_optimistic]. Same record as
@@ -187,7 +190,7 @@ Definition witness_p2 : Governor.Proposal.t :=
      Governor.Proposal.proposer         := witness_p1.(Governor.Proposal.proposer);
      Governor.Proposal.voteStart        := witness_p1.(Governor.Proposal.voteStart);
      Governor.Proposal.voteDuration     := witness_p1.(Governor.Proposal.voteDuration);
-     Governor.Proposal.vetoThresholdTok := witness_p1.(Governor.Proposal.vetoThresholdTok);
+     Governor.Proposal.vetoThresholdD18 := witness_p1.(Governor.Proposal.vetoThresholdD18);
      Governor.Proposal.againstVotes     := witness_p1.(Governor.Proposal.againstVotes);
      Governor.Proposal.phase            := Governor.PhaseExecuted;
      Governor.Proposal.isOptimistic     := witness_p1.(Governor.Proposal.isOptimistic);

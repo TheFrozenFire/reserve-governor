@@ -9,37 +9,59 @@
     no addition of veto votes can ever flip the observable phase back
     to [Active] or [Succeeded].
 
-    The [Governor] simulation already pins the parent's phase to
-    [PhaseDefeated] inside [transition_to_pessimistic] (see
-    simulations/Governor.v:309-336) — the modeling shortcut documented
-    at line 56-65 of that file. That representation is observably
-    equivalent to the contract under the simulation's [observe]
-    function, because:
+    History.
+    --------
+    Before CRIT-V / T1.4 (this file's previous revision), the Governor
+    simulation modeled the contract's TRANSITIONED-sentinel write by
+    pinning the parent's [phase] field to [PhaseDefeated] AND freezing
+    a [vetoThresholdTok : U256.t] field at create time (so any
+    threshold change between create and observe was invisible). The
+    no-de-escalation claim was carried by the [phase = PhaseDefeated]
+    pin plus a votes-monotonicity argument.
 
-      - the precondition [observe parent now = PhaseDefeated] forces
-        [againstVotes >= vetoThresholdTok];
-      - [add_veto] only ever increases [againstVotes];
-      - therefore for any future [now' >= now_transition], the
-        optimistic branch of [observe] still resolves to
-        [PhaseDefeated].
+    With T1.4, the simulation:
+      - replaces [Proposal.vetoThresholdTok] (snapped {tok}) with
+        [Proposal.vetoThresholdD18] (un-snapped D18 fraction);
+      - [observe] computes the snapped {tok} threshold LIVE per call,
+        AND short-circuits to [PhaseDefeated] when
+        [vetoThresholdD18 == TRANSITIONED_VETO_THRESHOLD] (matching the
+        contract's branch at ROG.sol:243-246);
+      - [transition_to_pessimistic] writes
+        [vetoThresholdD18 := TRANSITIONED_VETO_THRESHOLD] AND pins
+        [phase := PhaseDefeated] on the parent.
 
-    This file delivers three deliverables:
+    The two writes are individually sufficient to keep [observe]
+    returning [PhaseDefeated] for the parent (the phase-pin via the
+    sticky-or-Defeated path; the sentinel via the new short-circuit).
+    We apply both so the sim's stored representation mirrors the
+    contract field-for-field, and so the deliverables below — which
+    used to rest on the votes-tally argument — can now rest on the
+    sentinel short-circuit directly.
 
-      1. [transition_writes_sentinel_lemma]: an explicit sentinel
-         write — i.e. a sister definition that rewrites
-         [vetoThresholdTok] to [2^256 - 1] — has the property that the
-         resulting parent has the sentinel stamp.
+    This file delivers (refreshed at T1.4):
 
-      2. [sentinel_makes_defeated_unreachable]: under the sentinel
-         encoding, the optimistic Defeated arm of [observe] is
-         unreachable for any [U256.Valid.t] [againstVotes].
+      1. [transition_writes_sentinel_lemma]: [transition_to_pessimistic]
+         writes the sentinel into [vetoThresholdD18]. (Previously stated
+         on a sister [transition_to_pessimistic_sentinel] definition;
+         the main entry point now carries the sentinel write, so the
+         sister definition is gone and the lemma references
+         [transition_to_pessimistic] directly.)
+
+      2. [sentinel_makes_defeated_certain]: when [vetoThresholdD18 =
+         TRANSITIONED_VETO_THRESHOLD] (and the parent is past its
+         snapshot), [observe] returns [PhaseDefeated]. Strictly stronger
+         than the previous "sentinel makes Defeated UNREACHABLE" — the
+         contract's short-circuit makes Defeated MANDATORY, not merely
+         possible-via-the-votes-tally.
 
       3. [cannot_de_escalate_after_transition] (headline): on the
-         existing simulation, after [transition_to_pessimistic]
-         succeeds, no sequence of [add_veto] calls can drive the
-         parent's observable phase back to [PhaseSucceeded] or
-         [PhaseActive], regardless of the wall-clock [now'] that
-         observers later choose (provided [now' >= now_transition]).
+         simulation, after [transition_to_pessimistic] succeeds, no
+         sequence of [add_veto] calls can drive the parent's observable
+         phase back to [PhaseSucceeded] or [PhaseActive], regardless of
+         the wall-clock [now'] that observers later choose (provided
+         [now' >= now_transition]). The proof is now via the sentinel
+         short-circuit ([sentinel_makes_defeated_certain]) plus
+         [add_veto] preserving [vetoThresholdD18].
 
     A [vm_compute] calibration cross-checks the sentinel encoding at a
     concrete (vetoThreshold-before, transition, vetoThreshold-after)
@@ -61,11 +83,15 @@ Import Governor.
 
 (** ===== Sentinel constant ===== *)
 
-(** The [type(uint256).max] sentinel as a Z. We define this locally as
-    [Sentinel] and prove its equivalence to
-    [ProposalLib.TRANSITIONED_VETO_THRESHOLD] so a future reader can
-    chase the dependency to the on-chain constant. *)
+(** The [type(uint256).max] sentinel as a Z. Equivalent to
+    [Governor.TRANSITIONED_VETO_THRESHOLD] and (via that) to
+    [ProposalLib.TRANSITIONED_VETO_THRESHOLD]. We keep the local
+    [Sentinel] name so a future reader can still cite both anchors. *)
 Definition Sentinel : U256.t := 2 ^ 256 - 1.
+
+Lemma Sentinel_eq_governor :
+  Sentinel = Governor.TRANSITIONED_VETO_THRESHOLD.
+Proof. reflexivity. Qed.
 
 Lemma Sentinel_eq_proposal_lib :
   Sentinel = ProposalLib.ProposalLib.TRANSITIONED_VETO_THRESHOLD.
@@ -81,171 +107,81 @@ Proof. unfold U256.Valid.t, Sentinel. lia. Qed.
 Lemma Sentinel_eq_max : Sentinel = 2 ^ 256 - 1.
 Proof. reflexivity. Qed.
 
-(** ===== Deliverable 1: explicit sentinel write ===== *)
+(** ===== Deliverable 1: transition writes the sentinel =====
 
-(** Sister definition to [transition_to_pessimistic] that overwrites
-    [vetoThresholdTok] with [Sentinel] on the parent, in addition to
-    pinning [phase := PhaseDefeated]. This makes the contract's
-    on-chain encoding explicit at the Rocq level. *)
-Definition transition_to_pessimistic_sentinel
-    (parent : Proposal.t) (new_pid : U256.t)
-    (votingDelay votingPeriod now : U256.t)
-    : Result.t (Proposal.t * Proposal.t) :=
-  match observe parent now with
-  | PhaseDefeated =>
-      let parent' :=
-        {|
-          Proposal.pid               := parent.(Proposal.pid);
-          Proposal.proposer          := parent.(Proposal.proposer);
-          Proposal.voteStart         := parent.(Proposal.voteStart);
-          Proposal.voteDuration      := parent.(Proposal.voteDuration);
-          Proposal.vetoThresholdTok  := Sentinel;
-          Proposal.againstVotes      := parent.(Proposal.againstVotes);
-          Proposal.phase             := PhaseDefeated;
-          Proposal.isOptimistic      := parent.(Proposal.isOptimistic);
-          Proposal.parent            := parent.(Proposal.parent);
-          Proposal.pastSupply        := parent.(Proposal.pastSupply);
-        |}
-      in
-      let child := fresh_standard_child
-                     parent.(Proposal.pid)
-                     new_pid
-                     parent.(Proposal.proposer)
-                     (now + votingDelay)
-                     votingPeriod in
-      Result.Success (parent', child)
-  | _ => revert_wrong_phase
-  end.
+    The main [transition_to_pessimistic] entry point (refreshed at
+    T1.4) writes the sentinel into [vetoThresholdD18]. *)
 
-(** **Headline of deliverable 1.** After a successful sentinel write,
-    the parent carries the sentinel stamp on [vetoThresholdTok]. *)
 Lemma transition_writes_sentinel_lemma
     (parent parent' child : Proposal.t)
     (new_pid votingDelay votingPeriod now : U256.t) :
-  transition_to_pessimistic_sentinel parent new_pid votingDelay
-                                     votingPeriod now
+  transition_to_pessimistic parent new_pid votingDelay votingPeriod now
     = Result.Success (parent', child) ->
-  parent'.(Proposal.vetoThresholdTok) = Sentinel.
+  parent'.(Proposal.vetoThresholdD18) = Sentinel.
 Proof.
-  intros Hok. unfold transition_to_pessimistic_sentinel in Hok.
+  intros Hok. unfold transition_to_pessimistic in Hok.
   destruct (observe parent now); try discriminate.
   injection Hok as Hparent' Hchild.
   rewrite <- Hparent'. reflexivity.
 Qed.
 
-(** The sentinel function also still pins the parent to [PhaseDefeated]
-    and writes a fresh [PhaseStdPending] child — same operational
-    surface as the existing [transition_to_pessimistic]. *)
-Lemma transition_sentinel_parent_defeated
+Lemma transition_parent_phase_defeated_explicit
     (parent parent' child : Proposal.t)
     (new_pid votingDelay votingPeriod now : U256.t) :
-  transition_to_pessimistic_sentinel parent new_pid votingDelay
-                                     votingPeriod now
+  transition_to_pessimistic parent new_pid votingDelay votingPeriod now
     = Result.Success (parent', child) ->
   parent'.(Proposal.phase) = PhaseDefeated.
 Proof.
-  intros Hok. unfold transition_to_pessimistic_sentinel in Hok.
+  intros Hok. unfold transition_to_pessimistic in Hok.
   destruct (observe parent now); try discriminate.
   injection Hok as Hparent' Hchild.
   rewrite <- Hparent'. reflexivity.
 Qed.
 
-Lemma transition_sentinel_child_pending
+Lemma transition_child_pending_explicit
     (parent parent' child : Proposal.t)
     (new_pid votingDelay votingPeriod now : U256.t) :
-  transition_to_pessimistic_sentinel parent new_pid votingDelay
-                                     votingPeriod now
+  transition_to_pessimistic parent new_pid votingDelay votingPeriod now
     = Result.Success (parent', child) ->
   child.(Proposal.phase) = PhaseStdPending /\
   child.(Proposal.isOptimistic) = false /\
   child.(Proposal.parent) = parent.(Proposal.pid).
 Proof.
-  intros Hok. unfold transition_to_pessimistic_sentinel in Hok.
+  intros Hok. unfold transition_to_pessimistic in Hok.
   destruct (observe parent now); try discriminate.
   injection Hok as Hparent' Hchild.
   rewrite <- Hchild. cbn.
   repeat split; reflexivity.
 Qed.
 
-(** ===== Deliverable 2: sentinel makes Defeated unreachable ===== *)
+(** ===== Deliverable 2: sentinel forces Defeated =====
 
-(** With [vetoThresholdTok = Sentinel] and any [U256.Valid.t]
-    [againstVotes] (i.e. [againstVotes < 2^256]), the comparison
-    [againstVotes >=? vetoThresholdTok] cannot return [true] — the
-    only way it could is [againstVotes = 2^256 - 1] which DOES satisfy
-    [>= Sentinel], so we need [againstVotes < Sentinel]. The strict
-    version below corresponds to the on-chain reality: token total
-    supply (and hence [againstVotes]) is bounded by [2^256 - 1] but
-    can equal it. The sentinel-as-Defeated branch in the contract
-    short-circuits BEFORE the votes comparison precisely to handle
-    the equality case. *)
-
-Lemma against_votes_lt_sentinel
-    (p : Proposal.t) :
-  Valid.proposal p ->
-  p.(Proposal.vetoThresholdTok) = Sentinel ->
-  p.(Proposal.againstVotes) < Sentinel
-    \/ p.(Proposal.againstVotes) = Sentinel.
-Proof.
-  intros Hv Hvtt.
-  destruct Hv as [_ _ _ _ Havotes _].
-  unfold U256.Valid.t in Havotes.
-  unfold Sentinel.
-  lia.
-Qed.
-
-(** Core lemma: with [vetoThresholdTok = Sentinel] AND a strict bound
-    [againstVotes < Sentinel], the optimistic Defeated arm of
-    [observe] cannot fire. Note: this is the bound under which the
-    on-chain sentinel-as-Defeated short-circuit acts to handle the
-    [Sentinel = Sentinel] equality case; in the simulation we do not
-    short-circuit, but we capture the bound as a precondition. *)
-Lemma sentinel_makes_defeated_unreachable_strict
+    With [vetoThresholdD18 = Sentinel] AND the parent past its
+    snapshot AND optimistic AND pre-terminal-phase, [observe] returns
+    [PhaseDefeated]. The proof uses the new sentinel short-circuit
+    in [observe] (matching ROG.sol:243-246) — no votes-tally argument
+    is needed. *)
+Lemma sentinel_makes_defeated_certain
     (p : Proposal.t) (now : U256.t) :
   p.(Proposal.isOptimistic) = true ->
-  p.(Proposal.vetoThresholdTok) = Sentinel ->
-  p.(Proposal.againstVotes) < Sentinel ->
-  observe p now <> PhaseDefeated.
+  p.(Proposal.phase) = PhaseSubmitted \/
+  p.(Proposal.phase) = PhaseActive \/
+  p.(Proposal.phase) = PhaseDefeated ->
+  p.(Proposal.voteStart) <= now ->
+  p.(Proposal.vetoThresholdD18) = Sentinel ->
+  observe p now = PhaseDefeated.
 Proof.
-  intros Hopt Hvtt Hstrict.
-  (* Pre-compute: votes <? vtt = true, so vtt <=? votes = false,
-     so votes >=? vtt = false. *)
-  assert (Hgeb : (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)) = false).
-  { rewrite Z.geb_leb. apply Z.leb_gt. rewrite Hvtt. exact Hstrict. }
+  intros Hopt Hph Hvs Hsent.
   unfold observe.
-  (* Outer match: only PhaseExecuted/Canceled/StdQueued/StdExecuted are
-     sticky terminal returns — none of them are PhaseDefeated.
-     For the non-sticky phases on the optimistic arm, observe checks
-     [pastSupply =? 0] first (CRIT-G branch). If true, returns
-     PhaseCanceled (not PhaseDefeated). If false, the [vtt >= votes]
-     check fails by Hgeb, and we fall through to PhaseActive or
-     PhaseSucceeded. None of those equal PhaseDefeated. *)
-  destruct (p.(Proposal.phase)); try (intros Heq; discriminate);
-    destruct (now <? p.(Proposal.voteStart));
-    rewrite Hopt;
-    try (intros Heq; discriminate);
-    destruct (p.(Proposal.pastSupply) =? 0);
-    try (intros Heq; discriminate);
-    rewrite Hgeb;
-    destruct (now <? p.(Proposal.voteStart) + p.(Proposal.voteDuration));
-    intros Heq; discriminate.
-Qed.
-
-(** Restated to use [U256.Valid.t] on [againstVotes] plus the
-    statement that votes [< Sentinel] (i.e. the votes are not
-    saturated at the sentinel value). The [<= Sentinel - 1] form is
-    convenient when chaining from [Valid.proposal]. *)
-Lemma sentinel_makes_defeated_unreachable
-    (p : Proposal.t) (now : U256.t) :
-  Valid.proposal p ->
-  p.(Proposal.isOptimistic) = true ->
-  p.(Proposal.vetoThresholdTok) = Sentinel ->
-  p.(Proposal.againstVotes) < Sentinel ->
-  observe p now <> PhaseDefeated.
-Proof.
-  intros _ Hopt Hvtt Hlt.
-  apply sentinel_makes_defeated_unreachable_strict; assumption.
+  assert (Hpre : (now <? p.(Proposal.voteStart)) = false).
+  { apply Z.ltb_ge. lia. }
+  assert (Hs' : (p.(Proposal.vetoThresholdD18) =? TRANSITIONED_VETO_THRESHOLD)
+                  = true).
+  { apply Z.eqb_eq. unfold Sentinel in Hsent. exact Hsent. }
+  destruct Hph as [Hph | Hrest].
+  - rewrite Hph; simpl; rewrite Hpre; rewrite Hopt; rewrite Hs'; reflexivity.
+  - destruct Hrest as [Hph | Hph];
+      rewrite Hph; simpl; rewrite Hpre; rewrite Hopt; rewrite Hs'; reflexivity.
 Qed.
 
 (** ===== Deliverable 3: headline — cannot de-escalate ===== *)
@@ -263,9 +199,12 @@ Lemma add_veto_preserves_voteDuration (p : Proposal.t) (delta : U256.t) :
   (add_veto p delta).(Proposal.voteDuration) = p.(Proposal.voteDuration).
 Proof. reflexivity. Qed.
 
-Lemma add_veto_preserves_vetoThresholdTok (p : Proposal.t) (delta : U256.t) :
-  (add_veto p delta).(Proposal.vetoThresholdTok)
-    = p.(Proposal.vetoThresholdTok).
+(** Renamed from [add_veto_preserves_vetoThresholdTok] in the
+    pre-T1.4 layout. The stored field is now [vetoThresholdD18];
+    [add_veto] preserves it. *)
+Lemma add_veto_preserves_vetoThresholdD18 (p : Proposal.t) (delta : U256.t) :
+  (add_veto p delta).(Proposal.vetoThresholdD18)
+    = p.(Proposal.vetoThresholdD18).
 Proof. reflexivity. Qed.
 
 Lemma add_veto_preserves_isOptimistic (p : Proposal.t) (delta : U256.t) :
@@ -310,13 +249,13 @@ Proof.
   cbn. rewrite IH. apply add_veto_preserves_voteDuration.
 Qed.
 
-Lemma add_vetoes_preserves_vetoThresholdTok
+Lemma add_vetoes_preserves_vetoThresholdD18
     (p : Proposal.t) (deltas : list U256.t) :
-  (add_vetoes p deltas).(Proposal.vetoThresholdTok)
-    = p.(Proposal.vetoThresholdTok).
+  (add_vetoes p deltas).(Proposal.vetoThresholdD18)
+    = p.(Proposal.vetoThresholdD18).
 Proof.
   revert p. induction deltas as [|d ds IH]; intros p; [reflexivity|].
-  cbn. rewrite IH. apply add_veto_preserves_vetoThresholdTok.
+  cbn. rewrite IH. apply add_veto_preserves_vetoThresholdD18.
 Qed.
 
 Lemma add_vetoes_preserves_isOptimistic
@@ -327,8 +266,7 @@ Proof.
   cbn. rewrite IH. apply add_veto_preserves_isOptimistic.
 Qed.
 
-Lemma add_vetoes_preserves_pastSupply
-    (p : Proposal.t) (deltas : list U256.t) :
+Lemma add_vetoes_preserves_pastSupply (p : Proposal.t) (deltas : list U256.t) :
   (add_vetoes p deltas).(Proposal.pastSupply) = p.(Proposal.pastSupply).
 Proof.
   revert p. induction deltas as [|d ds IH]; intros p; [reflexivity|].
@@ -348,129 +286,124 @@ Proof.
     lia.
 Qed.
 
-(** Key building block: a parent whose stored [phase = PhaseDefeated],
-    optimistic, with [againstVotes >= vetoThresholdTok], stays
-    observably [PhaseDefeated] for any [now] past [voteStart]. *)
-Lemma parent_post_transition_observes_defeated
-    (parent : Proposal.t) (now : U256.t) :
-  parent.(Proposal.phase) = PhaseDefeated ->
-  parent.(Proposal.isOptimistic) = true ->
-  parent.(Proposal.voteStart) <= now ->
-  parent.(Proposal.againstVotes) >= parent.(Proposal.vetoThresholdTok) ->
-  parent.(Proposal.pastSupply) <> 0 ->
-  observe parent now = PhaseDefeated.
-Proof.
-  intros Hph Hopt Hnow Hge Hps.
-  unfold observe. rewrite Hph.
-  assert (Hlt : (now <? parent.(Proposal.voteStart)) = false).
-  { apply Z.ltb_ge. lia. }
-  rewrite Hlt. rewrite Hopt.
-  assert (Hpsb : (parent.(Proposal.pastSupply) =? 0) = false).
-  { apply Z.eqb_neq. exact Hps. }
-  rewrite Hpsb.
-  assert (Hgeb : (parent.(Proposal.againstVotes) >=?
-                    parent.(Proposal.vetoThresholdTok)) = true).
-  { apply Z.geb_le. lia. }
-  rewrite Hgeb. reflexivity.
-Qed.
+(** A successful [transition_to_pessimistic] establishes the
+    post-conditions needed for the headline: stored phase is Defeated,
+    optimistic flag is preserved, voteStart unchanged, pastSupply
+    unchanged and non-zero (otherwise [observe parent now] would have
+    returned PhaseCanceled, not PhaseDefeated, contradicting the
+    transition precondition), and [vetoThresholdD18 = Sentinel] (the
+    transition write).
 
-(** A successful [transition_to_pessimistic] establishes exactly the
-    post-condition on which [parent_post_transition_observes_defeated]
-    rests: stored phase is Defeated, optimistic flag is preserved,
-    and [againstVotes >= vetoThresholdTok] (derived from the
-    precondition that [observe parent now = PhaseDefeated]). *)
-Lemma transition_postconditions
+    STATEMENT CHANGED (T1.4): the post-condition
+    [parent'.vetoThresholdD18 = Sentinel] is new (the sim previously
+    didn't track this — the [phase = PhaseDefeated] pin alone carried
+    the no-de-escalation claim). The post-condition
+    [parent'.againstVotes >= parent'.vetoThresholdTok] from the
+    pre-T1.4 layout is GONE — there is no longer a stored
+    [vetoThresholdTok] field, and the votes-tally argument no longer
+    drives the proof.
+
+    ALSO CHANGED: a new precondition [vetoThresholdD18 != Sentinel]
+    is required. This matches the contract's
+    [require(optimisticProposal.vetoThreshold !=
+    TRANSITIONED_VETO_THRESHOLD)] gate at ProposalLib.sol:117 — the
+    contract refuses to re-transition an already-transitioned
+    proposal. Without this precondition, the sim's
+    [transition_to_pessimistic] would still admit
+    re-transitions (the contract does not), and the [pastSupply != 0]
+    conclusion would not hold (under sentinel, [observe] returns
+    Defeated regardless of pastSupply). The added precondition
+    closes the gap. *)
+Lemma transition_postconditions_no_resentinel
     (parent parent' child : Proposal.t)
     (new_pid votingDelay votingPeriod now : U256.t) :
   parent.(Proposal.isOptimistic) = true ->
   parent.(Proposal.voteStart) <= now ->
+  parent.(Proposal.vetoThresholdD18) <> Sentinel ->
   transition_to_pessimistic parent new_pid votingDelay votingPeriod now
     = Result.Success (parent', child) ->
   parent'.(Proposal.phase) = PhaseDefeated /\
   parent'.(Proposal.isOptimistic) = true /\
   parent'.(Proposal.voteStart) = parent.(Proposal.voteStart) /\
-  parent'.(Proposal.vetoThresholdTok) = parent.(Proposal.vetoThresholdTok) /\
+  parent'.(Proposal.vetoThresholdD18) = Sentinel /\
   parent'.(Proposal.againstVotes) = parent.(Proposal.againstVotes) /\
-  parent'.(Proposal.againstVotes) >= parent'.(Proposal.vetoThresholdTok) /\
   parent'.(Proposal.pastSupply) = parent.(Proposal.pastSupply) /\
-  (* CRIT-G / T1.3: a successful transition implies the parent's
-     observable phase was Defeated, which requires pastSupply != 0
-     (otherwise observe would have returned Canceled). *)
   parent'.(Proposal.pastSupply) <> 0.
 Proof.
-  intros Hopt Hvs Hok.
+  intros Hopt Hvs HnoSent Hok.
   unfold transition_to_pessimistic in Hok.
   destruct (observe parent now) eqn:Hobs; try discriminate.
   injection Hok as Hparent' Hchild.
-  (* From Hobs : observe parent now = PhaseDefeated, derive
-     againstVotes >= vetoThresholdTok by inversion on observe.
-     The new pastSupply branch: if pastSupply = 0, observe returns
-     Canceled (not Defeated), contradiction. So pastSupply != 0. *)
   unfold observe in Hobs.
+  assert (Hsentb : (parent.(Proposal.vetoThresholdD18)
+                      =? TRANSITIONED_VETO_THRESHOLD) = false).
+  { apply Z.eqb_neq. unfold Sentinel in HnoSent. exact HnoSent. }
   destruct (parent.(Proposal.phase)) eqn:Hph; try discriminate;
     (assert (Hlt : (now <? parent.(Proposal.voteStart)) = false)
        by (apply Z.ltb_ge; lia);
      rewrite Hlt in Hobs;
      rewrite Hopt in Hobs;
+     rewrite Hsentb in Hobs;
      destruct (parent.(Proposal.pastSupply) =? 0) eqn:Hpsb;
      [ discriminate
      | apply Z.eqb_neq in Hpsb ];
-     destruct (parent.(Proposal.againstVotes) >=?
-                 parent.(Proposal.vetoThresholdTok)) eqn:Hgeb;
-     [ apply Z.geb_le in Hgeb
+     destruct (parent.(Proposal.againstVotes)
+                 >=? vetoThresholdTokOf parent.(Proposal.vetoThresholdD18)
+                                        parent.(Proposal.pastSupply))
+       eqn:Hgeb;
+     [ idtac
      | destruct (now <? parent.(Proposal.voteStart)
                           + parent.(Proposal.voteDuration));
        discriminate ];
      rewrite <- Hparent'; cbn;
-     repeat split; try assumption; try reflexivity; try lia).
+     repeat split; try assumption; try reflexivity).
 Qed.
 
 (** Headline theorem.
 
-    After [transition_to_pessimistic] succeeds, no sequence of
-    [add_veto] calls on the resulting parent can drive the
-    observable phase back to [PhaseSucceeded] or [PhaseActive], for
-    any future [now' >= now_transition]. The parent stays observably
-    [PhaseDefeated].
+    After [transition_to_pessimistic] succeeds (on a non-already-
+    transitioned parent, matching the contract's
+    [require(vetoThreshold != TRANSITIONED_VETO_THRESHOLD)] gate at
+    ProposalLib.sol:117), no sequence of [add_veto] calls on the
+    resulting parent can drive the observable phase back to
+    [PhaseSucceeded] or [PhaseActive], for any future [now' >=
+    now_transition]. The parent stays observably [PhaseDefeated].
 
     The proof works by:
-      1. [transition_to_pessimistic] establishes the parent's
-         post-conditions, including [againstVotes >= vetoThresholdTok].
+      1. [transition_postconditions_no_resentinel] establishes the
+         parent's [vetoThresholdD18 = Sentinel], [phase = PhaseDefeated],
+         [voteStart] unchanged, [isOptimistic = true], [pastSupply]
+         non-zero.
       2. [add_vetoes] preserves [phase], [isOptimistic], [voteStart],
-         [vetoThresholdTok], and is monotone on [againstVotes].
-      3. Therefore the post-conditions still hold after any
-         [add_vetoes] sequence with non-negative deltas.
-      4. Apply [parent_post_transition_observes_defeated]. *)
+         [vetoThresholdD18], and [pastSupply].
+      3. Apply [sentinel_makes_defeated_certain]: the sentinel
+         short-circuit in [observe] forces [PhaseDefeated]. *)
 Theorem cannot_de_escalate_after_transition
     (parent parent' child : Proposal.t)
     (new_pid votingDelay votingPeriod now now' : U256.t)
     (deltas : list U256.t) :
   parent.(Proposal.isOptimistic) = true ->
   parent.(Proposal.voteStart) <= now ->
+  parent.(Proposal.vetoThresholdD18) <> Sentinel ->
   now <= now' ->
   Forall (fun d => 0 <= d) deltas ->
   transition_to_pessimistic parent new_pid votingDelay votingPeriod now
     = Result.Success (parent', child) ->
   observe (add_vetoes parent' deltas) now' = PhaseDefeated.
 Proof.
-  intros Hopt Hvs Hnow Hnn Hok.
-  pose proof (transition_postconditions
+  intros Hopt Hvs HnoSent Hnow Hnn Hok.
+  pose proof (transition_postconditions_no_resentinel
                 parent parent' child
                 new_pid votingDelay votingPeriod now
-                Hopt Hvs Hok)
-    as (Hph' & Hopt' & HvsEq & HvttEq & HavotesEq & Hge' & _HpsEq & Hps').
+                Hopt Hvs HnoSent Hok)
+    as (Hph' & Hopt' & HvsEq & HsentEq & HavotesEq & _HpsEq & Hps').
   set (p' := add_vetoes parent' deltas).
-  apply parent_post_transition_observes_defeated.
-  - unfold p'. rewrite add_vetoes_preserves_phase. exact Hph'.
+  apply sentinel_makes_defeated_certain.
   - unfold p'. rewrite add_vetoes_preserves_isOptimistic. exact Hopt'.
+  - unfold p'. rewrite add_vetoes_preserves_phase. right. right. exact Hph'.
   - unfold p'. rewrite add_vetoes_preserves_voteStart.
-    (* Need parent'.voteStart <= now'. From HvsEq, that's
-       parent.voteStart = parent'.voteStart, and parent.voteStart <= now <= now'. *)
     rewrite HvsEq. lia.
-  - unfold p'. rewrite add_vetoes_preserves_vetoThresholdTok.
-    pose proof (add_vetoes_monotone parent' deltas Hnn) as Hmono.
-    lia.
-  - unfold p'. rewrite add_vetoes_preserves_pastSupply. exact Hps'.
+  - unfold p'. rewrite add_vetoes_preserves_vetoThresholdD18. exact HsentEq.
 Qed.
 
 (** Convenient corollary: the observable phase is in the "Defeated or
@@ -482,6 +415,7 @@ Corollary cannot_observe_active_or_succeeded
     (deltas : list U256.t) :
   parent.(Proposal.isOptimistic) = true ->
   parent.(Proposal.voteStart) <= now ->
+  parent.(Proposal.vetoThresholdD18) <> Sentinel ->
   now <= now' ->
   Forall (fun d => 0 <= d) deltas ->
   transition_to_pessimistic parent new_pid votingDelay votingPeriod now
@@ -490,98 +424,91 @@ Corollary cannot_observe_active_or_succeeded
   observe (add_vetoes parent' deltas) now' <> PhaseActive /\
   observe (add_vetoes parent' deltas) now' <> PhaseSubmitted.
 Proof.
-  intros Hopt Hvs Hnow Hnn Hok.
+  intros Hopt Hvs HnoSent Hnow Hnn Hok.
   pose proof (cannot_de_escalate_after_transition
                 parent parent' child
                 new_pid votingDelay votingPeriod now now' deltas
-                Hopt Hvs Hnow Hnn Hok) as Hdef.
+                Hopt Hvs HnoSent Hnow Hnn Hok) as Hdef.
   rewrite Hdef.
   repeat split; intros Heq; discriminate.
 Qed.
 
-(** ===== Deliverable 4: vm_compute calibration ===== *)
+(** ===== Deliverable 4: vm_compute calibration =====
 
-(** Concrete tuple: parent with vtt=10, votes=10 (just at threshold);
-    transition with sentinel encoding rewrites vtt to [2^256 - 1].
+    Concrete tuple. The transition entry point now performs the
+    sentinel write directly, so the calibration shows:
 
-    Pre-transition: vetoThresholdTok = 10.
-    Post-transition (sentinel encoding): vetoThresholdTok = Sentinel.
-    Post-transition (existing simulation): vetoThresholdTok = 10
-      (unchanged — observable phase is pinned by [phase = PhaseDefeated]
-      and [againstVotes >= vtt]).
+      Pre-transition: vetoThresholdD18 = FIX_ONE / 10 (a sane 10%
+        threshold), pastSupply = 100 — snapped threshold {tok} = 10.
+        With againstVotes = 10, the proposal observes as PhaseDefeated
+        in the active window (live computation).
+      Post-transition: vetoThresholdD18 = Sentinel = 2^256 - 1
+        (written by transition_to_pessimistic). phase = PhaseDefeated
+        (pinned by transition_to_pessimistic).
+        observe at any future time returns PhaseDefeated via the
+        sentinel short-circuit.
 *)
 
-Definition cal_parent : Proposal.t :=
-  add_veto (fresh_optimistic 901 9001 100 1000 10 100) 10.
+Definition cal_threshold_D18 : U256.t := Governor.FIX_ONE / 10.
 
-(** Sanity: [cal_parent] observes as PhaseDefeated in the active window. *)
+Definition cal_parent : Proposal.t :=
+  add_veto (fresh_optimistic 901 9001 100 1000 cal_threshold_D18 100) 10.
+
+(** Sanity: [cal_parent] observes as PhaseDefeated in the active
+    window via the LIVE threshold computation (vetoThresholdTokOf
+    (FIX_ONE/10) 100 = 10; againstVotes = 10 >= 10). *)
 Lemma xcheck_cal_parent_defeated :
   observe cal_parent 500 = PhaseDefeated.
 Proof. vm_compute. reflexivity. Qed.
 
-Definition cal_sentinel_result :=
-  transition_to_pessimistic_sentinel cal_parent 9999 50 1000 500.
-
-Definition cal_existing_result :=
+Definition cal_transition_result :=
   transition_to_pessimistic cal_parent 9999 50 1000 500.
 
-(** Sentinel encoding: parent's [vetoThresholdTok] is rewritten to
-    [Sentinel = 2^256 - 1]. *)
-Lemma xcheck_sentinel_parent_vtt_is_max :
-  match cal_sentinel_result with
+(** Sentinel write: after [transition_to_pessimistic], the parent's
+    [vetoThresholdD18] is the sentinel. *)
+Lemma xcheck_transition_writes_sentinel :
+  match cal_transition_result with
   | Result.Success (parent', _) =>
-      parent'.(Proposal.vetoThresholdTok) = 2 ^ 256 - 1
+      parent'.(Proposal.vetoThresholdD18) = 2 ^ 256 - 1
   | _ => False
   end.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Both encodings yield a parent that stays observably PhaseDefeated
-    at the calibration's transition time. *)
-Lemma xcheck_sentinel_parent_phase_defeated :
-  match cal_sentinel_result with
+(** Parent's phase is also pinned to PhaseDefeated. *)
+Lemma xcheck_transition_pins_phase :
+  match cal_transition_result with
   | Result.Success (parent', _) => parent'.(Proposal.phase) = PhaseDefeated
-  | _ => False
-  end.
-Proof. vm_compute. reflexivity. Qed.
-
-Lemma xcheck_existing_parent_phase_defeated :
-  match cal_existing_result with
-  | Result.Success (parent', _) => parent'.(Proposal.phase) = PhaseDefeated
-  | _ => False
-  end.
-Proof. vm_compute. reflexivity. Qed.
-
-(** Existing simulation preserves the original vtt (=10), unlike the
-    contract which would rewrite it; the simulation captures the
-    observable behavior via the [phase] pin. *)
-Lemma xcheck_existing_parent_vtt_unchanged :
-  match cal_existing_result with
-  | Result.Success (parent', _) => parent'.(Proposal.vetoThresholdTok) = 10
   | _ => False
   end.
 Proof. vm_compute. reflexivity. Qed.
 
 (** Headline observable: post-transition, even after a flurry of
     additional veto adds, the parent stays Defeated for any later
-    timestamp inside the calibration. *)
+    timestamp inside the calibration. Now driven by the sentinel
+    short-circuit in [observe]. *)
 Lemma xcheck_no_de_escalation_concrete :
-  match cal_existing_result with
+  match cal_transition_result with
   | Result.Success (parent', _) =>
       observe (add_vetoes parent' [5; 7; 11]) 9999 = PhaseDefeated
   | _ => False
   end.
 Proof. vm_compute. reflexivity. Qed.
 
-(** And under the sentinel encoding, the parent's vetoThresholdTok is
-    so large that any U256-valid againstVotes (in particular, all
-    those reachable from valid [add_veto] increments) fails the
-    [>=? vtt] check — Defeated under the sentinel encoding is reached
-    only via the [phase] pin. *)
-Lemma xcheck_sentinel_against_small_votes_not_via_votes :
-  match cal_sentinel_result with
+(** Under the sentinel encoding, even WITH the (now-recomputed) tok
+    threshold being astronomically large, the votes-comparison
+    branch is unreachable — the sentinel short-circuit fires first.
+    This vm_compute confirms it: after a few veto increments the
+    parent observes as PhaseDefeated via the sentinel branch, not
+    via the votes-tally. *)
+Lemma xcheck_sentinel_short_circuit_fires :
+  match cal_transition_result with
   | Result.Success (parent', _) =>
-      ((add_vetoes parent' [1; 2; 3]).(Proposal.againstVotes)
-         <? (add_vetoes parent' [1; 2; 3]).(Proposal.vetoThresholdTok)) = true
+      (* The (recomputed) tok would be roughly (2^256 * 100)/1e18,
+         a huge value the (small) accumulated votes cannot reach.
+         If the sentinel short-circuit were absent, observe would
+         fall through to PhaseActive or PhaseSucceeded, NOT
+         PhaseDefeated. *)
+      observe (add_vetoes parent' [1; 2; 3]) 9999 = PhaseDefeated
   | _ => False
   end.
 Proof. vm_compute. reflexivity. Qed.

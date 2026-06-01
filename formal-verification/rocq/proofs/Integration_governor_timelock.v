@@ -199,7 +199,7 @@ Proof.
     Governor.Proposal.proposer         := p0.(Governor.Proposal.proposer);
     Governor.Proposal.voteStart        := p0.(Governor.Proposal.voteStart);
     Governor.Proposal.voteDuration     := p0.(Governor.Proposal.voteDuration);
-    Governor.Proposal.vetoThresholdTok := p0.(Governor.Proposal.vetoThresholdTok);
+    Governor.Proposal.vetoThresholdD18 := p0.(Governor.Proposal.vetoThresholdD18);
     Governor.Proposal.againstVotes     := p0.(Governor.Proposal.againstVotes);
     Governor.Proposal.phase            := Governor.PhaseStdQueued;
     Governor.Proposal.isOptimistic     := false;
@@ -213,7 +213,7 @@ Proof.
     Governor.Proposal.proposer         := p1.(Governor.Proposal.proposer);
     Governor.Proposal.voteStart        := p1.(Governor.Proposal.voteStart);
     Governor.Proposal.voteDuration     := p1.(Governor.Proposal.voteDuration);
-    Governor.Proposal.vetoThresholdTok := p1.(Governor.Proposal.vetoThresholdTok);
+    Governor.Proposal.vetoThresholdD18 := p1.(Governor.Proposal.vetoThresholdD18);
     Governor.Proposal.againstVotes     := p1.(Governor.Proposal.againstVotes);
     Governor.Proposal.phase            := Governor.PhaseStdExecuted;
     Governor.Proposal.isOptimistic     := false;
@@ -350,7 +350,7 @@ Definition x_p_succeeded : Governor.Proposal.t :=
      Governor.Proposal.proposer         := 7777;
      Governor.Proposal.voteStart        := 50;
      Governor.Proposal.voteDuration     := 800;
-     Governor.Proposal.vetoThresholdTok := 0;
+     Governor.Proposal.vetoThresholdD18 := 0;
      Governor.Proposal.againstVotes     := 0;
      Governor.Proposal.phase            := Governor.PhaseStdSucceeded;
      Governor.Proposal.isOptimistic     := false;

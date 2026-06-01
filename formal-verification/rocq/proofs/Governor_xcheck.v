@@ -27,10 +27,27 @@ Module GovernorXCheck.
 
 Import Governor.
 
-(** Calibration mirrors the CAS script. *)
+(** Calibration mirrors the CAS script.
+
+    NOTE (CRIT-V / T1.4): [fresh_optimistic] now takes the un-snapped
+    [vetoThresholdD18] D18 fraction (instead of the snapped {tok}).
+    To keep the observable behavior of these calibrations identical
+    to the pre-T1.4 layout (which passed e.g. [vetoThresholdTok = 5]
+    with [pastSupply = 100]), we now pass [vetoThresholdD18] such that
+    [vetoThresholdTokOf vetoThresholdD18 pastSupply] yields the same
+    {tok} threshold. Concrete recalibrations:
+      - vtTok=5,  ps=100  ⟹  D18 = FIX_ONE / 20 (=5e16) so (5e16*100)/1e18 = 5
+      - vtTok=10, ps=100  ⟹  D18 = FIX_ONE / 10 (=1e17) so (1e17*100)/1e18 = 10
+      - vtTok=1, smallest snap : any D18*pastSupply/FIX_ONE < 1 snaps to 1
+*)
 Definition FIX_ONE_C  : Z := 10 ^ 18.
 Definition vetoDelay  : Z := 100.
 Definition vetoPeriod : Z := 1000.
+
+(** Helper aliases: D18 fractions that give the desired {tok}
+    snap-output against [pastSupply = 100]. *)
+Definition D18_for_5_at_100  : Z := FIX_ONE_C / 20.
+Definition D18_for_10_at_100 : Z := FIX_ONE_C / 10.
 
 (** ----- INV-2: veto-threshold snap. CAS:
       vetoThresholdTok(10%, 100) = 10
@@ -47,10 +64,11 @@ Proof. vm_compute. reflexivity. Qed.
 (** ----- Reproduce the CAS Path A: submitted -> active -> succeeded
     -> executed. ----- *)
 (** pastSupply chosen >0 so the [pastSupply == 0 -> Canceled] branch
-    does not fire (T1.3/CRIT-G); paired with vetoThresholdTok = 5 the
-    rest of the calibration is unchanged. *)
+    does not fire (T1.3/CRIT-G); paired with vetoThresholdD18 set so
+    the LIVE-computed snapped {tok} = 5 (T1.4/CRIT-V), the rest of
+    the calibration is unchanged. *)
 Definition pa_initial : Proposal.t :=
-  fresh_optimistic 101 1001 100 1000 5 100.
+  fresh_optimistic 101 1001 100 1000 D18_for_5_at_100 100.
 
 Lemma xcheck_path_a_active :
   observe pa_initial 500 = PhaseActive.
@@ -70,7 +88,7 @@ Proof. vm_compute. reflexivity. Qed.
 (** ----- Reproduce the CAS Path B: optimistic veto -> escalation.
     Build a proposal, add veto, transition. ----- *)
 Definition pb_initial : Proposal.t :=
-  fresh_optimistic 201 2001 100 1000 5 100.
+  fresh_optimistic 201 2001 100 1000 D18_for_5_at_100 100.
 
 Definition pb_vetoed : Proposal.t :=
   add_veto pb_initial 10.
@@ -106,31 +124,37 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 (** ----- INV-1b: executeOptimistic post-defeat reverts.
     CAS: "executeOptimistic post-defeat -> revert". ----- *)
 Lemma xcheck_execute_post_defeat_reverts :
-  execute_optimistic (add_veto (fresh_optimistic 301 3001 100 1000 5 100) 5)
+  execute_optimistic (add_veto (fresh_optimistic 301 3001 100 1000
+                                                 D18_for_5_at_100 100) 5)
                      9999
   = revert_wrong_phase.
 Proof. vm_compute. reflexivity. Qed.
 
 (** ----- INV-2: veto threshold boundary cases. -----
-    Build three proposals with vtt=10, votes 9 / 10 / 11, observe in
-    the active window. *)
+    Build three proposals with snapped vtt=10 (D18=1e17 at pastSupply=100),
+    votes 9 / 10 / 11, observe in the active window. The {tok}
+    threshold is now computed LIVE per call (CRIT-V / T1.4). *)
 Lemma xcheck_inv2_below_active :
-  let p := add_veto (fresh_optimistic 401 4001 100 1000 10 100) 9 in
+  let p := add_veto (fresh_optimistic 401 4001 100 1000
+                                      D18_for_10_at_100 100) 9 in
   observe p 500 = PhaseActive.
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma xcheck_inv2_at_defeated :
-  let p := add_veto (fresh_optimistic 402 4002 100 1000 10 100) 10 in
+  let p := add_veto (fresh_optimistic 402 4002 100 1000
+                                      D18_for_10_at_100 100) 10 in
   observe p 500 = PhaseDefeated.
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma xcheck_inv2_above_defeated :
-  let p := add_veto (fresh_optimistic 403 4003 100 1000 10 100) 11 in
+  let p := add_veto (fresh_optimistic 403 4003 100 1000
+                                      D18_for_10_at_100 100) 11 in
   observe p 500 = PhaseDefeated.
 Proof. vm_compute. reflexivity. Qed.
 
 (** ----- INV-3: executeOptimistic gating. ----- *)
-Definition p_inv3 : Proposal.t := fresh_optimistic 501 5001 100 1000 5 100.
+Definition p_inv3 : Proposal.t :=
+  fresh_optimistic 501 5001 100 1000 D18_for_5_at_100 100.
 
 Lemma xcheck_inv3_active_window_reverts :
   execute_optimistic p_inv3 500 = revert_wrong_phase.
@@ -157,7 +181,7 @@ Definition std_active : Proposal.t :=
      Proposal.proposer := 6001;
      Proposal.voteStart := 50;
      Proposal.voteDuration := 1000;
-     Proposal.vetoThresholdTok := 0;
+     Proposal.vetoThresholdD18 := 0;
      Proposal.againstVotes := 0;
      Proposal.phase := PhaseStdActive;
      Proposal.isOptimistic := false;
@@ -178,7 +202,7 @@ Definition std_succeeded : Proposal.t :=
      Proposal.proposer := 6001;
      Proposal.voteStart := 50;
      Proposal.voteDuration := 1000;
-     Proposal.vetoThresholdTok := 0;
+     Proposal.vetoThresholdD18 := 0;
      Proposal.againstVotes := 0;
      Proposal.phase := PhaseStdSucceeded;
      Proposal.isOptimistic := false;
@@ -212,7 +236,7 @@ Definition opt_marked_std : Proposal.t :=
      Proposal.proposer := 6002;
      Proposal.voteStart := 50;
      Proposal.voteDuration := 1000;
-     Proposal.vetoThresholdTok := 5;
+     Proposal.vetoThresholdD18 := D18_for_5_at_100;
      Proposal.againstVotes := 0;
      Proposal.phase := PhaseStdSucceeded;
      Proposal.isOptimistic := true;
@@ -278,16 +302,19 @@ Proof. vm_compute. reflexivity. Qed.
     veto votes or whether the deadline has elapsed. *)
 
 (** Past-snapshot, optimistic, with pastSupply = 0: even in the
-    "would-be Active" window, observe reports Canceled. *)
+    "would-be Active" window, observe reports Canceled. The
+    vetoThresholdD18 value doesn't matter — the pastSupply==0 branch
+    fires first (after the now-prepended sentinel check, which is
+    bypassed when D18 != sentinel). *)
 Lemma xcheck_pastSupply_zero_active_window_canceled :
-  let p := fresh_optimistic 901 9001 100 1000 5 0 in
+  let p := fresh_optimistic 901 9001 100 1000 D18_for_5_at_100 0 in
   observe p 500 = PhaseCanceled.
 Proof. vm_compute. reflexivity. Qed.
 
 (** Past-deadline, optimistic, with pastSupply = 0: would have been
     Succeeded, but the contract short-circuits to Canceled. *)
 Lemma xcheck_pastSupply_zero_post_deadline_canceled :
-  let p := fresh_optimistic 902 9001 100 1000 5 0 in
+  let p := fresh_optimistic 902 9001 100 1000 D18_for_5_at_100 0 in
   observe p 2000 = PhaseCanceled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -295,7 +322,8 @@ Proof. vm_compute. reflexivity. Qed.
     contract still returns Canceled (the pastSupply branch precedes
     the veto check at ROG.sol:251 before 256-262). *)
 Lemma xcheck_pastSupply_zero_with_vetoes_still_canceled :
-  let p := add_veto (fresh_optimistic 903 9001 100 1000 5 0) 100 in
+  let p := add_veto (fresh_optimistic 903 9001 100 1000
+                                      D18_for_5_at_100 0) 100 in
   observe p 500 = PhaseCanceled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -304,15 +332,65 @@ Proof. vm_compute. reflexivity. Qed.
     block.timestamp check at ROG.sol:236-238 precedes the
     pastSupply test). The sim mirrors that ordering. *)
 Lemma xcheck_pastSupply_zero_pre_snapshot_submitted :
-  let p := fresh_optimistic 904 9001 100 1000 5 0 in
+  let p := fresh_optimistic 904 9001 100 1000 D18_for_5_at_100 0 in
   observe p 50 = PhaseSubmitted.
 Proof. vm_compute. reflexivity. Qed.
 
 (** [execute_optimistic] reverts on a pastSupply=0 proposal because
     observe returns Canceled, not Succeeded. *)
 Lemma xcheck_pastSupply_zero_execute_reverts :
-  let p := fresh_optimistic 905 9001 100 1000 5 0 in
+  let p := fresh_optimistic 905 9001 100 1000 D18_for_5_at_100 0 in
   execute_optimistic p 2000 = revert_wrong_phase.
+Proof. vm_compute. reflexivity. Qed.
+
+(** ----- CRIT-V (T1.4): vetoThresholdTok is computed LIVE. -----
+    Mirrors ReserveOptimisticGovernor.sol:241,256-257. The threshold
+    is no longer frozen at create time; the sim now recomputes it
+    on every observation from [vetoThresholdD18] and [pastSupply].
+    These xchecks confirm that changing pastSupply between create
+    and observe would shift the live threshold (and we can construct
+    proposals at different D18+pastSupply combos that hit the same
+    snapped {tok}). *)
+
+(** Threshold {tok} computed live from D18=FIX_ONE/10 (= 10%) and
+    pastSupply=100: yields 10. *)
+Lemma xcheck_live_tok_at_pastSupply_100 :
+  let p := fresh_optimistic 906 9001 100 1000 D18_for_10_at_100 100 in
+  vetoThresholdTokAt p = 10.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Same D18 (=10%) at a doubled pastSupply yields a doubled
+    {tok} threshold — demonstrating live recomputation. *)
+Lemma xcheck_live_tok_scales_with_pastSupply :
+  let p := fresh_optimistic 907 9001 100 1000 D18_for_10_at_100 200 in
+  vetoThresholdTokAt p = 20.
+Proof. vm_compute. reflexivity. Qed.
+
+(** TRANSITIONED sentinel short-circuit: a proposal with
+    [vetoThresholdD18 = TRANSITIONED_VETO_THRESHOLD], past its
+    snapshot, optimistic, observes as PhaseDefeated regardless of
+    pastSupply or votes. Matches ROG.sol:243-246. *)
+Lemma xcheck_sentinel_observes_defeated :
+  let p := fresh_optimistic 908 9001 100 1000
+                            TRANSITIONED_VETO_THRESHOLD 100 in
+  observe p 500 = PhaseDefeated.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Sentinel BEFORE snapshot still observes Pending — the pending
+    check precedes the sentinel check (ROG.sol:236-238 before 241). *)
+Lemma xcheck_sentinel_pre_snapshot_pending :
+  let p := fresh_optimistic 909 9001 100 1000
+                            TRANSITIONED_VETO_THRESHOLD 100 in
+  observe p 50 = PhaseSubmitted.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Sentinel with pastSupply=0: the sentinel check fires first
+    (ROG.sol:243 precedes 251), so observe returns Defeated, not
+    Canceled. *)
+Lemma xcheck_sentinel_beats_pastSupply_zero :
+  let p := fresh_optimistic 910 9001 100 1000
+                            TRANSITIONED_VETO_THRESHOLD 0 in
+  observe p 500 = PhaseDefeated.
 Proof. vm_compute. reflexivity. Qed.
 
 End GovernorXCheck.

@@ -109,15 +109,51 @@ Definition phase_index (p : Phase) : Z :=
   | PhaseCanceled     => 7
   end.
 
+(** ===== TRANSITIONED_VETO_THRESHOLD sentinel =====
+
+    Mirrors [ProposalLib.TRANSITIONED_VETO_THRESHOLD = type(uint256).max]
+    (ProposalLib.sol:20). The contract overwrites a proposal's stored
+    [optimisticProposalDetails[proposalId].vetoThreshold] with this
+    value inside [transitionToPessimistic] (ProposalLib.sol:122). The
+    [state()] view short-circuits to [Defeated] when it observes the
+    sentinel (ReserveOptimisticGovernor.sol:243-246), BEFORE the
+    [pastSupply] read or the threshold-tok multiplication — both of
+    which would otherwise mishandle the sentinel value (the multiply
+    would either overflow on-chain or, in the sim's unbounded Z,
+    produce a value that the snap-to-1 cannot bring back into range).
+
+    Defined here (rather than imported from [ProposalLib]) so that
+    the [Governor] sim's [observe] can refer to it without a forward
+    import; the equivalence to [ProposalLib.ProposalLib.TRANSITIONED_VETO_THRESHOLD]
+    is checked by reflexivity in [Governor_no_de_escalation.v]. *)
+Definition TRANSITIONED_VETO_THRESHOLD : U256.t := 2 ^ 256 - 1.
+
 (** ===== Proposal record =====
 
     The simulation tracks the minimal fields needed for the state
-    machine: when voting opens, how long it lasts, the snapped
-    threshold (in {tok}, i.e. already vetoThreshold*supply/1e18 with
-    the Math.max(_, 1) snap applied), the running tally of veto
-    votes, the current phase, and whether this is an optimistic or a
-    standard proposal. [parent] is 0 for fresh proposals and equals
-    the parent proposalId for confirmation children.
+    machine: when voting opens, how long it lasts, the threshold
+    fraction (in D18, i.e. the un-snapped [vetoThreshold(proposalId)]
+    value), the running tally of veto votes, the current phase, and
+    whether this is an optimistic or a standard proposal. [parent] is
+    0 for fresh proposals and equals the parent proposalId for
+    confirmation children.
+
+    [vetoThresholdD18] is the live, mutable per-proposal threshold
+    fraction. The contract's [state()] reads
+    [optimisticProposalDetails[proposalId].vetoThreshold] at every
+    observation (ReserveOptimisticGovernor.sol:241), so this field is
+    written:
+      - at create time to the global [optimisticParams.vetoThreshold]
+        value, AND
+      - re-written to [TRANSITIONED_VETO_THRESHOLD] by
+        [transition_to_pessimistic] when the parent escalates.
+    The snapped {tok} threshold used to gate Defeated is computed on
+    the fly in [observe] via [vetoThresholdTokOf vetoThresholdD18
+    pastSupply], matching the contract's
+    [(_vetoThreshold * pastSupply) / 1e18] re-evaluation per call
+    (ROG.sol:256-257). This closes CRIT-V / T1.4 from the adversarial
+    review (see notes/adversarial_review_2026_05_31/SYNTHESIS.md);
+    previously the sim froze the snapped value at create time.
 
     [pastSupply] is [token().getPastTotalSupply(voteStart)] — the
     historical token supply at the proposal's snapshot block. The
@@ -126,12 +162,7 @@ Definition phase_index (p : Phase) : Z :=
     is a historical query keyed by the immutable [voteStart], the
     value is constant once the snapshot block is mined. Storing it
     once in the simulation is observably equivalent to the contract's
-    live read AT THE pastSupply LEVEL. (Separately, the contract also
-    re-reads [vetoThreshold(proposalId)] live — that value IS mutable
-    via the TRANSITIONED_VETO_THRESHOLD sentinel and the sim freezes
-    [vetoThresholdTok] derived from it; this is the live-vs-frozen
-    threshold divergence tracked under CRIT-V / T1.4, NOT addressed
-    here.)
+    live read AT THE pastSupply LEVEL.
 
     [pastSupply] is required by [observe] to model the contract's
     [pastSupply == 0 -> Canceled] short-circuit branch
@@ -145,7 +176,7 @@ Module Proposal.
     proposer          : Address;
     voteStart         : U256.t;   (** {seconds} *)
     voteDuration      : U256.t;   (** {seconds} *)
-    vetoThresholdTok  : U256.t;   (** {tok}, post-Math.max snap *)
+    vetoThresholdD18  : U256.t;   (** D18{1}, un-snapped threshold fraction *)
     againstVotes      : U256.t;   (** {tok} *)
     phase             : Phase;
     isOptimistic      : bool;
@@ -154,19 +185,21 @@ Module Proposal.
   }.
 End Proposal.
 
-(** [pastSupply] is the snapshot-time [getPastTotalSupply(voteStart)]
-    used by [observe] to model the contract's [pastSupply == 0 ->
-    Canceled] branch. *)
+(** [vetoThresholdD18] is the live, mutable per-proposal threshold
+    fraction (initialized to [optimisticParams.vetoThreshold] at
+    create); [pastSupply] is the snapshot-time
+    [getPastTotalSupply(voteStart)]. [observe] computes the snapped
+    {tok} threshold from these on demand. *)
 Definition fresh_optimistic
     (pid : U256.t) (proposer : Address)
-    (voteStart voteDuration vetoThresholdTok pastSupply : U256.t)
+    (voteStart voteDuration vetoThresholdD18 pastSupply : U256.t)
     : Proposal.t :=
   {|
     Proposal.pid               := pid;
     Proposal.proposer          := proposer;
     Proposal.voteStart         := voteStart;
     Proposal.voteDuration      := voteDuration;
-    Proposal.vetoThresholdTok  := vetoThresholdTok;
+    Proposal.vetoThresholdD18  := vetoThresholdD18;
     Proposal.againstVotes      := 0;
     Proposal.phase             := PhaseSubmitted;
     Proposal.isOptimistic      := true;
@@ -174,11 +207,13 @@ Definition fresh_optimistic
     Proposal.pastSupply        := pastSupply;
   |}.
 
-(** Standard-track children do not consult the [pastSupply == 0]
-    branch (it is exclusive to the optimistic [_isOptimistic] arm of
-    [state()] in the contract); we set the field to [1] to keep the
-    invariant "fresh standard children never appear as Canceled via
-    the pastSupply branch" trivial. *)
+(** Standard-track children do not consult the threshold-tok
+    computation (the optimistic-only [_isOptimistic] arm of [state()]
+    is where vetoThresholdD18, pastSupply and the snap-Math.max all
+    live in the contract); we set [vetoThresholdD18] to [0] and
+    [pastSupply] to [1] (non-zero placeholder) so the "fresh standard
+    children never appear as Canceled via the pastSupply branch"
+    invariant is trivial. *)
 Definition fresh_standard_child
     (parent_pid new_pid : U256.t) (proposer : Address)
     (voteStart voteDuration : U256.t)
@@ -188,7 +223,7 @@ Definition fresh_standard_child
     Proposal.proposer          := proposer;
     Proposal.voteStart         := voteStart;
     Proposal.voteDuration      := voteDuration;
-    Proposal.vetoThresholdTok  := 0;
+    Proposal.vetoThresholdD18  := 0;
     Proposal.againstVotes      := 0;
     Proposal.phase             := PhaseStdPending;
     Proposal.isOptimistic      := false;
@@ -228,24 +263,44 @@ Definition vetoThresholdTokOf (vetoThresholdD18 pastSupply : U256.t) : U256.t :=
     succeeded, queued, std_succeeded) are reflected by the [phase]
     field after they are written.
 
-    The [pastSupply == 0 -> Canceled] branch on the optimistic arm
-    mirrors ReserveOptimisticGovernor.sol:251-253: when the historical
-    token supply at [voteStart] is zero, the contract short-circuits
-    to [Canceled] regardless of veto votes or deadline. This branch
-    was missing in the simulation prior to T1.3 (CRIT-G); see
-    notes/adversarial_review_2026_05_31/sim_vs_source_auditor.md. The
-    branch sits AFTER the [snapshot >= block.timestamp] (pending)
-    test and the [_vetoThreshold == TRANSITIONED] sentinel test of
-    the contract — both of which the sim models elsewhere (pending
-    via the [now <? voteStart] guard; transitioned via the post-
-    transition [phase = PhaseDefeated] pin from
-    [transition_to_pessimistic]).
+    The contract's optimistic arm at ROG.sol:222-273 evaluates a
+    cascade with these branches, in order:
 
-    Subtle: the contract's pending-test precedes the pastSupply test,
-    so a pre-snapshot proposal with [pastSupply = 0] observes as
-    [Pending], not [Canceled]. The sim mirrors that ordering: the
-    [now <? voteStart] guard above is checked before the pastSupply
-    branch. *)
+      (a) executed?  Executed (sticky)
+      (b) canceled?  Canceled (sticky)
+      (c) snapshot >= block.timestamp?  Pending
+      (d) _vetoThreshold == TRANSITIONED_VETO_THRESHOLD?  Defeated
+      (e) pastSupply == 0?  Canceled                          [CRIT-G, T1.3]
+      (f) vetoThresholdTok := max(1, _vetoThreshold * pastSupply / 1e18)
+          (computed LIVE per call; both _vetoThreshold and pastSupply
+          are reads from storage / historical query)            [CRIT-V, T1.4]
+      (g) againstVotes >= vetoThresholdTok?  Defeated
+      (h) deadline >= block.timestamp?  Active
+      (i) otherwise  Succeeded
+
+    CRIT-V (T1.4): step (f) is computed LIVE from [vetoThresholdD18]
+    (the stored, mutable per-proposal threshold fraction) and
+    [pastSupply] at each call to [observe]. The previous sim froze
+    the snapped {tok} value at create time, which would mis-track any
+    threshold change between create and observe. With [vetoThresholdD18]
+    now stored as a mutable field and snapped on demand via
+    [vetoThresholdTokOf], the sim re-evaluates the threshold every
+    time [observe] is called — matching the contract.
+
+    The TRANSITIONED-sentinel short-circuit (step d) must come BEFORE
+    the snap-and-compare (step f), because the contract's check
+    matches the sentinel value exactly, while the sim's
+    [vetoThresholdTokOf] applied to the sentinel would produce a
+    value larger than any realistic [againstVotes] — the votes
+    comparison would always fail, returning Active/Succeeded instead
+    of Defeated. The on-chain branch at ROG.sol:243-246 exists
+    precisely for this reason.
+
+    Subtle ordering: the pending-test (step c) precedes the
+    TRANSITIONED test (step d) and the pastSupply test (step e), so a
+    pre-snapshot proposal with sentinel threshold or zero pastSupply
+    observes as [Pending], not [Defeated]/[Canceled]. The sim mirrors
+    that ordering: the [now <? voteStart] guard is checked first. *)
 Definition observe (p : Proposal.t) (now : U256.t) : Phase :=
   match p.(Proposal.phase) with
   | PhaseExecuted    => PhaseExecuted
@@ -258,20 +313,36 @@ Definition observe (p : Proposal.t) (now : U256.t) : Phase :=
       else
         let deadline := p.(Proposal.voteStart) + p.(Proposal.voteDuration) in
         if p.(Proposal.isOptimistic) then
-          (* CRIT-G: pastSupply == 0 -> Canceled. This precedes the
-             veto-threshold and deadline checks, matching the contract's
-             ordering at ReserveOptimisticGovernor.sol:251-253. *)
-          if p.(Proposal.pastSupply) =? 0 then PhaseCanceled
-          (* Optimistic: veto-threshold check has precedence over
-             deadline check. *)
-          else if p.(Proposal.againstVotes) >=? p.(Proposal.vetoThresholdTok)
+          (* CRIT-V / T1.4: TRANSITIONED-sentinel short-circuit
+             precedes the live tok computation. Matches
+             ReserveOptimisticGovernor.sol:243-246. *)
+          if p.(Proposal.vetoThresholdD18) =? TRANSITIONED_VETO_THRESHOLD
           then PhaseDefeated
-          else if now <? deadline then PhaseActive
-          else PhaseSucceeded
+          (* CRIT-G / T1.3: pastSupply == 0 -> Canceled, precedes the
+             veto-threshold tok computation. Matches
+             ReserveOptimisticGovernor.sol:251-253. *)
+          else if p.(Proposal.pastSupply) =? 0 then PhaseCanceled
+          else
+            (* CRIT-V / T1.4: tok threshold computed LIVE per call
+               from vetoThresholdD18 and pastSupply. Matches
+               ReserveOptimisticGovernor.sol:256-257. *)
+            let vtt := vetoThresholdTokOf p.(Proposal.vetoThresholdD18)
+                                          p.(Proposal.pastSupply) in
+            if p.(Proposal.againstVotes) >=? vtt then PhaseDefeated
+            else if now <? deadline then PhaseActive
+            else PhaseSucceeded
         else
           if now <? deadline then PhaseStdActive
           else p.(Proposal.phase)  (* post-deadline outcome is stored *)
   end.
+
+(** [vetoThresholdTokAt]: the snapped {tok} threshold a proposal
+    currently observes, computed from its [vetoThresholdD18] and
+    [pastSupply]. For audit citation when downstream proofs need the
+    snapped value without spelling out the [vetoThresholdTokOf]
+    application. *)
+Definition vetoThresholdTokAt (p : Proposal.t) : U256.t :=
+  vetoThresholdTokOf p.(Proposal.vetoThresholdD18) p.(Proposal.pastSupply).
 
 (** ===== Helpers ===== *)
 
@@ -325,10 +396,15 @@ Definition propose_optimistic
   else if negb (lengths_match targets selectors) then revert_invalid_proposal
   else if negb (all_calls_allowed allow targets selectors) then revert_invalid_call
   else
-    let vtt := vetoThresholdTokOf vetoThresholdD18 pastSupply in
+    (* CRIT-V / T1.4: store the un-snapped vetoThresholdD18 fraction.
+       The contract writes [optimisticParams.vetoThreshold] into
+       [optimisticProposalDetails[proposalId].vetoThreshold] at
+       create time (ROG.sol:166) and re-reads it at every state()
+       call (ROG.sol:241). Snapping into {tok} happens live in
+       [observe], NOT here. *)
     Result.Success
-      (fresh_optimistic pid proposer (now + vetoDelay) vetoPeriod vtt
-                        pastSupply).
+      (fresh_optimistic pid proposer (now + vetoDelay) vetoPeriod
+                        vetoThresholdD18 pastSupply).
 
 Definition phase_eq (a b : Phase) : bool :=
   match a, b with
@@ -353,7 +429,7 @@ Definition add_veto (p : Proposal.t) (delta : U256.t) : Proposal.t :=
     Proposal.proposer          := p.(Proposal.proposer);
     Proposal.voteStart         := p.(Proposal.voteStart);
     Proposal.voteDuration      := p.(Proposal.voteDuration);
-    Proposal.vetoThresholdTok  := p.(Proposal.vetoThresholdTok);
+    Proposal.vetoThresholdD18  := p.(Proposal.vetoThresholdD18);
     Proposal.againstVotes      := p.(Proposal.againstVotes) + delta;
     Proposal.phase             := p.(Proposal.phase);
     Proposal.isOptimistic      := p.(Proposal.isOptimistic);
@@ -362,9 +438,16 @@ Definition add_veto (p : Proposal.t) (delta : U256.t) : Proposal.t :=
   |}.
 
 (** [transition_to_pessimistic] — spawns a fresh standard child
-    carrying the same calls. The parent's phase is marked Defeated
-    (the contract sets vetoThreshold to UINT256_MAX which the state()
-    view interprets as Defeated). The child is in PhaseStdPending. *)
+    carrying the same calls. The parent's
+    [vetoThresholdD18] is written to [TRANSITIONED_VETO_THRESHOLD]
+    (mirroring the contract at ProposalLib.sol:122) AND its phase is
+    pinned to Defeated. Either change alone would suffice to keep
+    [observe] returning Defeated; we apply both so the sim's stored
+    representation mirrors the contract field-for-field, and so the
+    sentinel-encoding lemmas in [Governor_no_de_escalation.v] hold
+    against the existing [transition_to_pessimistic] entry point
+    rather than a sister definition. The child is in
+    PhaseStdPending. *)
 Definition transition_to_pessimistic
     (parent : Proposal.t) (new_pid : U256.t)
     (votingDelay votingPeriod now : U256.t)
@@ -377,7 +460,7 @@ Definition transition_to_pessimistic
           Proposal.proposer          := parent.(Proposal.proposer);
           Proposal.voteStart         := parent.(Proposal.voteStart);
           Proposal.voteDuration      := parent.(Proposal.voteDuration);
-          Proposal.vetoThresholdTok  := parent.(Proposal.vetoThresholdTok);
+          Proposal.vetoThresholdD18  := TRANSITIONED_VETO_THRESHOLD;
           Proposal.againstVotes      := parent.(Proposal.againstVotes);
           Proposal.phase             := PhaseDefeated;
           Proposal.isOptimistic      := parent.(Proposal.isOptimistic);
@@ -420,7 +503,7 @@ Definition mark_std_succeeded (p : Proposal.t) (now : U256.t)
         Proposal.proposer         := p.(Proposal.proposer);
         Proposal.voteStart        := p.(Proposal.voteStart);
         Proposal.voteDuration     := p.(Proposal.voteDuration);
-        Proposal.vetoThresholdTok := p.(Proposal.vetoThresholdTok);
+        Proposal.vetoThresholdD18 := p.(Proposal.vetoThresholdD18);
         Proposal.againstVotes     := p.(Proposal.againstVotes);
         Proposal.phase            := PhaseStdSucceeded;
         Proposal.isOptimistic     := p.(Proposal.isOptimistic);
@@ -440,7 +523,7 @@ Definition queue_operations (p : Proposal.t) : Result.t Proposal.t :=
         Proposal.proposer         := p.(Proposal.proposer);
         Proposal.voteStart        := p.(Proposal.voteStart);
         Proposal.voteDuration     := p.(Proposal.voteDuration);
-        Proposal.vetoThresholdTok := p.(Proposal.vetoThresholdTok);
+        Proposal.vetoThresholdD18 := p.(Proposal.vetoThresholdD18);
         Proposal.againstVotes     := p.(Proposal.againstVotes);
         Proposal.phase            := PhaseStdQueued;
         Proposal.isOptimistic     := p.(Proposal.isOptimistic);
@@ -459,7 +542,7 @@ Definition execute_standard (p : Proposal.t) : Result.t Proposal.t :=
         Proposal.proposer         := p.(Proposal.proposer);
         Proposal.voteStart        := p.(Proposal.voteStart);
         Proposal.voteDuration     := p.(Proposal.voteDuration);
-        Proposal.vetoThresholdTok := p.(Proposal.vetoThresholdTok);
+        Proposal.vetoThresholdD18 := p.(Proposal.vetoThresholdD18);
         Proposal.againstVotes     := p.(Proposal.againstVotes);
         Proposal.phase            := PhaseStdExecuted;
         Proposal.isOptimistic     := p.(Proposal.isOptimistic);
@@ -482,7 +565,7 @@ Definition execute_optimistic (p : Proposal.t) (now : U256.t) : Result.t Proposa
             Proposal.proposer         := p.(Proposal.proposer);
             Proposal.voteStart        := p.(Proposal.voteStart);
             Proposal.voteDuration     := p.(Proposal.voteDuration);
-            Proposal.vetoThresholdTok := p.(Proposal.vetoThresholdTok);
+            Proposal.vetoThresholdD18 := p.(Proposal.vetoThresholdD18);
             Proposal.againstVotes     := p.(Proposal.againstVotes);
             Proposal.phase            := PhaseExecuted;
             Proposal.isOptimistic     := p.(Proposal.isOptimistic);
@@ -507,7 +590,7 @@ Definition cancel (p : Proposal.t) : Result.t Proposal.t :=
           Proposal.proposer         := p.(Proposal.proposer);
           Proposal.voteStart        := p.(Proposal.voteStart);
           Proposal.voteDuration     := p.(Proposal.voteDuration);
-          Proposal.vetoThresholdTok := p.(Proposal.vetoThresholdTok);
+          Proposal.vetoThresholdD18 := p.(Proposal.vetoThresholdD18);
           Proposal.againstVotes     := p.(Proposal.againstVotes);
           Proposal.phase            := PhaseCanceled;
           Proposal.isOptimistic     := p.(Proposal.isOptimistic);
@@ -618,7 +701,7 @@ Module Valid.
     pid_u256          : U256.Valid.t p.(Proposal.pid);
     voteStart_u256    : U256.Valid.t p.(Proposal.voteStart);
     voteDuration_u256 : U256.Valid.t p.(Proposal.voteDuration);
-    vtt_u256          : U256.Valid.t p.(Proposal.vetoThresholdTok);
+    vtt_u256          : U256.Valid.t p.(Proposal.vetoThresholdD18);
     avotes_u256       : U256.Valid.t p.(Proposal.againstVotes);
     parent_u256       : U256.Valid.t p.(Proposal.parent);
     pastSupply_u256   : U256.Valid.t p.(Proposal.pastSupply);

@@ -176,19 +176,25 @@ Lemma observe_eq_executed_pins_stored
   p.(Proposal.phase) = PhaseExecuted.
 Proof.
   intros Hobs. unfold observe in Hobs.
-  (* For each non-sticky stored phase, walk through the same
-     sub-branches: pre-snapshot, post-snapshot optimistic
-     (pastSupply=0 -> Canceled per CRIT-G/T1.3, then veto-threshold,
-     then deadline), post-snapshot standard (deadline only). None
-     of the branches produce PhaseExecuted. *)
+  (* For each non-sticky stored phase, walk through the sub-branches:
+     pre-snapshot; post-snapshot optimistic with the cascade
+       (a) sentinel D18 -> Defeated   [CRIT-V / T1.4]
+       (b) pastSupply == 0 -> Canceled  [CRIT-G / T1.3]
+       (c) tally vs LIVE-computed tok -> Defeated
+       (d) deadline -> Active / Succeeded
+     post-snapshot standard (deadline only). None produce PhaseExecuted. *)
   destruct (p.(Proposal.phase)) eqn:Hph; try reflexivity;
     try discriminate;
     (destruct (now <? p.(Proposal.voteStart));
      [ destruct (p.(Proposal.isOptimistic)); discriminate
      | destruct (p.(Proposal.isOptimistic));
-       [ destruct (p.(Proposal.pastSupply) =? 0); [discriminate|];
+       [ destruct (p.(Proposal.vetoThresholdD18) =?
+                     TRANSITIONED_VETO_THRESHOLD); [discriminate|];
+         destruct (p.(Proposal.pastSupply) =? 0); [discriminate|];
          destruct (p.(Proposal.againstVotes) >=?
-                     p.(Proposal.vetoThresholdTok)); [discriminate|];
+                     vetoThresholdTokOf p.(Proposal.vetoThresholdD18)
+                                        p.(Proposal.pastSupply));
+           [discriminate|];
          destruct (now <? p.(Proposal.voteStart) +
                             p.(Proposal.voteDuration)); discriminate
        | destruct (now <? p.(Proposal.voteStart) +
@@ -207,9 +213,13 @@ Proof.
     (destruct (now <? p.(Proposal.voteStart));
      [ destruct (p.(Proposal.isOptimistic)); discriminate
      | destruct (p.(Proposal.isOptimistic));
-       [ destruct (p.(Proposal.pastSupply) =? 0); [discriminate|];
+       [ destruct (p.(Proposal.vetoThresholdD18) =?
+                     TRANSITIONED_VETO_THRESHOLD); [discriminate|];
+         destruct (p.(Proposal.pastSupply) =? 0); [discriminate|];
          destruct (p.(Proposal.againstVotes) >=?
-                     p.(Proposal.vetoThresholdTok)); [discriminate|];
+                     vetoThresholdTokOf p.(Proposal.vetoThresholdD18)
+                                        p.(Proposal.pastSupply));
+           [discriminate|];
          destruct (now <? p.(Proposal.voteStart) +
                             p.(Proposal.voteDuration)); discriminate
        | destruct (now <? p.(Proposal.voteStart) +
@@ -261,9 +271,9 @@ Qed.
 *)
 Inductive Reachable : Proposal.t -> Prop :=
 | reach_fresh_opt :
-    forall pid proposer voteStart voteDuration vetoThresholdTok pastSupply,
+    forall pid proposer voteStart voteDuration vetoThresholdD18 pastSupply,
     Reachable (fresh_optimistic pid proposer voteStart voteDuration
-                                vetoThresholdTok pastSupply)
+                                vetoThresholdD18 pastSupply)
 | reach_fresh_std :
     forall parent_pid new_pid proposer voteStart voteDuration,
     Reachable (fresh_standard_child parent_pid new_pid proposer
@@ -330,9 +340,9 @@ Inductive Reachable : Proposal.t -> Prop :=
 *)
 
 Lemma canary_reach_fresh_optimistic :
-  forall pid proposer voteStart voteDuration vetoThresholdTok pastSupply,
+  forall pid proposer voteStart voteDuration vetoThresholdD18 pastSupply,
     Reachable
-      (fresh_optimistic pid proposer voteStart voteDuration vetoThresholdTok
+      (fresh_optimistic pid proposer voteStart voteDuration vetoThresholdD18
                         pastSupply).
 Proof. intros. apply reach_fresh_opt. Qed.
 
@@ -504,7 +514,7 @@ Definition xc_std_queued : Proposal.t :=
      Proposal.proposer := 2002;
      Proposal.voteStart := 50;
      Proposal.voteDuration := 1000;
-     Proposal.vetoThresholdTok := 0;
+     Proposal.vetoThresholdD18 := 0;
      Proposal.againstVotes := 0;
      Proposal.phase := PhaseStdQueued;
      Proposal.isOptimistic := false;

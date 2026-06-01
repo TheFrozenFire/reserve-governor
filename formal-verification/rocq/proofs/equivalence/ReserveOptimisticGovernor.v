@@ -435,7 +435,7 @@ Module ReserveOptimisticGovernorEquivalence.
     Lemma add_veto_validated_preserves_vetoThreshold
         (p p' : Proposal.t) (now delta : U256.t) :
       add_veto_validated p now delta = Result.Success p' ->
-      p'.(Proposal.vetoThresholdTok) = p.(Proposal.vetoThresholdTok).
+      p'.(Proposal.vetoThresholdD18) = p.(Proposal.vetoThresholdD18).
     Proof.
       intros Hok. unfold add_veto_validated in Hok.
       destruct (p.(Proposal.phase)); try discriminate;
@@ -602,28 +602,70 @@ Module ReserveOptimisticGovernorEquivalence.
     (** ---- 1.6 observe stickiness on Defeated phase ----
 
         After [transition_to_pessimistic], the contract writes
-        [vetoThreshold := UINT256_MAX] (modeled in the sim as
-        [phase := PhaseDefeated]). At threshold, observe is sticky. *)
+        [vetoThreshold := UINT256_MAX] AND the sim pins
+        [phase := PhaseDefeated]. observe is sticky in either of two
+        ways: (a) via the new sentinel short-circuit
+        (CRIT-V / T1.4), or (b) via the votes-tally branch when
+        [againstVotes >= vetoThresholdTokAt p] and the threshold isn't
+        the sentinel.
+
+        STATEMENT CHANGED (T1.4): the prior statement used the now-
+        gone [Proposal.vetoThresholdTok] field. The replacement uses
+        [vetoThresholdTokAt p] (the live-computed snapped value).
+        Also added the [vetoThresholdD18 != TRANSITIONED] precondition
+        — without it, the sentinel branch fires first and the
+        votes-tally never enters the picture (the conclusion is
+        still PhaseDefeated, just via a different route). *)
     Lemma observe_defeated_sticky_at_threshold
         (p : Proposal.t) (now : U256.t) :
       p.(Proposal.phase) = PhaseDefeated ->
       p.(Proposal.isOptimistic) = true ->
-      p.(Proposal.againstVotes) >= p.(Proposal.vetoThresholdTok) ->
+      p.(Proposal.vetoThresholdD18) <> TRANSITIONED_VETO_THRESHOLD ->
+      p.(Proposal.againstVotes) >= vetoThresholdTokAt p ->
       p.(Proposal.voteStart) <= now ->
       p.(Proposal.pastSupply) <> 0 ->
       observe p now = PhaseDefeated.
     Proof.
-      intros Hph Hopt Hge Hns Hps. unfold observe. rewrite Hph.
+      intros Hph Hopt Hsent Hge Hns Hps. unfold observe, vetoThresholdTokAt in *.
+      rewrite Hph.
       assert (Hpre : (now <? p.(Proposal.voteStart)) = false)
         by (apply Z.ltb_ge; lia).
       rewrite Hpre. rewrite Hopt.
+      assert (Hsentb : (p.(Proposal.vetoThresholdD18)
+                         =? TRANSITIONED_VETO_THRESHOLD) = false)
+        by (apply Z.eqb_neq; exact Hsent).
+      rewrite Hsentb.
       assert (Hpsb : (p.(Proposal.pastSupply) =? 0) = false)
         by (apply Z.eqb_neq; exact Hps).
       rewrite Hpsb.
       assert (Hgeb : (p.(Proposal.againstVotes) >=?
-                     p.(Proposal.vetoThresholdTok)) = true)
+                     vetoThresholdTokOf p.(Proposal.vetoThresholdD18)
+                                        p.(Proposal.pastSupply)) = true)
         by (apply Z.geb_le; lia).
       rewrite Hgeb. reflexivity.
+    Qed.
+
+    (** Companion (NEW at T1.4): the sentinel-driven version of the
+        sticky claim. With [vetoThresholdD18 = TRANSITIONED] and the
+        usual phase/optimistic/voteStart preconditions, [observe]
+        returns [PhaseDefeated] via the short-circuit branch — no
+        votes-tally or pastSupply involvement. *)
+    Lemma observe_defeated_sticky_via_sentinel
+        (p : Proposal.t) (now : U256.t) :
+      p.(Proposal.phase) = PhaseDefeated ->
+      p.(Proposal.isOptimistic) = true ->
+      p.(Proposal.vetoThresholdD18) = TRANSITIONED_VETO_THRESHOLD ->
+      p.(Proposal.voteStart) <= now ->
+      observe p now = PhaseDefeated.
+    Proof.
+      intros Hph Hopt Hsent Hns. unfold observe. rewrite Hph.
+      assert (Hpre : (now <? p.(Proposal.voteStart)) = false)
+        by (apply Z.ltb_ge; lia).
+      rewrite Hpre. rewrite Hopt.
+      assert (Hsentb : (p.(Proposal.vetoThresholdD18)
+                         =? TRANSITIONED_VETO_THRESHOLD) = true)
+        by (apply Z.eqb_eq; exact Hsent).
+      rewrite Hsentb. reflexivity.
     Qed.
 
     (** ---- 1.7 _isOptimistic mirror at the sim layer ---- *)

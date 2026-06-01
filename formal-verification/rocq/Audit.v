@@ -374,6 +374,23 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
         observe_defeated_sticky_at_threshold, the
         standard_lifecycle_exists end-to-end) carry an explicit
         pastSupply <> 0 hypothesis where the Defeated arm is required.
+      - [CLOSED, T1.4] Governor.observe now recomputes vetoThresholdTok
+        LIVE on every call (ROG.sol:241,256-257). The simulation's
+        [Proposal.t] replaced the frozen [vetoThresholdTok : U256.t]
+        field with [vetoThresholdD18 : U256.t] (the un-snapped D18
+        fraction), and [observe] computes the snapped {tok} on the
+        fly via [vetoThresholdTokOf vetoThresholdD18 pastSupply]. The
+        TRANSITIONED_VETO_THRESHOLD sentinel branch (ROG.sol:243-246)
+        is also modeled explicitly: [observe] short-circuits to
+        PhaseDefeated when [vetoThresholdD18 = 2^256 - 1], and
+        [transition_to_pessimistic] writes the sentinel into
+        [vetoThresholdD18] in addition to pinning [phase] to Defeated.
+        Downstream theorems (observe_defeated_iff_threshold_in_window,
+        cannot_de_escalate_after_transition, standard_lifecycle_exists)
+        were re-stated to use [vetoThresholdTokAt p] (the live-
+        computed value) and to carry an explicit [vetoThresholdD18 !=
+        TRANSITIONED_VETO_THRESHOLD] precondition where the
+        votes-tally branch must be reachable.
       - StakingVaultExchange.withdraw collapses both unstakingDelay
         branches into one; revert condition uses totalAssets rather
         than maxWithdraw(owner).
@@ -1256,13 +1273,20 @@ Notation audit_proposal_transition_terminal :=
       - [audit_governor_cannot_observe_active_or_succeeded] : the
         corollary form, explicitly disallowing the three
         non-defeated phases.
-      - [audit_governor_transition_sentinel_writes] : the explicit
-        [vetoThresholdTok := 2^256 - 1] sentinel encoding produces a
-        parent with the sentinel stamp.
-      - [audit_governor_transition_sentinel_unreachable] : under the
-        sentinel encoding, the optimistic [PhaseDefeated] arm of
-        [observe] is unreachable through votes alone — the phase
-        pin is the only path.
+      - [audit_governor_transition_sentinel_writes] : after
+        [transition_to_pessimistic], the parent carries the sentinel
+        [vetoThresholdD18 := 2^256 - 1] stamp. (T1.4 refresh: the
+        main transition entry point now performs this write
+        directly; the prior sister definition is gone.)
+      - [audit_governor_transition_sentinel_forces_defeated] :
+        when [vetoThresholdD18 = TRANSITIONED_VETO_THRESHOLD], the
+        [observe] cascade short-circuits to [PhaseDefeated] before
+        the snap-and-compare branch. (T1.4 refresh: stronger and
+        more direct than the prior
+        [audit_governor_transition_sentinel_unreachable] framing
+        — the contract's branch ordering at ROG.sol:243-246 makes
+        Defeated CERTAIN under the sentinel, not merely
+        non-unreachable.)
 
     Round-4 (no-double-execution):
       - [audit_governor_terminal_phase_exclusivity] : a stored
@@ -1361,8 +1385,14 @@ Notation audit_governor_cannot_observe_active_or_succeeded :=
 Notation audit_governor_transition_sentinel_writes :=
   ReserveGovernor.proofs.Governor_no_de_escalation.GovernorNoDeEscalation.transition_writes_sentinel_lemma.
 
-Notation audit_governor_transition_sentinel_unreachable :=
-  ReserveGovernor.proofs.Governor_no_de_escalation.GovernorNoDeEscalation.sentinel_makes_defeated_unreachable.
+(* RENAMED at T1.4: the sentinel write now triggers a [observe]
+   short-circuit to PhaseDefeated (matching ROG.sol:243-246), so the
+   audit claim is strictly stronger: "sentinel makes Defeated
+   CERTAIN" replaces the prior "sentinel makes Defeated UNREACHABLE"
+   framing (which was about the votes-tally side; that side no
+   longer drives the conclusion). *)
+Notation audit_governor_transition_sentinel_forces_defeated :=
+  ReserveGovernor.proofs.Governor_no_de_escalation.GovernorNoDeEscalation.sentinel_makes_defeated_certain.
 
 (* Round-4 no-double-execution. *)
 Notation audit_governor_terminal_phase_exclusivity :=
@@ -2147,11 +2177,13 @@ Notation audit_neg_no_throttle_bypass :=
         — transitioned parents observe PhaseDefeated forever,
           never PhaseActive / PhaseSucceeded / PhaseSubmitted.
       [R3] audit_governor_transition_sentinel_writes
-        — explicit sentinel encoding stamps parent.vetoThresholdTok
-          with type(uint256).max.
-      [R3] audit_governor_transition_sentinel_unreachable
-        — under sentinel encoding, the votes-only Defeated path is
-          unreachable.
+        — [transition_to_pessimistic] stamps parent.vetoThresholdD18
+          with type(uint256).max. (T1.4 refresh: written by main
+          entry point, no sister definition.)
+      [R3] audit_governor_transition_sentinel_forces_defeated
+        — under sentinel encoding, [observe] short-circuits to
+          Defeated via the ROG.sol:243-246 branch. (T1.4 refresh:
+          stronger than the prior "unreachable" framing.)
       [R4] audit_governor_terminal_phase_exclusivity
         — PhaseExecuted and PhaseStdExecuted are mutually exclusive.
       [R4] audit_governor_no_double_execution

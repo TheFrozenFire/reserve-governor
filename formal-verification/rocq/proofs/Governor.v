@@ -13,8 +13,11 @@
 
       INV-2   veto_threshold_correctness : the optimistic proposal
               observed during its veto window is PhaseDefeated iff
-              [againstVotes >= vetoThresholdTok], regardless of [now]
-              within the window.
+              [againstVotes >= vetoThresholdTokAt p] (with the
+              threshold-D18 sentinel not set), regardless of [now]
+              within the window. The threshold {tok} is computed
+              LIVE per observation from [vetoThresholdD18] and
+              [pastSupply] (CRIT-V / T1.4).
 
       INV-3   optimistic_execution_requires_succeeded :
               [execute_optimistic] succeeds iff
@@ -217,53 +220,102 @@ Qed.
 
 (** ----- INV-2: veto-threshold correctness. -----
     Within the active window (now between voteStart and deadline,
-    optimistic, phase still pre-terminal, pastSupply > 0), observe
-    returns PhaseDefeated iff againstVotes >= vetoThresholdTok.
+    optimistic, phase still pre-terminal, pastSupply > 0, and
+    [vetoThresholdD18 != TRANSITIONED_VETO_THRESHOLD]), observe
+    returns PhaseDefeated iff [againstVotes >= vetoThresholdTokAt p].
 
-    STATEMENT CHANGED (CRIT-G / T1.3): the [pastSupply > 0]
-    precondition is new. The contract's [state()] short-circuits to
+    STATEMENT CHANGED (CRIT-V / T1.4): [vetoThresholdTok] is no
+    longer a stored field — it is computed LIVE per observation via
+    [vetoThresholdTokAt p = vetoThresholdTokOf vetoThresholdD18
+    pastSupply]. This restatement uses [vetoThresholdTokAt p] in
+    place of the old [Proposal.vetoThresholdTok] field reference.
+    The hypothesis [vetoThresholdD18 <> TRANSITIONED_VETO_THRESHOLD]
+    is also new: when the sentinel is set, [observe] returns
+    [PhaseDefeated] unconditionally (matching ROG.sol:243-246), so
+    the iff with the votes-comparison would fail in the reverse
+    direction.
+
+    STATEMENT CHANGED (CRIT-G / T1.3, retained): the [pastSupply
+    > 0] precondition. The contract's [state()] short-circuits to
     [Canceled] when [pastSupply == 0], so the iff direction "veto
-    threshold met -> Defeated" only holds when pastSupply is non-zero.
-    The reverse direction (Defeated -> threshold met) is also true
-    only with the pastSupply guard: a pastSupply=0 proposal would
-    observe as Canceled, not Defeated, regardless of vetoes. *)
+    threshold met -> Defeated" only holds when pastSupply is non-
+    zero. *)
 Lemma observe_defeated_iff_threshold_in_window
     (p : Proposal.t) (now : U256.t) :
   p.(Proposal.isOptimistic) = true ->
   p.(Proposal.phase) = PhaseSubmitted \/ p.(Proposal.phase) = PhaseActive ->
   p.(Proposal.voteStart) <= now ->
   p.(Proposal.pastSupply) <> 0 ->
+  p.(Proposal.vetoThresholdD18) <> TRANSITIONED_VETO_THRESHOLD ->
   observe p now = PhaseDefeated
-    <-> p.(Proposal.againstVotes) >= p.(Proposal.vetoThresholdTok).
+    <-> p.(Proposal.againstVotes) >= vetoThresholdTokAt p.
 Proof.
-  intros Hopt Hph Hvs Hps.
-  unfold observe.
+  intros Hopt Hph Hvs Hps Hsent.
+  unfold observe, vetoThresholdTokAt.
   assert (Hpre : (now <? p.(Proposal.voteStart)) = false).
   { apply Z.ltb_ge. lia. }
   assert (Hps' : (p.(Proposal.pastSupply) =? 0) = false).
   { apply Z.eqb_neq. exact Hps. }
+  assert (Hs' : (p.(Proposal.vetoThresholdD18) =? TRANSITIONED_VETO_THRESHOLD)
+                  = false).
+  { apply Z.eqb_neq. exact Hsent. }
   destruct Hph as [Hph | Hph]; rewrite Hph; simpl; rewrite Hpre; rewrite Hopt;
-    rewrite Hps'.
+    rewrite Hs'; rewrite Hps'.
   - split.
     + intros Heq.
-      destruct (p.(Proposal.againstVotes) >=? p.(Proposal.vetoThresholdTok)) eqn:Hge.
+      destruct (p.(Proposal.againstVotes)
+                 >=? vetoThresholdTokOf p.(Proposal.vetoThresholdD18)
+                                        p.(Proposal.pastSupply)) eqn:Hge.
       * apply Z.geb_le in Hge. lia.
       * destruct (now <? p.(Proposal.voteStart) + p.(Proposal.voteDuration));
           discriminate.
     + intros Hge.
-      assert (Hb' : (p.(Proposal.againstVotes) >=? p.(Proposal.vetoThresholdTok)) = true).
+      assert (Hb' : (p.(Proposal.againstVotes)
+                      >=? vetoThresholdTokOf p.(Proposal.vetoThresholdD18)
+                                             p.(Proposal.pastSupply)) = true).
       { apply Z.geb_le. lia. }
       rewrite Hb'. reflexivity.
   - split.
     + intros Heq.
-      destruct (p.(Proposal.againstVotes) >=? p.(Proposal.vetoThresholdTok)) eqn:Hge.
+      destruct (p.(Proposal.againstVotes)
+                 >=? vetoThresholdTokOf p.(Proposal.vetoThresholdD18)
+                                        p.(Proposal.pastSupply)) eqn:Hge.
       * apply Z.geb_le in Hge. lia.
       * destruct (now <? p.(Proposal.voteStart) + p.(Proposal.voteDuration));
           discriminate.
     + intros Hge.
-      assert (Hb' : (p.(Proposal.againstVotes) >=? p.(Proposal.vetoThresholdTok)) = true).
+      assert (Hb' : (p.(Proposal.againstVotes)
+                      >=? vetoThresholdTokOf p.(Proposal.vetoThresholdD18)
+                                             p.(Proposal.pastSupply)) = true).
       { apply Z.geb_le. lia. }
       rewrite Hb'. reflexivity.
+Qed.
+
+(** Companion: under the TRANSITIONED sentinel, [observe] returns
+    [PhaseDefeated] regardless of the votes comparison. This is the
+    contract's short-circuit at ROG.sol:243-246 (CRIT-V / T1.4),
+    captured at the sim level. Precondition: pre-terminal stored
+    phase, optimistic, snapshot-past. *)
+Lemma observe_defeated_when_transitioned
+    (p : Proposal.t) (now : U256.t) :
+  p.(Proposal.isOptimistic) = true ->
+  p.(Proposal.phase) = PhaseSubmitted \/ p.(Proposal.phase) = PhaseActive
+    \/ p.(Proposal.phase) = PhaseDefeated ->
+  p.(Proposal.voteStart) <= now ->
+  p.(Proposal.vetoThresholdD18) = TRANSITIONED_VETO_THRESHOLD ->
+  observe p now = PhaseDefeated.
+Proof.
+  intros Hopt Hph Hvs Hsent.
+  unfold observe.
+  assert (Hpre : (now <? p.(Proposal.voteStart)) = false).
+  { apply Z.ltb_ge. lia. }
+  assert (Hs' : (p.(Proposal.vetoThresholdD18) =? TRANSITIONED_VETO_THRESHOLD)
+                  = true).
+  { apply Z.eqb_eq. exact Hsent. }
+  destruct Hph as [Hph | Hrest].
+  - rewrite Hph; simpl; rewrite Hpre; rewrite Hopt; rewrite Hs'; reflexivity.
+  - destruct Hrest as [Hph | Hph];
+      rewrite Hph; simpl; rewrite Hpre; rewrite Hopt; rewrite Hs'; reflexivity.
 Qed.
 
 (** ----- INV-3: execute_optimistic gating. ----- *)
@@ -276,7 +328,7 @@ Lemma execute_optimistic_success_iff_succeeded
               Proposal.proposer         := p.(Proposal.proposer);
               Proposal.voteStart        := p.(Proposal.voteStart);
               Proposal.voteDuration     := p.(Proposal.voteDuration);
-              Proposal.vetoThresholdTok := p.(Proposal.vetoThresholdTok);
+              Proposal.vetoThresholdD18 := p.(Proposal.vetoThresholdD18);
               Proposal.againstVotes     := p.(Proposal.againstVotes);
               Proposal.phase            := PhaseExecuted;
               Proposal.isOptimistic     := p.(Proposal.isOptimistic);
