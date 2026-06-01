@@ -1714,6 +1714,92 @@ let v := mload(0)
 encode/decode tuples + the bridge + memory model). Trust axioms
 are reusable across all R050-blocked mutators.
 
+## R082: CRIT-A composite-walker discharge — VersionRegistry.deprecateVersion
+
+The 2026-05-31 adversarial review's SYNTHESIS flagged the composite
+walker Axioms (R065-R071) as the load-bearing trust commitments to
+retire first.  Task #283 (T3.2 in the remediation plan) targets
+VersionRegistry's `deprecateVersion_187` body — the simplest target
+(no EnumerableSet, no external staticcall in the body proper apart
+from the role-registry check, single mapping update + bytes32 sstore).
+
+**Architectural change** (committed at this revision):
+
+1. The composite `Axiom run_fun_deprecateVersion_187_at_proj_sim` is
+   converted to an `Admitted Lemma` with a **strengthened
+   precondition signature**. New explicit hypotheses (vs the original
+   axiom):
+     - `role_registry_addr`, `account` — the loadimmutable witness.
+     - `H_account` — the account is bound at `env.(Environment.address)`
+       in the initial state's accounts dict.
+     - `H_immutable` — the role-registry's address sits at the
+       `0x3331...0000` immutable slot.
+     - `H_not_precompile` — the role-registry isn't a precompile.
+     - `H_free_ptr_aligned` — `memory[2] = 0x80` (canonical Solidity
+       free-pointer layout).
+
+2. The milestone theorem
+   `run_deprecateVersion_equivalent_make_state` threads these new
+   preconditions through to the walker and **weakens the post-state**:
+   instead of `state' = Some (make_state env state_base memory' storage')`
+   it asks for `state' = Some (make_state env state_base' memory'
+   storage')`, allowing the post-state's [state_base'] to differ from
+   the input [state_base].  This generalization is needed because the
+   staticcall bridge's `<| State.return_data := bytes |>` override
+   persists through the entire post-bridge prefix.
+
+3. A new framework axiom in `AbiEncoding.v`:
+
+   ```coq
+   Axiom make_state_with_rd_eq :
+     forall env state_base memory storage (rd : list Z),
+     (make_state env state_base memory storage)
+       <| State.return_data := rd |> =
+     make_state env (state_base <| State.return_data := rd |>) memory storage.
+   ```
+
+   Folds the rd-override into the `state_base` argument so existing
+   `make_state`-shape leaves apply unchanged.  Closed in the same
+   spirit as `CanonizeState.update_memory_eq` (Admitted upstream;
+   relies on the opacity of `with_current_storage`).
+
+**Residual work**: the walker Lemma's body is `Admitted`.  The 18-step
+mechanical discharge follows the per-step recipe documented in
+`VersionRegistry.v::run_fun_deprecateVersion_187_at_proj_sim`'s
+comment block.  Each step closes via an existing leaf:
+- S1: `StaticCallBridge.run_loadimmutable` (with H_account / H_immutable)
+- S2: pure binding (`apply RunO.Pure`)
+- S3: `convert_t_contract_to_address` — chain of three identity
+  conversions under H_role_bound (cleanup_t_uint160 returns the
+  value masked at 160 bits = value itself when 0 ≤ v < 2^160)
+- S4-S5: caller primitive, allocate_unbounded (with H_free_ptr_aligned)
+- S6-S7: shift_left_224, mstore (memory[4] := selector_shifted)
+- S8: abi_encode_tuple_t_address (memory[5] := caller)
+- S9: `AbiEncoding.staticcall_make_state_bridge` (call_result = 1)
+- S10: `iszero(1) = 0` → Shallow.if_ default branch
+- S11-S13: post-bridge if-decode: returndatasize=32, finalize_allocation
+  (memory[2] := _22+32 = 160), abi_decode_tuple_t_bool_fromMemory (=1)
+- S14: require_helper_t_error_10_VersionRegistry__InvalidCaller(1) succeeds
+- S15-S17: mapping_index_access(1, hash), sload+extract via
+  run_read_isDeprecated_offset_0_at_proj_sim (=0 by H_lookup), iszero+cleanup,
+  require_helper_t_error_16_VersionRegistry__AlreadyDeprecated(1) succeeds
+- S18-S19: second mapping_index_access(1, hash), update_storage via
+  run_update_storage_value_offset_0_t_bool_to_t_bool_isDeprecated_at_proj_sim
+  (the load-bearing sstore producing proj_sim_post_deprecate)
+- S20: log2 = M.pure tt
+- S21: final M.pure tt — closes via RunO.PureEq + make_state_with_rd_eq
+
+The state-shape transition at S9 (staticcall bridge produces a state
+with `<| return_data := bytes |>` override) propagates through S10-S20.
+Companion `with_rd` versions of the AbiEncoding axioms (S11-S13) would
+be needed to walk through this prefix cleanly.  Alternative: use the
+`make_state_with_rd_eq` commutation at the final M.pure to "absorb"
+the rd field into the state_base argument.
+
+**Per-mutator cost** (updated): the original R065 axiom's discharge
+is now ~500-1500 LOC mechanical assembly.  This is meaningful but
+bounded work.
+
 ## R065-R071: Per-mutator composite-walker recipe
 
 Validated on 12 mutators across 6 contracts: VersionRegistry,
