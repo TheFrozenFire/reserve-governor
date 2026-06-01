@@ -1,5 +1,5 @@
 # Theorem: GuardianEquivalence.run_revokeRole_1378_equivalent
-# Source:  Guardian.v:9496
+# Source:  Guardian.v:10524
 # Module:  GuardianEquivalence
 #
 Axioms:
@@ -14,16 +14,6 @@ RocqOfSolidity.CanonizeState.update_memory_eq :
     (RocqOfSolidity.make_state environment state memory storage) =
   RocqOfSolidity.make_state environment state new_memory storage
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-GuardianEquivalence.set_eq_at_role_revoke_post_storage :
-  forall (role : RocqOfSolidity.U256.t) (sim : Guardian.Guardian.State.t)
-    (account : Guardian.Guardian.Address),
-  role = GuardianEquivalence.DEFAULT_ADMIN_ROLE_bytes32 \/
-  role = GuardianEquivalence.OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
-  role = GuardianEquivalence.OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 ->
-  GuardianEquivalence.set_eq_at_role
-    (GuardianEquivalence.revoke_post_storage role sim account)
-    (GuardianEquivalence.proj_sim
-       (GuardianEquivalence.revoke_role_sim role sim account))
 GuardianEquivalence.run_sload_role_admin_at_proj_sim :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)

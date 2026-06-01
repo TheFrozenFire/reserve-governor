@@ -2673,7 +2673,6 @@ template), R065-R071 (per-mutator composite walker recipe), R070
 (ProposalLib walker structure), R086 (concurrent UnstakingManager
 SafeERC20/linkersymbol gap).
 
-<<<<<<< HEAD
 ## R088: Arbitrary-U256-slot storage absorption — ProposalLib framework gap
 
 **Task #293 (T3.2-ProposalLib, 2026-06-01)** attempted to extend the
@@ -2862,7 +2861,6 @@ See also: R040 (wrapper-shape sstore), R082 (staticcall absorption),
 R083 (memory absorption + namespace anchors), R067 (composite-walker
 template), R070 (ProposalLib walker structure), R087 (ROG composite
 walker — depends on ProposalLib walkers closing first).
-=======
 ## R089: TimelockControllerOptimistic walker per-helper sub-axiom decomposition
 
 **Task #294 (T3.2-TLC-finish, 2026-06-01)** extends the R082 composite-walker
@@ -3051,7 +3049,6 @@ either:
 See also: R082 (deprecateVersion discharge — monolithic), R083
 (ERC-7201 framework), R084 (T3.3 trust-redistribution), R087 (ROG
 structural blockers).
->>>>>>> 0f2126e (docs(wisdom): R088 — TimelockControllerOptimistic walker per-helper sub-axiom decomposition)
 
 ## R065-R071: Per-mutator composite-walker recipe
 
@@ -3470,3 +3467,91 @@ git push thefrozenfire <commit-hash>:refs/heads/feature/formal-verification
 ```
 
 forces fast-forward-or-fail with no tracking ambiguity.
+
+## R090: T3.3 Phase-2 bridge-axiom discharge — `set_eq_at_role_revoke_post_storage` to Qed
+
+R090 follows R084 + R085 and discharges the property-bridge Axiom
+`set_eq_at_role_revoke_post_storage` into a `Qed` `Lemma`.  Trust impact
+(per `Print Assumptions`):
+
+- Before R090 (after R085): walker-shape Axiom + property-bridge Axiom +
+  3 R084 inverse-op framework axioms.
+- After R090: walker-shape Axiom + 0 property bridge axioms +
+  3 R084 inverse-op framework axioms.
+
+NET: 1 axiom retired from `Print Assumptions` (`set_eq_at_role_revoke_post_storage`).
+revokeRole's load-bearing axiom count: 20 → 16.
+
+### Decomposition
+
+Three role-specific Qed Lemmas, each ~250 LOC, plus a 5-LOC dispatcher:
+
+- `set_eq_at_role_revoke_post_storage_admin` (DEFAULT role)
+- `set_eq_at_role_revoke_post_storage_og`    (OG role)
+- `set_eq_at_role_revoke_post_storage_ogm`   (OGM role)
+- `set_eq_at_role_revoke_post_storage`       (dispatcher, case-split on H_role_known)
+
+Each role-specific lemma case-splits on `role'` (DEFAULT / OG / OGM /
+unknown) and then on the swap-vs-last-element shape from R085's concrete
+`post_positions_after_remove` Definition.
+
+### Plumbing helpers (~250 LOC total)
+
+These are reusable for any future bridge discharge:
+
+- `Dict_Eq_eqb_pair`:  `Dict.Eq.eqb (a, b) (c, d) = (a =? c) && (b =? d)`.
+- `Dict_get_declare_or_assign_eq_pair`,
+  `Dict_get_declare_or_assign_neq_pair`:  symbolic `Dict.get` reductions
+  on a `declare_or_assign` for the pair-key shape.
+- `map_get_u256_declare_or_assign_eq_pair`,
+  `map_get_u256_declare_or_assign_neq_pair`:  same at the `map_get_u256`
+  level (caller-facing).
+- `positions_for_role_get_unrelated`:  `Dict.get (positions_for_role role1 lst)
+  (role2, _) = None` when `role1 ≠ role2`.
+- `role_positions_map_get_unknown_role`:  composite — for any sim, when
+  `role' ≠ all three named roles`, the lookup yields 0.
+- `contains_at_role_unknown_role_proj_sim`:  `contains_at_role role' a'
+  (proj_sim sim) = false` for unknown `role'`.
+- `members_for_role_map_get_iff_addr_in`,
+  `members_for_role_map_get_unrelated`,
+  `role_member_map_admin_iff_addr_in` (+ og / ogm variants):  convert
+  `H_member` (slot-0 lookup = 1) into `addr_in role-list account = true`.
+- `position_of_head_eq_len_admin` (+ og / ogm):  the head of the
+  role-list has `position_of = oldLen`, used to derive head ≠ account
+  from the swap-case hypothesis.
+- `swap_case_head_neq_admin` (+ og / ogm):  packages the head-vs-account
+  reasoning into a clean lemma usable from the per-role bridges.
+- `post_role_list_default` (+ og / ogm):  reduces `post_role_list` for
+  each named role.
+- `old_len_of_admin` (+ og / ogm):  reduces `old_len_of` for each named
+  role to the corresponding `Z.of_nat length`.
+
+### Methodology finding: `cbn` does not reduce opaque-constant `Dict.Eq.eqb`
+
+The role bytes32 constants (`DEFAULT_ADMIN_ROLE_bytes32`, etc.) are
+declared as `Parameter`s without a reduction rule.  `cbn` cannot decide
+`Dict.Eq.eqb role1 role2` between two such opaque constants; it leaves
+the `if Dict.Eq.eqb _ _ then ... else ...` form unreduced even when
+the surrounding `andb`s would simplify.
+
+**Workaround:** use named lemmas
+(`positions_for_role_map_get_unrelated`, `DEFAULT_neq_OG`, etc.) and
+`change`-and-rewrite tactics rather than relying on `cbn` to compute
+through opaque-constant comparisons.  For pair keys, `Dict_Eq_eqb_pair`
+exposes the `andb`-of-`Z.eqb` form on which `Z.eqb_spec` is decidable.
+
+### Path to T3.3 closure (R087 residual)
+
+The walker-shape axiom `run_fun__revokeRole_736_at_proj_sim_member_walker`
+remains.  Discharge requires the ~600-1000 LOC Phase 2 walker over
+`fun_remove_2112` / `fun__remove_1698`, composing the R084 inverse-op
+axioms (`run_storage_set_to_zero_t_bytes32_at_proj_sim`,
+`run_array_pop_at_proj_sim`,
+`run_storage_set_to_zero_t_uint256_at_positions_proj_sim`) with the
+existing R051.c forward reads/writes.  Branching structure: two arms
+inside `fun__remove_1698` (swap case vs last-element case), unified at
+the R085 concrete post-state.  See R084's "Path to full discharge"
+section + R085's "Path to Qed discharge" section.
+
+See also: R084 (decomposition), R085 (Skolem elimination), R059
+(set_eq_at_role), R055 (grantRole bridge methodology).

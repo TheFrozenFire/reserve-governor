@@ -6174,6 +6174,54 @@ Module GuardianEquivalence.
       + simpl andb. exact IH.
   Qed.
 
+  (** Companion at the [Dict.get] level: returns [None] (not just 0). *)
+  Lemma positions_for_role_get_unrelated :
+    forall (role1 role2 : U256.t) (lst : list Address) (account : Address),
+      role1 <> role2 ->
+      Dict.get (positions_for_role role1 lst) (role2, account) = None.
+  Proof.
+    intros role1 role2 lst account Hne.
+    induction lst as [|a rest IH]; simpl.
+    - reflexivity.
+    - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+      change (Dict.Eq.eqb role2 role1) with (role2 =? role1).
+      destruct (role2 =? role1) eqn:Hr.
+      + apply Z.eqb_eq in Hr. exfalso. apply Hne. symmetry. exact Hr.
+      + simpl andb. exact IH.
+  Qed.
+
+  (** Composite: for an unknown role' (≠ all three named roles), the
+      lookup against [role_positions_map] for any sim returns 0. *)
+  Lemma role_positions_map_get_unknown_role
+      (sim : State.t) (role' : U256.t) (a' : Address)
+      (Hrole_def : role' <> DEFAULT_ADMIN_ROLE_bytes32)
+      (Hrole_og  : role' <> OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+      (Hrole_ogm : role' <> OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32) :
+    StorableValue.map_get_u256 (role_positions_map sim) (role', a') = 0.
+  Proof.
+    unfold role_positions_map, StorableValue.map_get_u256.
+    rewrite (Dict_get_app_split (positions_for_role DEFAULT_ADMIN_ROLE_bytes32 _)).
+    rewrite (positions_for_role_get_unrelated _ _ _ _ (not_eq_sym Hrole_def)).
+    rewrite (Dict_get_app_split (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32 _)).
+    rewrite (positions_for_role_get_unrelated _ _ _ _ (not_eq_sym Hrole_og)).
+    rewrite (positions_for_role_get_unrelated _ _ _ _ (not_eq_sym Hrole_ogm)).
+    reflexivity.
+  Qed.
+
+  (** [contains_at_role] of any 4-slot post-storage at an unknown role
+      reduces to [false] when slot 1 has the no-hit shape. *)
+  Lemma contains_at_role_unknown_role_proj_sim
+      (sim : State.t) (role' : U256.t) (a' : Address)
+      (Hrole_def : role' <> DEFAULT_ADMIN_ROLE_bytes32)
+      (Hrole_og  : role' <> OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+      (Hrole_ogm : role' <> OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32) :
+    contains_at_role role' a' (proj_sim sim) = false.
+  Proof.
+    unfold contains_at_role, proj_sim. cbn [List.nth_error].
+    rewrite role_positions_map_get_unknown_role by assumption.
+    reflexivity.
+  Qed.
+
   (** Helper: when [m1] and [m2] both miss at key [k], the concat misses too. *)
   Lemma map_get_u256_app_None_None
       (m1 m2 : Dict.t (U256.t * U256.t) U256.t) (k : U256.t * U256.t) :
@@ -9418,12 +9466,13 @@ Module GuardianEquivalence.
         | Some (make_state env state_base memory'
                   (revoke_post_storage role sim account)) ?}}.
 
-  (** ===== R085 status: bridge axiom narrowed =====
+  (** ===== R085-residual: bridge lemma discharge =====
 
-      Bridge axiom: the post-storage's [contains_at_role] predicate
-      matches the sim-side [revoke_role_sim] semantics.  With the
-      R085 concrete [Definition] shapes (above), this axiom's audit
-      obligation becomes a mechanical Boolean reduction:
+      Bridge lemma (was: Axiom; this commit): the post-storage's
+      [contains_at_role] predicate matches the sim-side
+      [revoke_role_sim] semantics.  With the R085 concrete
+      [Definition] shapes (above), this lemma's audit obligation
+      reduces to a mechanical Boolean reduction:
 
         - (role, account):    LHS = 0; RHS = 0 (addr_in_remove_role_self).
         - swap-case (role, last_value role sim):  LHS = position >= 1
@@ -9433,22 +9482,1001 @@ Module GuardianEquivalence.
                                                   (last_value <> account
                                                    in swap case).
         - other (role', a'):  defers to role_positions_map sim (R059
-                              contains_at_role_proj_sim_admin/og/ogm).
+                              contains_at_role_proj_sim_admin/og/ogm). *)
 
-      Promoting this Axiom to a [Qed] [Lemma] is documented as
-      R085-residual: it requires ~300-500 LOC of case-split-by-(role',
-      a') / case-split-on-swap-branch / reduce-to-addr_in plumbing.
-      The concrete shapes above are the structural prerequisite for
-      that discharge. *)
-  Axiom set_eq_at_role_revoke_post_storage :
+  (** ----- Helper: [Dict.Eq.eqb] on a (Z * Z) pair reduces to (=?) && (=?). ----- *)
+  Lemma Dict_Eq_eqb_pair (a b : U256.t * U256.t) :
+    Dict.Eq.eqb a b = (fst a =? fst b) && (snd a =? snd b).
+  Proof.
+    destruct a as [a1 a2], b as [b1 b2]. reflexivity.
+  Qed.
+
+  (** ----- Helper: [Dict.get] (option form) on [declare_or_assign] for
+      pair keys, with the lookup key equal to the assign key. ----- *)
+  Lemma Dict_get_declare_or_assign_eq_pair
+      (d : Dict.t (U256.t * U256.t) U256.t)
+      (k : U256.t * U256.t) (v : U256.t) :
+    Dict.get (Dict.declare_or_assign d k v) k = Some v.
+  Proof.
+    unfold Dict.declare_or_assign.
+    induction d as [|[k0 v0] rest IH]; cbn.
+    - destruct k as [k1 k2]. cbn.
+      rewrite !Z.eqb_refl. reflexivity.
+    - destruct (Dict.Eq.eqb k0 k) eqn:Hk0k; cbn.
+      + destruct (Dict.Eq.eqb k k) eqn:Hkk.
+        * reflexivity.
+        * exfalso.
+          rewrite Dict_Eq_eqb_pair in Hkk. destruct k as [k1 k2]. cbn in Hkk.
+          rewrite !Z.eqb_refl in Hkk. discriminate.
+      + destruct (Dict.Eq.eqb k k0) eqn:Hkk0.
+        * exfalso.
+          (* Dict.Eq.eqb k k0 = true but Dict.Eq.eqb k0 k = false: but eqb on
+             pairs is symmetric since it's andb of Z.eqb (which is symmetric). *)
+          rewrite Dict_Eq_eqb_pair in Hk0k, Hkk0.
+          destruct k as [k1 k2], k0 as [k01 k02]. cbn in *.
+          rewrite (Z.eqb_sym k1 k01), (Z.eqb_sym k2 k02) in Hkk0.
+          rewrite Hkk0 in Hk0k. discriminate.
+        * exact IH.
+  Qed.
+
+  Lemma map_get_u256_declare_or_assign_eq_pair
+      (d : Dict.t (U256.t * U256.t) U256.t)
+      (k : U256.t * U256.t) (v : U256.t) :
+    StorableValue.map_get_u256 (Dict.declare_or_assign d k v) k = v.
+  Proof.
+    unfold StorableValue.map_get_u256.
+    rewrite Dict_get_declare_or_assign_eq_pair. reflexivity.
+  Qed.
+
+  (** ----- Helper: [Dict.get] (option form) on [declare_or_assign] for
+      pair keys, with the lookup key being NEQ from the assign key. -----
+
+      Stated at the [Dict.get] level (option form) for easier
+      composition with existing [map_get_app_split]-based reasoning. *)
+  Lemma Dict_get_declare_or_assign_neq_pair
+      (d : Dict.t (U256.t * U256.t) U256.t)
+      (k k' : U256.t * U256.t) (v : U256.t) :
+    k <> k' ->
+    Dict.get (Dict.declare_or_assign d k' v) k = Dict.get d k.
+  Proof.
+    intros Hne.
+    unfold Dict.declare_or_assign.
+    induction d as [|[k0 v0] rest IH]; cbn.
+    - destruct (Dict.Eq.eqb k k') eqn:Hkk'.
+      + exfalso. apply Hne.
+        rewrite Dict_Eq_eqb_pair in Hkk'. apply Bool.andb_true_iff in Hkk' as [H1 H2].
+        apply Z.eqb_eq in H1, H2.
+        destruct k, k'. cbn in *. f_equal; assumption.
+      + reflexivity.
+    - destruct (Dict.Eq.eqb k0 k') eqn:Hk0k'; cbn.
+      + (* k0 = k': new head (k', v).  Compare k to k'. *)
+        destruct (Dict.Eq.eqb k k') eqn:Hkk'.
+        * exfalso. apply Hne.
+          rewrite Dict_Eq_eqb_pair in Hkk'. apply Bool.andb_true_iff in Hkk' as [H1 H2].
+          apply Z.eqb_eq in H1, H2.
+          destruct k, k'. cbn in *. f_equal; assumption.
+        * (* k ≠ k'.  But k0 = k' so k ≠ k0.  Use this for the [Dict.get]
+             comparison. *)
+          destruct (Dict.Eq.eqb k k0) eqn:Hkk0.
+          { exfalso.
+            rewrite Dict_Eq_eqb_pair in Hk0k', Hkk0, Hkk'.
+            apply Bool.andb_true_iff in Hk0k' as [H1 H2], Hkk0 as [H3 H4].
+            apply Z.eqb_eq in H1, H2, H3, H4.
+            destruct k, k', k0; cbn in *. subst. rewrite !Z.eqb_refl in Hkk'.
+            discriminate. }
+          reflexivity.
+      + (* k0 ≠ k'.  Head stays k0. *)
+        destruct (Dict.Eq.eqb k k0) eqn:Hkk0.
+        * reflexivity.
+        * exact IH.
+  Qed.
+
+  (** Companion: at the [map_get_u256] level. *)
+  Lemma map_get_u256_declare_or_assign_neq_pair
+      (d : Dict.t (U256.t * U256.t) U256.t)
+      (k k' : U256.t * U256.t) (v : U256.t) :
+    k <> k' ->
+    StorableValue.map_get_u256 (Dict.declare_or_assign d k' v) k
+    = StorableValue.map_get_u256 d k.
+  Proof.
+    intros Hne.
+    unfold StorableValue.map_get_u256.
+    rewrite Dict_get_declare_or_assign_neq_pair by exact Hne.
+    reflexivity.
+  Qed.
+
+  (** ----- Helper: [post_role_list] characterization vs role ----- *)
+  Lemma post_role_list_default (sim : State.t) :
+    post_role_list DEFAULT_ADMIN_ROLE_bytes32 sim = sim.(State.admins).
+  Proof. unfold post_role_list. rewrite Z.eqb_refl. reflexivity. Qed.
+
+  Lemma post_role_list_og (sim : State.t) :
+    post_role_list OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim
+    = sim.(State.optimisticGuardians).
+  Proof.
+    unfold post_role_list.
+    destruct (Z.eqb_spec OPTIMISTIC_GUARDIAN_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32) as [Heq|_].
+    - exfalso. apply (not_eq_sym DEFAULT_neq_OG). exact Heq.
+    - rewrite Z.eqb_refl. reflexivity.
+  Qed.
+
+  Lemma post_role_list_ogm (sim : State.t) :
+    post_role_list OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim
+    = sim.(State.optimisticGuardianManagers).
+  Proof.
+    unfold post_role_list.
+    destruct (Z.eqb_spec OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32) as [Heq|_].
+    - exfalso. apply (not_eq_sym DEFAULT_neq_OGM). exact Heq.
+    - destruct (Z.eqb_spec OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 OPTIMISTIC_GUARDIAN_ROLE_bytes32) as [Heq|_].
+      + exfalso. apply (not_eq_sym OG_neq_OGM). exact Heq.
+      + rewrite Z.eqb_refl. reflexivity.
+  Qed.
+
+  (** ----- Helper: when the role-list has a head, the [last_value]
+      equals that head. ----- *)
+  Lemma last_value_cons (role : U256.t) (sim : State.t) (a : Address) (rest : list Address) :
+    post_role_list role sim = a :: rest ->
+    last_value role sim = a.
+  Proof.
+    intros H. unfold last_value. rewrite H. reflexivity.
+  Qed.
+
+  (** ----- Helper: the role's "old length" equals the role-list's
+      [List.length] for the three known roles. ----- *)
+  Lemma old_len_of_admin (sim : State.t) :
+    old_len_of DEFAULT_ADMIN_ROLE_bytes32 sim
+    = Z.of_nat (List.length sim.(State.admins)).
+  Proof.
+    unfold old_len_of, role_values_length_map, StorableValue.map_get_u256.
+    cbn.
+    change (Dict.Eq.eqb DEFAULT_ADMIN_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32)
+      with (DEFAULT_ADMIN_ROLE_bytes32 =? DEFAULT_ADMIN_ROLE_bytes32).
+    rewrite Z.eqb_refl. reflexivity.
+  Qed.
+
+  Lemma old_len_of_og (sim : State.t) :
+    old_len_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim
+    = Z.of_nat (List.length sim.(State.optimisticGuardians)).
+  Proof.
+    unfold old_len_of, role_values_length_map, StorableValue.map_get_u256.
+    cbn.
+    change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32)
+      with (OPTIMISTIC_GUARDIAN_ROLE_bytes32 =? DEFAULT_ADMIN_ROLE_bytes32).
+    destruct (Z.eqb_spec OPTIMISTIC_GUARDIAN_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32) as [Heq|_].
+    - exfalso. apply (not_eq_sym DEFAULT_neq_OG). exact Heq.
+    - change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_ROLE_bytes32 OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+        with (OPTIMISTIC_GUARDIAN_ROLE_bytes32 =? OPTIMISTIC_GUARDIAN_ROLE_bytes32).
+      rewrite Z.eqb_refl. reflexivity.
+  Qed.
+
+  Lemma old_len_of_ogm (sim : State.t) :
+    old_len_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim
+    = Z.of_nat (List.length sim.(State.optimisticGuardianManagers)).
+  Proof.
+    unfold old_len_of, role_values_length_map, StorableValue.map_get_u256.
+    cbn.
+    change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32)
+      with (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 =? DEFAULT_ADMIN_ROLE_bytes32).
+    destruct (Z.eqb_spec OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32) as [Heq|_].
+    - exfalso. apply (not_eq_sym DEFAULT_neq_OGM). exact Heq.
+    - change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 OPTIMISTIC_GUARDIAN_ROLE_bytes32)
+        with (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 =? OPTIMISTIC_GUARDIAN_ROLE_bytes32).
+      destruct (Z.eqb_spec OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 OPTIMISTIC_GUARDIAN_ROLE_bytes32) as [Heq|_].
+      + exfalso. apply (not_eq_sym OG_neq_OGM). exact Heq.
+      + change (Dict.Eq.eqb OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+          with (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 =? OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32).
+        rewrite Z.eqb_refl. reflexivity.
+  Qed.
+
+  (** ----- Helper: in the swap case (position - 1 ≠ oldLen - 1) for a
+      member account on the DEFAULT role, the role-list has a head and
+      that head is NOT the account. -----
+
+      The dict [positions_for_role] is cons-prefix: [(role, head) ->
+      length(tail)+1; ...].  [Dict.get] hits the first matching entry.
+      The head's position equals oldLen; so the first hit lands at
+      oldLen iff [head = account].  In the swap case the first hit
+      is NOT at oldLen, hence [head ≠ account].
+
+      [H_addr_in] (account ∈ admins) ensures the list is non-empty and
+      [position_of] returns the FIRST-occurrence position (≥ 1). *)
+  (** Helper: the [position_of] of the head equals the cons-length. *)
+  (** Helper: when the lookup hits the head of [positions_for_role] for
+      a non-empty list, the value is [length(rest) + 1].
+
+      Stated at [map_get_u256] level since that's what [position_of] uses. *)
+  Lemma map_get_u256_positions_for_role_head_eq
+      (role : U256.t) (a : Address) (rest : list Address) :
+    StorableValue.map_get_u256
+      (positions_for_role role (a :: rest)) (role, a)
+    = Z.of_nat (List.length rest) + 1.
+  Proof.
+    unfold StorableValue.map_get_u256, positions_for_role. fold positions_for_role.
+    cbn [Dict.get].
+    rewrite Dict_Eq_eqb_pair. cbn [fst snd].
+    rewrite !Z.eqb_refl. reflexivity.
+  Qed.
+
+  Lemma position_of_head_eq_len_admin
+      (sim : State.t) (head : Address) (rest : list Address)
+      (H : sim.(State.admins) = head :: rest) :
+    position_of DEFAULT_ADMIN_ROLE_bytes32 sim head
+    = Z.of_nat (List.length sim.(State.admins)).
+  Proof.
+    unfold position_of.
+    rewrite map_get_u256_role_positions_map_admin.
+    rewrite H.
+    rewrite map_get_u256_positions_for_role_head_eq.
+    cbn [List.length]. rewrite Nat2Z.inj_succ. lia.
+  Qed.
+
+  Lemma position_of_head_eq_len_og
+      (sim : State.t) (head : Address) (rest : list Address)
+      (H : sim.(State.optimisticGuardians) = head :: rest) :
+    position_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim head
+    = Z.of_nat (List.length sim.(State.optimisticGuardians)).
+  Proof.
+    unfold position_of.
+    rewrite map_get_u256_role_positions_map_og.
+    rewrite H.
+    rewrite map_get_u256_positions_for_role_head_eq.
+    cbn [List.length]. rewrite Nat2Z.inj_succ. lia.
+  Qed.
+
+  Lemma position_of_head_eq_len_ogm
+      (sim : State.t) (head : Address) (rest : list Address)
+      (H : sim.(State.optimisticGuardianManagers) = head :: rest) :
+    position_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim head
+    = Z.of_nat (List.length sim.(State.optimisticGuardianManagers)).
+  Proof.
+    unfold position_of.
+    rewrite map_get_u256_role_positions_map_ogm.
+    rewrite H.
+    rewrite map_get_u256_positions_for_role_head_eq.
+    cbn [List.length]. rewrite Nat2Z.inj_succ. lia.
+  Qed.
+
+  Lemma swap_case_head_neq_admin
+      (sim : State.t) (account : Address)
+      (H_addr_in : Guardian.addr_in sim.(State.admins) account = true)
+      (H_swap :
+        (position_of DEFAULT_ADMIN_ROLE_bytes32 sim account - 1)
+          =? (old_len_of DEFAULT_ADMIN_ROLE_bytes32 sim - 1)
+        = false) :
+    exists head rest, sim.(State.admins) = head :: rest /\ head <> account.
+  Proof.
+    destruct sim.(State.admins) as [|head rest] eqn:Hadm.
+    - simpl in H_addr_in. discriminate.
+    - exists head, rest. split; [reflexivity|].
+      intro Heq. subst head.
+      apply Z.eqb_neq in H_swap. apply H_swap.
+      rewrite (position_of_head_eq_len_admin sim account rest Hadm).
+      rewrite old_len_of_admin. reflexivity.
+  Qed.
+
+  Lemma swap_case_head_neq_og
+      (sim : State.t) (account : Address)
+      (H_addr_in : Guardian.addr_in sim.(State.optimisticGuardians) account = true)
+      (H_swap :
+        (position_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim account - 1)
+          =? (old_len_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim - 1)
+        = false) :
+    exists head rest, sim.(State.optimisticGuardians) = head :: rest /\
+                      head <> account.
+  Proof.
+    destruct sim.(State.optimisticGuardians) as [|head rest] eqn:Hog.
+    - simpl in H_addr_in. discriminate.
+    - exists head, rest. split; [reflexivity|].
+      intro Heq. subst head.
+      apply Z.eqb_neq in H_swap. apply H_swap.
+      rewrite (position_of_head_eq_len_og sim account rest Hog).
+      rewrite old_len_of_og. reflexivity.
+  Qed.
+
+  Lemma swap_case_head_neq_ogm
+      (sim : State.t) (account : Address)
+      (H_addr_in : Guardian.addr_in sim.(State.optimisticGuardianManagers) account = true)
+      (H_swap :
+        (position_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim account - 1)
+          =? (old_len_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim - 1)
+        = false) :
+    exists head rest, sim.(State.optimisticGuardianManagers) = head :: rest /\
+                      head <> account.
+  Proof.
+    destruct sim.(State.optimisticGuardianManagers) as [|head rest] eqn:Hogm.
+    - simpl in H_addr_in. discriminate.
+    - exists head, rest. split; [reflexivity|].
+      intro Heq. subst head.
+      apply Z.eqb_neq in H_swap. apply H_swap.
+      rewrite (position_of_head_eq_len_ogm sim account rest Hogm).
+      rewrite old_len_of_ogm. reflexivity.
+  Qed.
+
+  (** ----- Helper: the head's [positions]-map entry is ≥ 1 (head is
+      always a member).  Specializes the eq-to-length lemma. ----- *)
+  Lemma position_of_head_ge_1_admin
+      (sim : State.t) (head : Address) (rest : list Address)
+      (H : sim.(State.admins) = head :: rest) :
+    position_of DEFAULT_ADMIN_ROLE_bytes32 sim head >= 1.
+  Proof.
+    rewrite (position_of_head_eq_len_admin sim head rest H), H.
+    cbn [List.length]. lia.
+  Qed.
+
+  Lemma position_of_head_ge_1_og
+      (sim : State.t) (head : Address) (rest : list Address)
+      (H : sim.(State.optimisticGuardians) = head :: rest) :
+    position_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim head >= 1.
+  Proof.
+    rewrite (position_of_head_eq_len_og sim head rest H), H.
+    cbn [List.length]. lia.
+  Qed.
+
+  Lemma position_of_head_ge_1_ogm
+      (sim : State.t) (head : Address) (rest : list Address)
+      (H : sim.(State.optimisticGuardianManagers) = head :: rest) :
+    position_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim head >= 1.
+  Proof.
+    rewrite (position_of_head_eq_len_ogm sim head rest H), H.
+    cbn [List.length]. lia.
+  Qed.
+
+  (** ----- Helper: [addr_in] for the head of the cons-list. ----- *)
+  Lemma addr_in_head (head : Address) (rest : list Address) :
+    Guardian.addr_in (head :: rest) head = true.
+  Proof. cbn. rewrite Z.eqb_refl. reflexivity. Qed.
+
+  (** ----- The three role-specific bridge lemmas ----- *)
+
+  (** Bridge for DEFAULT_ADMIN_ROLE: under H_member (account ∈ admins),
+      contains_at_role agrees between the post-storage and the
+      sim-projected post-state. *)
+  (** ----- Helper: [members_for_role role lst] is non-zero at (role, account)
+      iff account is in lst.  Mirrors [positions_for_role_map_get_iff_addr_in]. ----- *)
+  Lemma members_for_role_map_get_iff_addr_in
+      (role : U256.t) (lst : list Address) (account : Address) :
+    StorableValue.map_get_u256 (members_for_role role lst)
+      (role, account) = 1 ->
+    Guardian.addr_in lst account = true.
+  Proof.
+    induction lst as [|a rest IH]; simpl; unfold StorableValue.map_get_u256; simpl.
+    - discriminate.
+    - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+      rewrite Z.eqb_refl. simpl andb.
+      change (Dict.Eq.eqb account a) with (account =? a).
+      destruct (a =? account) eqn:Hac.
+      + apply Z.eqb_eq in Hac. subst a. rewrite Z.eqb_refl. reflexivity.
+      + apply Z.eqb_neq in Hac.
+        destruct (account =? a) eqn:Hac2.
+        * apply Z.eqb_eq in Hac2. exfalso. apply Hac. symmetry. exact Hac2.
+        * intro Hg. apply IH. exact Hg.
+  Qed.
+
+  (** Companion: [members_for_role role lst] at an unrelated role is 0. *)
+  Lemma members_for_role_map_get_unrelated
+      (role1 role2 : U256.t) (lst : list Address) (account : Address) :
+    role1 <> role2 ->
+    StorableValue.map_get_u256 (members_for_role role1 lst)
+      (role2, account) = 0.
+  Proof.
+    intros Hne.
+    induction lst as [|a rest IH]; unfold StorableValue.map_get_u256; simpl.
+    - reflexivity.
+    - cbn [Dict.Eq.eqb Dict.Eq.ITuple2 Dict.Eq.IZ].
+      change (Dict.Eq.eqb role2 role1) with (role2 =? role1).
+      destruct (role2 =? role1) eqn:Hr.
+      + apply Z.eqb_eq in Hr. exfalso. apply Hne. symmetry. exact Hr.
+      + simpl andb. exact IH.
+  Qed.
+
+  Lemma role_member_map_admin_iff_addr_in
+      (sim : State.t) (account : Address) :
+    StorableValue.map_get_u256 (role_member_map sim)
+      (DEFAULT_ADMIN_ROLE_bytes32, account) = 1 ->
+    Guardian.addr_in sim.(State.admins) account = true.
+  Proof.
+    intros H.
+    unfold role_member_map in H.
+    rewrite map_get_app_split in H.
+    destruct (Dict.get (members_for_role DEFAULT_ADMIN_ROLE_bytes32 sim.(State.admins))
+                (DEFAULT_ADMIN_ROLE_bytes32, account)) as [v|] eqn:Hg.
+    - assert (v = 1) by (apply (members_for_role_get_is_one _ _ _ _ Hg)).
+      apply (members_for_role_map_get_iff_addr_in DEFAULT_ADMIN_ROLE_bytes32).
+      unfold StorableValue.map_get_u256. rewrite Hg. exact H0.
+    - (* Defers to OG block, then OGM block — but each is "unrelated" so returns 0. *)
+      exfalso.
+      pose proof (members_for_role_map_get_unrelated
+                    OPTIMISTIC_GUARDIAN_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32
+                    sim.(State.optimisticGuardians) account
+                    (not_eq_sym DEFAULT_neq_OG)) as Hog.
+      pose proof (members_for_role_map_get_unrelated
+                    OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32
+                    sim.(State.optimisticGuardianManagers) account
+                    (not_eq_sym DEFAULT_neq_OGM)) as Hogm.
+      rewrite map_get_app_split in H.
+      destruct (Dict.get (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                            sim.(State.optimisticGuardians))
+                  (DEFAULT_ADMIN_ROLE_bytes32, account)) as [u|] eqn:HgOG.
+      + unfold StorableValue.map_get_u256 in Hog. rewrite HgOG in Hog.
+        pose proof (members_for_role_get_is_one _ _ _ _ HgOG). lia.
+      + destruct (Dict.get (members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                              sim.(State.optimisticGuardianManagers))
+                    (DEFAULT_ADMIN_ROLE_bytes32, account)) as [u|] eqn:HgOGM.
+        * unfold StorableValue.map_get_u256 in Hogm. rewrite HgOGM in Hogm.
+          pose proof (members_for_role_get_is_one _ _ _ _ HgOGM). lia.
+        * unfold StorableValue.map_get_u256 in H. rewrite HgOGM in H.
+          cbn in H. discriminate.
+  Qed.
+
+  Lemma role_member_map_og_iff_addr_in
+      (sim : State.t) (account : Address) :
+    StorableValue.map_get_u256 (role_member_map sim)
+      (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) = 1 ->
+    Guardian.addr_in sim.(State.optimisticGuardians) account = true.
+  Proof.
+    intros H.
+    unfold role_member_map in H.
+    rewrite map_get_app_split in H.
+    destruct (Dict.get (members_for_role DEFAULT_ADMIN_ROLE_bytes32 sim.(State.admins))
+                (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account)) as [v|] eqn:Hg.
+    - exfalso.
+      pose proof (members_for_role_map_get_unrelated
+                    DEFAULT_ADMIN_ROLE_bytes32 OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                    sim.(State.admins) account DEFAULT_neq_OG) as Hdef.
+      unfold StorableValue.map_get_u256 in Hdef. rewrite Hg in Hdef.
+      pose proof (members_for_role_get_is_one _ _ _ _ Hg). lia.
+    - rewrite map_get_app_split in H.
+      destruct (Dict.get (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                            sim.(State.optimisticGuardians))
+                  (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account)) as [v|] eqn:HgOG.
+      + apply (members_for_role_map_get_iff_addr_in OPTIMISTIC_GUARDIAN_ROLE_bytes32).
+        unfold StorableValue.map_get_u256. rewrite HgOG.
+        apply (members_for_role_get_is_one _ _ _ _ HgOG).
+      + exfalso.
+        destruct (Dict.get (members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                              sim.(State.optimisticGuardianManagers))
+                    (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account)) as [u|] eqn:HgOGM.
+        * pose proof (members_for_role_map_get_unrelated
+                        OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                        sim.(State.optimisticGuardianManagers) account
+                        (not_eq_sym OG_neq_OGM)) as Hogm.
+          unfold StorableValue.map_get_u256 in Hogm. rewrite HgOGM in Hogm.
+          pose proof (members_for_role_get_is_one _ _ _ _ HgOGM). lia.
+        * unfold StorableValue.map_get_u256 in H. rewrite HgOGM in H. cbn in H. discriminate.
+  Qed.
+
+  Lemma role_member_map_ogm_iff_addr_in
+      (sim : State.t) (account : Address) :
+    StorableValue.map_get_u256 (role_member_map sim)
+      (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) = 1 ->
+    Guardian.addr_in sim.(State.optimisticGuardianManagers) account = true.
+  Proof.
+    intros H.
+    unfold role_member_map in H.
+    rewrite map_get_app_split in H.
+    destruct (Dict.get (members_for_role DEFAULT_ADMIN_ROLE_bytes32 sim.(State.admins))
+                (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account)) as [v|] eqn:Hg.
+    - exfalso.
+      pose proof (members_for_role_map_get_unrelated
+                    DEFAULT_ADMIN_ROLE_bytes32 OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                    sim.(State.admins) account DEFAULT_neq_OGM) as Hdef.
+      unfold StorableValue.map_get_u256 in Hdef. rewrite Hg in Hdef.
+      pose proof (members_for_role_get_is_one _ _ _ _ Hg). lia.
+    - rewrite map_get_app_split in H.
+      destruct (Dict.get (members_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32
+                            sim.(State.optimisticGuardians))
+                  (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account)) as [v|] eqn:HgOG.
+      + exfalso.
+        pose proof (members_for_role_map_get_unrelated
+                      OPTIMISTIC_GUARDIAN_ROLE_bytes32 OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                      sim.(State.optimisticGuardians) account OG_neq_OGM) as Hog.
+        unfold StorableValue.map_get_u256 in Hog. rewrite HgOG in Hog.
+        pose proof (members_for_role_get_is_one _ _ _ _ HgOG). lia.
+      + destruct (Dict.get (members_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32
+                              sim.(State.optimisticGuardianManagers))
+                    (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account)) as [u|] eqn:HgOGM.
+        * apply (members_for_role_map_get_iff_addr_in OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32).
+          unfold StorableValue.map_get_u256. rewrite HgOGM.
+          apply (members_for_role_get_is_one _ _ _ _ HgOGM).
+        * exfalso. unfold StorableValue.map_get_u256 in H. rewrite HgOGM in H.
+          cbn in H. discriminate.
+  Qed.
+
+  Lemma set_eq_at_role_revoke_post_storage_admin
+      (sim : State.t) (account : Address)
+      (H_member :
+        StorableValue.map_get_u256 (role_member_map sim)
+          (DEFAULT_ADMIN_ROLE_bytes32, account) = 1) :
+    set_eq_at_role
+      (revoke_post_storage DEFAULT_ADMIN_ROLE_bytes32 sim account)
+      (proj_sim (revoke_role_sim DEFAULT_ADMIN_ROLE_bytes32 sim account)).
+  Proof.
+    (* Derive addr_in from H_member: account ∈ admins. *)
+    pose proof (role_member_map_admin_iff_addr_in sim account H_member) as H_addr_in.
+    intros role' a'.
+    (* Unfold revoke_post_storage's slot-1 entry. *)
+    unfold contains_at_role at 1.
+    cbn [revoke_post_storage List.nth_error].
+    unfold revoke_role_sim. rewrite Z.eqb_refl. cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    (* Case-split on role'. *)
+    destruct (Z.eqb_spec role' DEFAULT_ADMIN_ROLE_bytes32) as [-> | Hrole_def].
+    { (* role' = DEFAULT. *)
+      rewrite contains_at_role_proj_sim_admin.
+      cbn [State.admins].
+      (* Case-split on swap vs last-element. *)
+      unfold post_positions_after_remove. cbv zeta.
+      destruct ((position_of DEFAULT_ADMIN_ROLE_bytes32 sim account - 1)
+                =? (old_len_of DEFAULT_ADMIN_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - (* Last-element case. *)
+        destruct (Z.eqb_spec a' account) as [-> | Hne].
+        + (* a' = account. *)
+          rewrite map_get_u256_declare_or_assign_eq_pair. cbn.
+          rewrite addr_in_remove_role_self. reflexivity.
+        + (* a' ≠ account. *)
+          rewrite (map_get_u256_declare_or_assign_neq_pair
+                     _ (DEFAULT_ADMIN_ROLE_bytes32, a')
+                     (DEFAULT_ADMIN_ROLE_bytes32, account) 0).
+          2: { intro Hpair. inversion Hpair. apply Hne. assumption. }
+          rewrite map_get_u256_role_positions_map_admin.
+          rewrite positions_for_role_map_get_iff_addr_in.
+          rewrite addr_in_remove_role_other by (intro; subst; apply Hne; reflexivity).
+          reflexivity.
+      - (* Swap case. *)
+        destruct (swap_case_head_neq_admin sim account H_addr_in Hswap)
+          as (head & rest & Hadm & Hhead_ne).
+        assert (H_lv : last_value DEFAULT_ADMIN_ROLE_bytes32 sim = head).
+        { unfold last_value. rewrite post_role_list_default, Hadm. reflexivity. }
+        rewrite H_lv.
+        destruct (Z.eqb_spec a' account) as [-> | Hne].
+        + (* a' = account. *)
+          rewrite map_get_u256_declare_or_assign_eq_pair. cbn.
+          rewrite addr_in_remove_role_self. reflexivity.
+        + (* a' ≠ account.  Now case-split on a' = head. *)
+          rewrite (map_get_u256_declare_or_assign_neq_pair
+                     _ (DEFAULT_ADMIN_ROLE_bytes32, a')
+                     (DEFAULT_ADMIN_ROLE_bytes32, account) 0).
+          2: { intro Hpair. inversion Hpair. apply Hne. assumption. }
+          destruct (Z.eqb_spec a' head) as [-> | Hne2].
+          * (* a' = head. *)
+            rewrite map_get_u256_declare_or_assign_eq_pair.
+            (* Position is ≥ 1 since head is in admins. *)
+            pose proof (position_of_head_ge_1_admin sim head rest Hadm) as Hpos.
+            assert (Hposeq : position_of DEFAULT_ADMIN_ROLE_bytes32 sim account =? 0 = false).
+            { (* position_of returns the value at (DEFAULT, account) in role_positions_map.
+                 Since H_addr_in holds, this entry is ≥ 1 by
+                 positions_for_role_get_ge_1. *)
+              unfold position_of.
+              rewrite map_get_u256_role_positions_map_admin.
+              pose proof (positions_for_role_map_get_iff_addr_in
+                            DEFAULT_ADMIN_ROLE_bytes32 sim.(State.admins) account) as Hbf.
+              unfold StorableValue.map_get_u256 in *.
+              destruct (Dict.get (positions_for_role DEFAULT_ADMIN_ROLE_bytes32 _)
+                          (DEFAULT_ADMIN_ROLE_bytes32, account)) as [v|] eqn:Hg.
+              + pose proof (positions_for_role_get_ge_1 _ _ _ _ Hg). apply Z.eqb_neq. lia.
+              + cbn in Hbf. rewrite H_addr_in in Hbf. discriminate. }
+            rewrite Hposeq. cbn.
+            rewrite addr_in_remove_role_other by (apply not_eq_sym; exact Hhead_ne).
+            symmetry. rewrite Hadm. apply addr_in_head.
+          * (* a' ≠ head: defers to role_positions_map. *)
+            rewrite (map_get_u256_declare_or_assign_neq_pair
+                       _ (DEFAULT_ADMIN_ROLE_bytes32, a')
+                       (DEFAULT_ADMIN_ROLE_bytes32, head)
+                       (position_of DEFAULT_ADMIN_ROLE_bytes32 sim account)).
+            2: { intro Hpair. inversion Hpair. apply Hne2. assumption. }
+            rewrite map_get_u256_role_positions_map_admin.
+            rewrite positions_for_role_map_get_iff_addr_in.
+            rewrite addr_in_remove_role_other by (intro; subst; apply Hne; reflexivity).
+            reflexivity. }
+    (* role' ≠ DEFAULT. *)
+    destruct (Z.eqb_spec role' OPTIMISTIC_GUARDIAN_ROLE_bytes32) as [-> | Hrole_og].
+    { (* role' = OG. *)
+      rewrite contains_at_role_proj_sim_og.
+      cbn [State.optimisticGuardians].
+      unfold post_positions_after_remove. cbv zeta.
+      destruct ((position_of DEFAULT_ADMIN_ROLE_bytes32 sim account - 1)
+                =? (old_len_of DEFAULT_ADMIN_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - (* Last-element.  Lookup at (OG, a') defers. *)
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_ROLE_bytes32, a')
+                   (DEFAULT_ADMIN_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OG. symmetry. exact H0. }
+        rewrite map_get_u256_role_positions_map_og.
+        apply positions_for_role_map_get_iff_addr_in.
+      - destruct (swap_case_head_neq_admin sim account H_addr_in Hswap)
+          as (head & rest & Hadm & Hhead_ne).
+        assert (H_lv : last_value DEFAULT_ADMIN_ROLE_bytes32 sim = head).
+        { unfold last_value. rewrite post_role_list_default, Hadm. reflexivity. }
+        rewrite H_lv.
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_ROLE_bytes32, a')
+                   (DEFAULT_ADMIN_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OG. symmetry. exact H0. }
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_ROLE_bytes32, a')
+                   (DEFAULT_ADMIN_ROLE_bytes32, head) _).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OG. symmetry. exact H0. }
+        rewrite map_get_u256_role_positions_map_og.
+        apply positions_for_role_map_get_iff_addr_in. }
+    destruct (Z.eqb_spec role' OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32) as [-> | Hrole_ogm].
+    { (* role' = OGM. *)
+      rewrite contains_at_role_proj_sim_ogm.
+      cbn [State.optimisticGuardianManagers].
+      unfold post_positions_after_remove. cbv zeta.
+      destruct ((position_of DEFAULT_ADMIN_ROLE_bytes32 sim account - 1)
+                =? (old_len_of DEFAULT_ADMIN_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, a')
+                   (DEFAULT_ADMIN_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OGM. symmetry. exact H0. }
+        rewrite map_get_u256_role_positions_map_ogm.
+        apply positions_for_role_map_get_iff_addr_in.
+      - destruct (swap_case_head_neq_admin sim account H_addr_in Hswap)
+          as (head & rest & Hadm & Hhead_ne).
+        assert (H_lv : last_value DEFAULT_ADMIN_ROLE_bytes32 sim = head).
+        { unfold last_value. rewrite post_role_list_default, Hadm. reflexivity. }
+        rewrite H_lv.
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, a')
+                   (DEFAULT_ADMIN_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OGM. symmetry. exact H0. }
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, a')
+                   (DEFAULT_ADMIN_ROLE_bytes32, head) _).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OGM. symmetry. exact H0. }
+        rewrite map_get_u256_role_positions_map_ogm.
+        apply positions_for_role_map_get_iff_addr_in. }
+    (* role' is unknown — neither DEFAULT/OG/OGM.  Both sides resolve to 0. *)
+    rewrite (contains_at_role_unknown_role_proj_sim _ _ _ Hrole_def Hrole_og Hrole_ogm).
+    (* LHS: contains_at_role role' a' (revoke_post_storage ...). *)
+    unfold post_positions_after_remove. cbv zeta.
+    assert (Hgoal : negb (StorableValue.map_get_u256
+                            (if (position_of DEFAULT_ADMIN_ROLE_bytes32 sim account - 1) =?
+                                (old_len_of DEFAULT_ADMIN_ROLE_bytes32 sim - 1)
+                             then Dict.declare_or_assign (role_positions_map sim) (DEFAULT_ADMIN_ROLE_bytes32, account) 0
+                             else Dict.declare_or_assign
+                                    (Dict.declare_or_assign
+                                       (role_positions_map sim) (DEFAULT_ADMIN_ROLE_bytes32, last_value DEFAULT_ADMIN_ROLE_bytes32 sim) (position_of DEFAULT_ADMIN_ROLE_bytes32 sim account))
+                                    (DEFAULT_ADMIN_ROLE_bytes32, account) 0)
+                            (role', a') =? 0) = false).
+    { destruct ((position_of DEFAULT_ADMIN_ROLE_bytes32 sim account - 1)
+                =? (old_len_of DEFAULT_ADMIN_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (role', a') (DEFAULT_ADMIN_ROLE_bytes32, account) 0)
+          by (intro Hpair; inversion Hpair; apply Hrole_def; assumption).
+        rewrite role_positions_map_get_unknown_role by assumption. reflexivity.
+      - rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (role', a') (DEFAULT_ADMIN_ROLE_bytes32, account) 0)
+          by (intro Hpair; inversion Hpair; apply Hrole_def; assumption).
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (role', a') (DEFAULT_ADMIN_ROLE_bytes32, last_value DEFAULT_ADMIN_ROLE_bytes32 sim) _)
+          by (intro Hpair; inversion Hpair; apply Hrole_def; assumption).
+        rewrite role_positions_map_get_unknown_role by assumption. reflexivity. }
+    exact Hgoal.
+  Qed.
+
+  (** Bridge for OPTIMISTIC_GUARDIAN_ROLE: under H_member (account ∈
+      optimisticGuardians), contains_at_role agrees between the post-
+      storage and the sim-projected post-state. *)
+  Lemma set_eq_at_role_revoke_post_storage_og
+      (sim : State.t) (account : Address)
+      (H_member :
+        StorableValue.map_get_u256 (role_member_map sim)
+          (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) = 1) :
+    set_eq_at_role
+      (revoke_post_storage OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim account)
+      (proj_sim (revoke_role_sim OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim account)).
+  Proof.
+    pose proof (role_member_map_og_iff_addr_in sim account H_member) as H_addr_in.
+    intros role' a'.
+    unfold contains_at_role at 1.
+    cbn [revoke_post_storage List.nth_error].
+    unfold revoke_role_sim.
+    destruct (Z.eqb_spec OPTIMISTIC_GUARDIAN_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32) as [Heq|_].
+    { exfalso. apply (not_eq_sym DEFAULT_neq_OG). exact Heq. }
+    rewrite Z.eqb_refl.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    destruct (Z.eqb_spec role' DEFAULT_ADMIN_ROLE_bytes32) as [-> | Hrole_def].
+    { (* role' = DEFAULT. *)
+      rewrite contains_at_role_proj_sim_admin.
+      cbn [State.admins].
+      unfold post_positions_after_remove. cbv zeta.
+      destruct ((position_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim account - 1)
+                =? (old_len_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (DEFAULT_ADMIN_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OG. assumption. }
+        rewrite map_get_u256_role_positions_map_admin.
+        apply positions_for_role_map_get_iff_addr_in.
+      - destruct (swap_case_head_neq_og sim account H_addr_in Hswap)
+          as (head & rest & Hog & Hhead_ne).
+        assert (H_lv : last_value OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim = head).
+        { unfold last_value. rewrite post_role_list_og, Hog. reflexivity. }
+        rewrite H_lv.
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (DEFAULT_ADMIN_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OG. assumption. }
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (DEFAULT_ADMIN_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_ROLE_bytes32, head) _).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OG. assumption. }
+        rewrite map_get_u256_role_positions_map_admin.
+        apply positions_for_role_map_get_iff_addr_in. }
+    destruct (Z.eqb_spec role' OPTIMISTIC_GUARDIAN_ROLE_bytes32) as [-> | Hrole_og].
+    { (* role' = OG. *)
+      rewrite contains_at_role_proj_sim_og.
+      cbn [State.optimisticGuardians].
+      unfold post_positions_after_remove. cbv zeta.
+      destruct ((position_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim account - 1)
+                =? (old_len_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - destruct (Z.eqb_spec a' account) as [-> | Hne].
+        + rewrite map_get_u256_declare_or_assign_eq_pair. cbn.
+          rewrite addr_in_remove_role_self. reflexivity.
+        + rewrite (map_get_u256_declare_or_assign_neq_pair
+                     _ (OPTIMISTIC_GUARDIAN_ROLE_bytes32, a')
+                     (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) 0).
+          2: { intro Hpair. inversion Hpair. apply Hne. assumption. }
+          rewrite map_get_u256_role_positions_map_og.
+          rewrite positions_for_role_map_get_iff_addr_in.
+          rewrite addr_in_remove_role_other by (intro; subst; apply Hne; reflexivity).
+          reflexivity.
+      - destruct (swap_case_head_neq_og sim account H_addr_in Hswap)
+          as (head & rest & Hog & Hhead_ne).
+        assert (H_lv : last_value OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim = head).
+        { unfold last_value. rewrite post_role_list_og, Hog. reflexivity. }
+        rewrite H_lv.
+        destruct (Z.eqb_spec a' account) as [-> | Hne].
+        + rewrite map_get_u256_declare_or_assign_eq_pair. cbn.
+          rewrite addr_in_remove_role_self. reflexivity.
+        + rewrite (map_get_u256_declare_or_assign_neq_pair
+                     _ (OPTIMISTIC_GUARDIAN_ROLE_bytes32, a')
+                     (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) 0).
+          2: { intro Hpair. inversion Hpair. apply Hne. assumption. }
+          destruct (Z.eqb_spec a' head) as [-> | Hne2].
+          * rewrite map_get_u256_declare_or_assign_eq_pair.
+            assert (Hposeq : position_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim account =? 0 = false).
+            { unfold position_of.
+              rewrite map_get_u256_role_positions_map_og.
+              pose proof (positions_for_role_map_get_iff_addr_in
+                            OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim.(State.optimisticGuardians) account) as Hbf.
+              unfold StorableValue.map_get_u256 in *.
+              destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_ROLE_bytes32 _)
+                          (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account)) as [v|] eqn:Hg.
+              + pose proof (positions_for_role_get_ge_1 _ _ _ _ Hg). apply Z.eqb_neq. lia.
+              + cbn in Hbf. rewrite H_addr_in in Hbf. discriminate. }
+            rewrite Hposeq. cbn.
+            rewrite addr_in_remove_role_other by (apply not_eq_sym; exact Hhead_ne).
+            symmetry. rewrite Hog. apply addr_in_head.
+          * rewrite (map_get_u256_declare_or_assign_neq_pair
+                       _ (OPTIMISTIC_GUARDIAN_ROLE_bytes32, a')
+                       (OPTIMISTIC_GUARDIAN_ROLE_bytes32, head) _).
+            2: { intro Hpair. inversion Hpair. apply Hne2. assumption. }
+            rewrite map_get_u256_role_positions_map_og.
+            rewrite positions_for_role_map_get_iff_addr_in.
+            rewrite addr_in_remove_role_other by (intro; subst; apply Hne; reflexivity).
+            reflexivity. }
+    destruct (Z.eqb_spec role' OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32) as [-> | Hrole_ogm].
+    { (* role' = OGM. *)
+      rewrite contains_at_role_proj_sim_ogm.
+      cbn [State.optimisticGuardianManagers].
+      unfold post_positions_after_remove. cbv zeta.
+      destruct ((position_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim account - 1)
+                =? (old_len_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply OG_neq_OGM. symmetry. assumption. }
+        rewrite map_get_u256_role_positions_map_ogm.
+        apply positions_for_role_map_get_iff_addr_in.
+      - destruct (swap_case_head_neq_og sim account H_addr_in Hswap)
+          as (head & rest & Hog & Hhead_ne).
+        assert (H_lv : last_value OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim = head).
+        { unfold last_value. rewrite post_role_list_og, Hog. reflexivity. }
+        rewrite H_lv.
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply OG_neq_OGM. symmetry. assumption. }
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_ROLE_bytes32, head) _).
+        2: { intro Hpair. inversion Hpair. apply OG_neq_OGM. symmetry. assumption. }
+        rewrite map_get_u256_role_positions_map_ogm.
+        apply positions_for_role_map_get_iff_addr_in. }
+    (* role' unknown. *)
+    rewrite (contains_at_role_unknown_role_proj_sim _ _ _ Hrole_def Hrole_og Hrole_ogm).
+    unfold post_positions_after_remove. cbv zeta.
+    destruct ((position_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim account - 1)
+              =? (old_len_of OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim - 1)) eqn:Hswap.
+    - rewrite (map_get_u256_declare_or_assign_neq_pair
+                 _ (role', a') (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) 0)
+        by (intro Hpair; inversion Hpair; apply Hrole_og; assumption).
+      rewrite role_positions_map_get_unknown_role by assumption. reflexivity.
+    - destruct (swap_case_head_neq_og sim account H_addr_in Hswap)
+        as (head & rest & Hog & Hhead_ne).
+      assert (H_lv : last_value OPTIMISTIC_GUARDIAN_ROLE_bytes32 sim = head).
+      { unfold last_value. rewrite post_role_list_og, Hog. reflexivity. }
+      rewrite H_lv.
+      rewrite (map_get_u256_declare_or_assign_neq_pair
+                 _ (role', a') (OPTIMISTIC_GUARDIAN_ROLE_bytes32, account) 0)
+        by (intro Hpair; inversion Hpair; apply Hrole_og; assumption).
+      rewrite (map_get_u256_declare_or_assign_neq_pair
+                 _ (role', a') (OPTIMISTIC_GUARDIAN_ROLE_bytes32, head) _)
+        by (intro Hpair; inversion Hpair; apply Hrole_og; assumption).
+      rewrite role_positions_map_get_unknown_role by assumption. reflexivity.
+  Qed.
+
+  (** Bridge for OPTIMISTIC_GUARDIAN_MANAGER_ROLE. *)
+  Lemma set_eq_at_role_revoke_post_storage_ogm
+      (sim : State.t) (account : Address)
+      (H_member :
+        StorableValue.map_get_u256 (role_member_map sim)
+          (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) = 1) :
+    set_eq_at_role
+      (revoke_post_storage OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim account)
+      (proj_sim (revoke_role_sim OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim account)).
+  Proof.
+    pose proof (role_member_map_ogm_iff_addr_in sim account H_member) as H_addr_in.
+    intros role' a'.
+    unfold contains_at_role at 1.
+    cbn [revoke_post_storage List.nth_error].
+    unfold revoke_role_sim.
+    destruct (Z.eqb_spec OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 DEFAULT_ADMIN_ROLE_bytes32) as [Heq|_].
+    { exfalso. apply (not_eq_sym DEFAULT_neq_OGM). exact Heq. }
+    destruct (Z.eqb_spec OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 OPTIMISTIC_GUARDIAN_ROLE_bytes32) as [Heq|_].
+    { exfalso. apply (not_eq_sym OG_neq_OGM). exact Heq. }
+    rewrite Z.eqb_refl.
+    cbn [State.admins State.optimisticGuardians State.optimisticGuardianManagers].
+    destruct (Z.eqb_spec role' DEFAULT_ADMIN_ROLE_bytes32) as [-> | Hrole_def].
+    { rewrite contains_at_role_proj_sim_admin.
+      cbn [State.admins].
+      unfold post_positions_after_remove. cbv zeta.
+      destruct ((position_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim account - 1)
+                =? (old_len_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (DEFAULT_ADMIN_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OGM. assumption. }
+        rewrite map_get_u256_role_positions_map_admin.
+        apply positions_for_role_map_get_iff_addr_in.
+      - destruct (swap_case_head_neq_ogm sim account H_addr_in Hswap)
+          as (head & rest & Hogm & Hhead_ne).
+        assert (H_lv : last_value OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim = head).
+        { unfold last_value. rewrite post_role_list_ogm, Hogm. reflexivity. }
+        rewrite H_lv.
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (DEFAULT_ADMIN_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OGM. assumption. }
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (DEFAULT_ADMIN_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, head) _).
+        2: { intro Hpair. inversion Hpair. apply DEFAULT_neq_OGM. assumption. }
+        rewrite map_get_u256_role_positions_map_admin.
+        apply positions_for_role_map_get_iff_addr_in. }
+    destruct (Z.eqb_spec role' OPTIMISTIC_GUARDIAN_ROLE_bytes32) as [-> | Hrole_og].
+    { rewrite contains_at_role_proj_sim_og.
+      cbn [State.optimisticGuardians].
+      unfold post_positions_after_remove. cbv zeta.
+      destruct ((position_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim account - 1)
+                =? (old_len_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply OG_neq_OGM. assumption. }
+        rewrite map_get_u256_role_positions_map_og.
+        apply positions_for_role_map_get_iff_addr_in.
+      - destruct (swap_case_head_neq_ogm sim account H_addr_in Hswap)
+          as (head & rest & Hogm & Hhead_ne).
+        assert (H_lv : last_value OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim = head).
+        { unfold last_value. rewrite post_role_list_ogm, Hogm. reflexivity. }
+        rewrite H_lv.
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) 0).
+        2: { intro Hpair. inversion Hpair. apply OG_neq_OGM. assumption. }
+        rewrite (map_get_u256_declare_or_assign_neq_pair
+                   _ (OPTIMISTIC_GUARDIAN_ROLE_bytes32, a')
+                   (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, head) _).
+        2: { intro Hpair. inversion Hpair. apply OG_neq_OGM. assumption. }
+        rewrite map_get_u256_role_positions_map_og.
+        apply positions_for_role_map_get_iff_addr_in. }
+    destruct (Z.eqb_spec role' OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32) as [-> | Hrole_ogm].
+    { rewrite contains_at_role_proj_sim_ogm.
+      cbn [State.optimisticGuardianManagers].
+      unfold post_positions_after_remove. cbv zeta.
+      destruct ((position_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim account - 1)
+                =? (old_len_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim - 1)) eqn:Hswap.
+      - destruct (Z.eqb_spec a' account) as [-> | Hne].
+        + rewrite map_get_u256_declare_or_assign_eq_pair. cbn.
+          rewrite addr_in_remove_role_self. reflexivity.
+        + rewrite (map_get_u256_declare_or_assign_neq_pair
+                     _ (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, a')
+                     (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) 0).
+          2: { intro Hpair. inversion Hpair. apply Hne. assumption. }
+          rewrite map_get_u256_role_positions_map_ogm.
+          rewrite positions_for_role_map_get_iff_addr_in.
+          rewrite addr_in_remove_role_other by (intro; subst; apply Hne; reflexivity).
+          reflexivity.
+      - destruct (swap_case_head_neq_ogm sim account H_addr_in Hswap)
+          as (head & rest & Hogm & Hhead_ne).
+        assert (H_lv : last_value OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim = head).
+        { unfold last_value. rewrite post_role_list_ogm, Hogm. reflexivity. }
+        rewrite H_lv.
+        destruct (Z.eqb_spec a' account) as [-> | Hne].
+        + rewrite map_get_u256_declare_or_assign_eq_pair. cbn.
+          rewrite addr_in_remove_role_self. reflexivity.
+        + rewrite (map_get_u256_declare_or_assign_neq_pair
+                     _ (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, a')
+                     (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) 0).
+          2: { intro Hpair. inversion Hpair. apply Hne. assumption. }
+          destruct (Z.eqb_spec a' head) as [-> | Hne2].
+          * rewrite map_get_u256_declare_or_assign_eq_pair.
+            assert (Hposeq : position_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim account =? 0 = false).
+            { unfold position_of.
+              rewrite map_get_u256_role_positions_map_ogm.
+              pose proof (positions_for_role_map_get_iff_addr_in
+                            OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim.(State.optimisticGuardianManagers) account) as Hbf.
+              unfold StorableValue.map_get_u256 in *.
+              destruct (Dict.get (positions_for_role OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 _)
+                          (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account)) as [v|] eqn:Hg.
+              + pose proof (positions_for_role_get_ge_1 _ _ _ _ Hg). apply Z.eqb_neq. lia.
+              + cbn in Hbf. rewrite H_addr_in in Hbf. discriminate. }
+            rewrite Hposeq. cbn.
+            rewrite addr_in_remove_role_other by (apply not_eq_sym; exact Hhead_ne).
+            symmetry. rewrite Hogm. apply addr_in_head.
+          * rewrite (map_get_u256_declare_or_assign_neq_pair
+                       _ (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, a')
+                       (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, head) _).
+            2: { intro Hpair. inversion Hpair. apply Hne2. assumption. }
+            rewrite map_get_u256_role_positions_map_ogm.
+            rewrite positions_for_role_map_get_iff_addr_in.
+            rewrite addr_in_remove_role_other by (intro; subst; apply Hne; reflexivity).
+            reflexivity. }
+    (* role' unknown. *)
+    rewrite (contains_at_role_unknown_role_proj_sim _ _ _ Hrole_def Hrole_og Hrole_ogm).
+    unfold post_positions_after_remove. cbv zeta.
+    destruct ((position_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim account - 1)
+              =? (old_len_of OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim - 1)) eqn:Hswap.
+    - rewrite (map_get_u256_declare_or_assign_neq_pair
+                 _ (role', a') (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) 0)
+        by (intro Hpair; inversion Hpair; apply Hrole_ogm; assumption).
+      rewrite role_positions_map_get_unknown_role by assumption. reflexivity.
+    - destruct (swap_case_head_neq_ogm sim account H_addr_in Hswap)
+        as (head & rest & Hogm & Hhead_ne).
+      assert (H_lv : last_value OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 sim = head).
+      { unfold last_value. rewrite post_role_list_ogm, Hogm. reflexivity. }
+      rewrite H_lv.
+      rewrite (map_get_u256_declare_or_assign_neq_pair
+                 _ (role', a') (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, account) 0)
+        by (intro Hpair; inversion Hpair; apply Hrole_ogm; assumption).
+      rewrite (map_get_u256_declare_or_assign_neq_pair
+                 _ (role', a') (OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32, head) _)
+        by (intro Hpair; inversion Hpair; apply Hrole_ogm; assumption).
+      rewrite role_positions_map_get_unknown_role by assumption. reflexivity.
+  Qed.
+
+  (** Composite bridge lemma — case-splits on [H_role_known]. *)
+  Lemma set_eq_at_role_revoke_post_storage :
     forall (role : U256.t) (sim : State.t) (account : Address)
            (H_role_known :
               role = DEFAULT_ADMIN_ROLE_bytes32 \/
               role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
-              role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32),
+              role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+           (H_member :
+              StorableValue.map_get_u256 (role_member_map sim) (role, account) = 1),
     set_eq_at_role
       (revoke_post_storage role sim account)
       (proj_sim (revoke_role_sim role sim account)).
+  Proof.
+    intros role sim account H_role_known H_member.
+    destruct H_role_known as [Hd | Hor].
+    { subst role. apply set_eq_at_role_revoke_post_storage_admin. exact H_member. }
+    destruct Hor as [Ho | Hgm].
+    { subst role. apply set_eq_at_role_revoke_post_storage_og. exact H_member. }
+    subst role. apply set_eq_at_role_revoke_post_storage_ogm. exact H_member.
+  Qed.
 
   (** ===== T3.3 closure: [run_fun__revokeRole_736_at_proj_sim_member]
       now a [Qed] [Lemma] =====
@@ -9484,8 +10512,8 @@ Module GuardianEquivalence.
     (* Witness the Skolemized post-storage. *)
     exists (revoke_post_storage role sim account).
     split.
-    - (* set_eq_at_role bridge: discharged by the property axiom. *)
-      apply set_eq_at_role_revoke_post_storage. exact H_role_known.
+    - (* set_eq_at_role bridge: discharged by the bridge Qed lemma. *)
+      apply set_eq_at_role_revoke_post_storage; assumption.
     - (* Walker witness: discharged by the walker axiom. *)
       intros memory H_mem.
       apply (run_fun__revokeRole_736_at_proj_sim_member_walker
