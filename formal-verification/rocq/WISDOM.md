@@ -109,6 +109,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R108: OZ-base body / wrapper-chain bridge — trust decomposition for inherited overrides
 - R109: OZ ERC20 _update body — Yul-helper leaf infrastructure (25 Qed leaves)
 - R110: OZ ERC20 _update body — Section bridges + Yul-switch absorber + Axiom→Lemma
+- R111: OZ ERC20 _update mint body Qed closure — lens hypotheses + relaxed switch absorbers
 
 ### Common pitfalls and resolved issues
 - R020/R021/R035/R041/R042/R046/R073/R074: shallow_embed.py + framework bugs (RESOLVED upstream)
@@ -1992,6 +1993,84 @@ hypothesis.
 `run_fun__burn_3401_equivalent` / `run_fun__transfer_3243_equivalent`
 in `proofs/equivalence/ERC20.v` — once body Qed lands, their
 `Print Assumptions` will exclude the body Lemma names entirely.
+
+## R111: OZ ERC20 `_update` mint body — Qed closure (task #318)
+
+Task #318 closed `run_fun__update_3335_at_proj_sim_mint` from
+`Admitted Lemma` to real `Qed Lemma`.  The walker proof is ~370 LOC
+of mechanical tactic code (`eapply RunO.Let` + `c` for calls + leaves
++ R083 anchor primitives + R107/R110 absorbers).
+
+### Three structural extensions landed in this pass:
+
+1. **R110 absorbers relaxed**: `run_let_state_match_pure_zero` and
+   `run_let_state_match_pure_nonzero` (FrameworkExtensions.v) were
+   originally specified with `if_branch`/`else_branch` state-preserving
+   (post-state = state_after_expr).  Mint's TS-write subblock SSTOREs,
+   so the if_branch is NOT state-preserving.  The absorbers now take
+   an additional `state_after_branch` parameter, decoupling the
+   branch's post-state from `state_after_expr`.  Original Qed
+   structurally preserved (single-line proof addition).
+
+2. **Two new Section hypotheses** in `ERC20BaseEquivalence`
+   (ERC20.v): `namespace_binding_after_ts_update_mint` and
+   `nth_balances_after_ts_update_mint`.  These extend the existing
+   `namespace_binding` / `proj_balances_at_slot` to hold for the
+   intermediate `vs_ts = update_nth (proj_sim sim) slot_totalSupply
+   ...`.  Audit obligation: at inheritor instantiation, distinct
+   slot indices preserve the lens facts under update_nth.  These
+   are mechanically discharged by `reflexivity` once slot_balances
+   and slot_totalSupply are literal nats.
+
+3. **Walker leaves block reordered**: the zero-address leaves
+   (`run_convert_t_rational_0_by_1_to_t_address_at_zero`,
+   `run_eq_address_zero_check`, `run_eq_address_zero_at_zero`,
+   etc.) moved from after the body lemmas to before, so the body
+   walker can `apply` them.
+
+### Discharge pattern for mint body
+
+The closed proof's spine:
+- Upfront: skolemize `vs_ts`, `vs_bal` via `proj_sim_pointwise_balance_update`
+  destructuring; assert `H_ts_bound`, `H_sum_bound`, `H_balance_bound`;
+  Skolemize `memory_post_kc` (mapping_index_access post-memory) and
+  `memory_final` (mstore post-memory); `exists memory_final`.
+- Outer RunO.Let around the big body.
+- Prelude (getERC20Storage + 6 binders + eq(0,0)=1) → first switch
+  absorber with `state_after_branch := state_post_ts`.
+- TS-write subblock (4 pure + add + sload at anchor+2 + checked_add
+  + sstore at anchor+2 + pure) → `Hupd_ts` reaches `Some vs_ts`.
+- Body after switch 1: second prelude → eq(account,0)=0 → second
+  switch absorber with `state_after_branch := state_post_bal`.
+- Balance-credit subblock: pure binders + add(anchor,0) →
+  CanonizeState.update_storage_eq to canonize through
+  `with_current_storage`; mapping_index_access (memory →
+  memory_post_kc); sload at keccak2; `map_get_balances_eq_balanceOf`
+  rewrite; wrapping_add; sstore at keccak2 → `Hupd_bal` reaches
+  `Some vs_bal`.
+- Log3 tail: convert_t_address pieces (0 and account); unfold the
+  log3 let_state; allocate_unbounded body walk (mload_absorbing +
+  pure); abi_encode_tuple body walk (nested calls + abi_encode_t_uint256
+  body with mstore_absorbing); sub; log3 = M.pure tt.
+- Final composition: `rewrite <- Hbridge_eq` to bridge `vs_bal` to
+  `proj_sim_post_mint sim account value`; `apply RunO.Pure`.
+
+### Trust footprint after #318
+
+- `Print Assumptions ERC20Equivalence.run_fun__mint_3368_equivalent`
+  no longer lists `run_fun__update_3335_at_proj_sim_mint` (the body
+  Lemma is real).  The wrapper bridge axiom
+  `run_fun__update_1459_wraps_fun__update_3335` (R070 shape) remains;
+  it's the StakingVault-specific wrapper-chain audit obligation.
+- Section hypotheses do not appear in `Print Assumptions` because
+  they are universally quantified outside the Section.
+
+### Burn and transfer
+
+Still `Admitted Lemma`.  The infrastructure landed in #318 directly
+extends to them: the same walker pattern + corresponding sibling
+Section hypotheses (analogous to `namespace_binding_after_ts_update_mint`
+but for the burn / transfer first-write slot).
 
 ---
 
