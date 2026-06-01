@@ -1,0 +1,77 @@
+# Theorem: ERC20Equivalence.run_fun__burn_3401_equivalent
+# Source:  ERC20.v:872
+# Module:  ERC20Equivalence
+#
+Axioms:
+PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+ERC20Equivalence.run_fun__update_3335_at_proj_sim_burn :
+  forall (proj_sim : ERC20.ERC20.State -> RocqOfSolidity.SimulatedStorage.t)
+    (codes : RocqOfSolidity.Codes.t) (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t) (sim : ERC20.ERC20.State)
+    (account value : RocqOfSolidity.U256.t),
+  account <> BinNums.Z0 ->
+  BinInt.Z.le BinNums.Z0 account /\
+  BinInt.Z.lt account
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  BinInt.Z.le BinNums.Z0 value /\
+  BinInt.Z.lt value
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))))))) ->
+  ERC20.ERC20.Valid.t sim ->
+  BinInt.Z.le value (ERC20.ERC20.balanceOf sim account) ->
+  exists
+    (memory' : RocqOfSolidity.SimulatedMemory.t) (storage' : RocqOfSolidity.SimulatedStorage.t),
+    ERC20Equivalence.proj_sim_post_burn proj_sim sim account value =
+    Some storage' /\
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some (RocqOfSolidity.make_state env state_base memory (proj_sim sim)))
+      (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun__update_3335
+         account BinNums.Z0 value)
+      (Some (RocqOfSolidity.make_state env state_base memory' storage'))
+ERC20Equivalence.run_fun__update_1459_wraps_fun__update_3335 :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (from to value : RocqOfSolidity.U256.t)
+    (storage_pre storage_post : RocqOfSolidity.SimulatedStorage.t)
+    (memory' : RocqOfSolidity.SimulatedMemory.t),
+  RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+    (Some (RocqOfSolidity.make_state env state_base memory storage_pre))
+    (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun__update_3335
+       from to value)
+    (Some (RocqOfSolidity.make_state env state_base memory' storage_post)) ->
+  exists memory'' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some (RocqOfSolidity.make_state env state_base memory storage_pre))
+      (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun__update_1459
+         from to value)
+      (Some (RocqOfSolidity.make_state env state_base memory'' storage_post))
+RocqOfSolidity.Memory.of_u256_list :
+  list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
+RocqOfSolidity.Storage.of_storable_values :
+  list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+PrimInt63.int : Set
+PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+Theory:
+Set is impredicative

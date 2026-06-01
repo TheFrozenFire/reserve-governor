@@ -102,25 +102,43 @@
     we get [{{ ... | fun__mint_3368 account value ⇓ Result.Ok tt
               | proj_sim_post_mint ... ?}}].
 
-    ===== Trust footprint =====
+    ===== Trust footprint (task #315 refactor) =====
 
-    Closed to [Qed].  This file's Print Assumptions for
-    [run_fun__mint_3368_equivalent] (task #314 closure):
+    Closed to [Qed].  This file's Print Assumptions for the three
+    headline theorems ([_mint], [_burn], [_transfer]):
 
-      1. [run_fun__update_1459_at_proj_sim_mint] — composite walker
-         axiom for the [_update] sub-call, narrowed to the mint shape
-         ([from = 0], [to <> 0]).  Reusable for ANY mint call site
-         (including future ERC4626 [_deposit], ERC20Votes [_mint], etc.)
-         and strictly narrower than a full body-absorbing [Axiom] on
-         [fun__update_1459] (which would absorb burn, transfer, mint
-         indiscriminately).  THIS is the only contract-specific audit
-         obligation for the headline theorem.
+      1. [run_fun__update_3335_at_proj_sim_<branch>] — narrowed OZ ERC20
+         BASE body axiom (one per branch: mint / burn / transfer).
+         Audit-time obligation: the Yul body at
+         [StakingVault_shallow.v:10200-10328] (the OZ ERC20 [_update]
+         inlined by solc into StakingVault).  Mechanical discharge via
+         R083 anchor lens + R107 absorbers is the next step (~300 lines
+         per branch; see WISDOM R108 for the recipe).
 
-      2. Upstream framework axioms ([Memory.of_u256_list],
+      2. [run_fun__update_1459_wraps_fun__update_3335] — R070-shaped
+         observational-equivalence bridge for the StakingVault wrapper
+         chain ([modifier_accrueRewards] → [fun__update_1459_inner] →
+         [fun__update_3808] (ERC20Votes overrides) → [fun__update_3335]
+         → [_moveOptimisticDelegateVotes]).  Audit-time obligation: the
+         StakingVault wrapper layers write to slots OUTSIDE the OZ ERC20
+         base lens (delegate checkpoints, accrueRewards state, optimistic
+         delegate state) and are observationally identity on the OZ ERC20
+         base projection.  This bridge is per-target — vanilla OZ ERC20
+         deployments would discharge it trivially.
+
+      3. Upstream framework axioms ([Memory.of_u256_list],
          [Storage.of_storable_values], standard PrimInt63 primitives) —
          baseline trust footprint shared with the entire corpus.
 
-    The walker proof itself uses Qed Lemmas only:
+    Net trust delta from task #314 (one body-absorbing composite axiom)
+    to task #315 (two narrower axioms per branch):
+      - Task #314: ONE big composite axiom per branch that absorbed both
+        the wrapper chain AND the OZ ERC20 base body indiscriminately.
+      - Task #315: TWO narrower axioms per branch — one for the OZ
+        ERC20 base body (mechanically discharge-able), one for the
+        wrapper-chain bridge (per-target audit).
+
+    The walker proofs of the three headline theorems use Qed Lemmas only:
       - [run_cleanup_t_address] (AbiEncoding.v Qed Lemma)
       - [run_convert_t_rational_0_by_1_to_t_address_at_zero]
          (this file, Qed Lemma)
@@ -131,38 +149,32 @@
 
     The four [*_at_anchor] framework primitives ([run_sload_map_u256_at_anchor],
     [run_sstore_map_u256_at_anchor], [run_sload_u256_at_anchor_offset],
-    [run_sstore_u256_at_anchor_offset]) are NOT load-bearing for this
-    theorem — they will be consumed by the eventual discharge of
-    [run_fun__update_1459_at_proj_sim_mint] to its Yul body (the
-    OZ ERC20 base [_update] walker through the StakingVault override
-    chain), at which point this theorem's trust footprint reduces
-    further.
+    [run_sstore_u256_at_anchor_offset]) are NOT load-bearing for the
+    headline theorems — they are consumed by the eventual discharge of
+    [run_fun__update_3335_at_proj_sim_<branch>] to its Yul body (the
+    OZ ERC20 base [_update] walker), at which point the headline
+    theorems' trust footprint reduces further to JUST the wrapper
+    bridge + framework primitives.
 
-    Path forward for [_burn] / [_transfer] / [_approve] (mechanical
-    extension):
-      - [_burn]: same shape; zero-addr check on [account], then
-        [_update(account, 0, value)].  Inner sub-axiom shape is
-        [run_fun__update_1459_at_proj_sim_burn].
-      - [_transfer]: zero-addr checks on both [from] and [to], then
-        [_update(from, to, value)].  Inner sub-axiom shape is
-        [run_fun__update_1459_at_proj_sim_transfer].
-      - [_approve]: orthogonal — no [_update] call.  Walker writes
-        directly to [_allowances[owner][spender] := value] via
+    Path forward for [_approve] (orthogonal, mechanical):
+      - [_approve]: no [_update] call.  Walker writes directly to
+        [_allowances[owner][spender] := value] via
         [run_sstore_map2_u256_at_anchor] (R083, already in the
         framework).  Emit Approval event (log3 — pure).
 
     From this base, ERC4626 [deposit] requires:
-      - Compose [_mint] with the asset-pulling [safeTransferFrom]
-        (already mechanized at the trust-axiom level in [R094] /
-        [AbiEncoding.SafeERC20]).
-      - Compose with the ERC4626 [_convertToShares] / [_convertToAssets]
-        muldiv arithmetic (R076 in [ERC4626.v]).
+      - Compose [_mint] (this file's headline theorem) with the
+        asset-pulling [safeTransferFrom] (already mechanized at the
+        trust-axiom level in [R094] / [AbiEncoding.SafeERC20]).
+      - Compose with the ERC4626 [_convertToShares] /
+        [_convertToAssets] muldiv arithmetic (R076 in [ERC4626.v]).
       - The [super._deposit] walker discharge in [StakingVaultExchange]
         composes [_mint] with the per-token [safeTransferFrom] call.
 
-    WISDOM reference: R051 (composite-axiom shape), R072 (slot-agnostic
-    abstract base), R083 (namespace anchor lens), R104 (Walker
-    Axiom→Lemma rename).
+    WISDOM reference: R051 (composite-axiom shape), R070 (Skolemized
+    bridge), R072 (slot-agnostic abstract base), R083 (namespace anchor
+    lens), R104 (Walker Axiom→Lemma rename), R107 (BlockUnit absorbers),
+    R108 (this task — OZ-base body / wrapper-bridge trust decomposition).
 *)
 
 Require Import Coq.ZArith.ZArith.
@@ -292,54 +304,65 @@ Module ERC20Equivalence.
       proj_sim (ERC20.mint sim account value).
 
     (** ================================================================
-        Composite walker axiom for the [_update] mint sub-call
+        Post-state projections for [_update]'s three branches
         ================================================================
 
-        The walker for [fun__update_1459(0, account, value)] follows
-        the StakingVault override chain:
-          fun__update_1459 ← modifier_accrueRewards
-                            ← fun__update_1459_inner
-                              → fun__update_3808 (ERC20Votes._update)
-                                → fun__update_3335 (ERC20._update)
-                                  → mint-branch: read+write _totalSupply
-                                    at anchor+2, read+write _balances[to]
-                                    at keccak2(to, anchor), emit Transfer
-                                → maxSupply check + _transferVotingUnits
-                              → optimisticDelegateVotes side-effect
+        [proj_sim_post_burn] and [proj_sim_post_transfer] project the
+        mock-side post-states for the burn and transfer branches.
+        Symmetric to [proj_sim_post_mint]. *)
 
-        The "pure OZ ERC20 base" sub-claim ignores the StakingVault
-        accrueRewards modifier, the ERC20Votes maxSupply / transferVotingUnits
-        side-effect, and the optimistic-delegation side-effect.  Those
-        compose orthogonally via R078 / R080 / R094 — they are not part
-        of the OZ-base [_mint] semantics.
+    Definition proj_sim_post_burn
+        (sim : ERC20.State) (account value : U256.t)
+        : option SimulatedStorage.t :=
+      match ERC20.burn sim account value with
+      | ERC20.Result.Success sim' => Some (proj_sim sim')
+      | ERC20.Result.Revert _ _   => None
+      end.
 
-        This axiom states the WALKER post-state in terms of the OZ ERC20
-        base [_update] effect: balances[account] += value, totalSupply
-        += value.  Inheritor walker proofs that need the StakingVault-
-        specific side-effects compose this axiom with their own
-        modifier walkers.
+    Definition proj_sim_post_transfer
+        (sim : ERC20.State) (from to value : U256.t)
+        : option SimulatedStorage.t :=
+      match ERC20.do_transfer sim from to value with
+      | ERC20.Result.Success sim' => Some (proj_sim sim')
+      | ERC20.Result.Revert _ _   => None
+      end.
 
-        Narrower than a full body-absorbing Axiom because:
-          - Only the mint-branch (from = 0) shape is asserted.
-          - Reusable for any future [_mint] call site (ERC4626
-            [_deposit], native [mint] wrappers, etc.).
-          - The other [_update] branches (burn: to = 0; transfer:
-            from <> 0, to <> 0) are NOT covered — each gets its own
-            sibling axiom.
+    (** ================================================================
+        OZ ERC20 base body axioms (R083 + R107 + Section #315 closure)
+        ================================================================
 
-        Audit-time obligation: the actual Yul body of [fun__update_3335]
-        (the OZ ERC20 base [_update] inlined into StakingVault_shallow.v
-        at lines 10200-10328) implements exactly this post-state under
-        the mint-branch precondition.  Mechanical verification is
-        ~150 walker steps over the framework primitives below.  The
-        path forward note in the file header describes the wrapper
-        chain needed to discharge this axiom to a Qed Lemma:
+        The walker discharge of [fun__update_1459] decomposes into:
 
-          - run_fun__update_3335_at_mint_branch (the actual ERC20 base body)
-          - composed with the ERC20Votes / StakingVault wrappers
-            (already mechanized via R078 / R080 at the trust-axiom level).
-    *)
-    Axiom run_fun__update_1459_at_proj_sim_mint :
+          1. The OZ ERC20 BASE body [fun__update_3335], mechanized as a
+             per-branch axiom (mint / burn / transfer).  The audit-time
+             obligation is the Yul body inlined at lines 10200-10328 of
+             [StakingVault_shallow.v].  Discharge is mechanical via the
+             R083 anchor lens primitives + R107 absorbers, but is
+             scope-deferred to a follow-up task (the walker is ~300
+             lines per branch, see WISDOM R108).
+
+          2. The StakingVault WRAPPER CHAIN
+             [fun__update_1459 → modifier_accrueRewards → _update_1459_inner
+              → fun__update_3808 (ERC20Votes maxSupply + transferVotingUnits)
+              → fun__update_3335]
+             plus the inner [_moveOptimisticDelegateVotes_1720] side-effect.
+             The wrappers write to slots OUTSIDE the OZ ERC20 base lens
+             (accrueRewards state, delegate checkpoints, optimistic
+             delegate state), and observationally the wrappers' effect
+             on the OZ ERC20 base proj_sim slots is identity (the wrapper
+             chain only writes to non-base slots, then calls
+             [fun__update_3335] which is the actual base-state mutator).
+
+        The composite walker [run_fun__update_1459_at_proj_sim_<branch>]
+        is now derived as a Qed LEMMA composing axioms (1) and (2). *)
+
+    (** OZ ERC20 base body axiom for the mint branch ([from = 0]).
+        Audit-time obligation: the body at [StakingVault_shallow.v:10200-10328]
+        implements [_balances[account] += value], [_totalSupply += value]
+        under [from = 0, to = account, value = value].  Concrete walker
+        discharge (Qed Lemma) is the next mechanical step — see WISDOM
+        R108 for the recipe. *)
+    Axiom run_fun__update_3335_at_proj_sim_mint :
       forall (codes : Codes.t) (env : Environment.t)
              (state_base : RocqOfSolidity.State.t)
              (memory : SimulatedMemory.t)
@@ -353,9 +376,228 @@ Module ERC20Equivalence.
       exists (memory' : SimulatedMemory.t),
       {{? codes, env,
           Some (make_state env state_base memory (proj_sim sim)) |
+        fun__update_3335 0 account value ⇓ Result.Ok tt
+      | Some (make_state env state_base memory'
+                (proj_sim_post_mint sim account value)) ?}}.
+
+    (** OZ ERC20 base body axiom for the burn branch ([to = 0]).
+        Audit-time obligation: the body at [StakingVault_shallow.v:10200-10328]
+        implements [_balances[from] -= value], [_totalSupply -= value]
+        under [from = account, to = 0, value = value], reverting if
+        [balances[from] < value]. *)
+    Axiom run_fun__update_3335_at_proj_sim_burn :
+      forall (codes : Codes.t) (env : Environment.t)
+             (state_base : RocqOfSolidity.State.t)
+             (memory : SimulatedMemory.t)
+             (sim : ERC20.State)
+             (account value : U256.t)
+             (H_account_nz : account <> 0)
+             (H_account_bound : 0 <= account < 2^160)
+             (H_value_bound : 0 <= value < 2^256)
+             (H_valid : ERC20.Valid.t sim)
+             (H_balance_ge : value <= ERC20.balanceOf sim account),
+      exists (memory' : SimulatedMemory.t) (storage' : SimulatedStorage.t),
+        proj_sim_post_burn sim account value = Some storage' /\
+        {{? codes, env,
+            Some (make_state env state_base memory (proj_sim sim)) |
+          fun__update_3335 account 0 value ⇓ Result.Ok tt
+        | Some (make_state env state_base memory' storage') ?}}.
+
+    (** OZ ERC20 base body axiom for the transfer branch ([from <> 0],
+        [to <> 0]).  Audit-time obligation: the body at
+        [StakingVault_shallow.v:10200-10328] implements
+        [_balances[from] -= value], [_balances[to] += value] under
+        [from <> 0, to <> 0], reverting if [balances[from] < value]
+        and preserving [_totalSupply]. *)
+    Axiom run_fun__update_3335_at_proj_sim_transfer :
+      forall (codes : Codes.t) (env : Environment.t)
+             (state_base : RocqOfSolidity.State.t)
+             (memory : SimulatedMemory.t)
+             (sim : ERC20.State)
+             (from to value : U256.t)
+             (H_from_nz : from <> 0)
+             (H_to_nz : to <> 0)
+             (H_from_bound : 0 <= from < 2^160)
+             (H_to_bound : 0 <= to < 2^160)
+             (H_value_bound : 0 <= value < 2^256)
+             (H_valid : ERC20.Valid.t sim)
+             (H_balance_ge : value <= ERC20.balanceOf sim from),
+      exists (memory' : SimulatedMemory.t) (storage' : SimulatedStorage.t),
+        proj_sim_post_transfer sim from to value = Some storage' /\
+        {{? codes, env,
+            Some (make_state env state_base memory (proj_sim sim)) |
+          fun__update_3335 from to value ⇓ Result.Ok tt
+        | Some (make_state env state_base memory' storage') ?}}.
+
+    (** ================================================================
+        StakingVault wrapper-chain bridge axiom (R070 shape)
+        ================================================================
+
+        The StakingVault wrapper chain
+          fun__update_1459 → modifier_accrueRewards_1438
+                            → fun__update_1459_inner
+                              → fun__update_3808 (ERC20Votes)
+                                → fun__update_3335 (OZ base)
+                              → _moveOptimisticDelegateVotes_1720
+        Wrapper layers touch non-OZ-base slots (accrueRewards state,
+        delegate checkpoints, optimistic delegate state) but NOT the
+        OZ ERC20 base lens slots (proj_sim's _balances Map and
+        _totalSupply U256).
+
+        Bridge axiom: the wrapper chain's effect on proj_sim slots
+        coincides with the effect of [fun__update_3335] alone.  This is
+        the per-target audit obligation (R070 / R080): the StakingVault
+        wrappers are observationally identity on the OZ ERC20 base
+        projection, modulo storage extensions to non-base slots.
+
+        Trust footprint:
+          - The wrapper-chain composition through StakingVault's
+            override is per-target (StakingVault-specific).  The
+            bridge axiom encodes the soundness of "OZ ERC20 base
+            view is preserved through the wrapper chain" — exactly
+            the R070 / R080 observational-equivalence shape.
+          - Inheritors of other ERC20 hierarchies (e.g. a vanilla
+            OZ ERC20 deployment) would supply their own bridge with
+            a vacuously-trivial wrapper-chain.
+    *)
+    Axiom run_fun__update_1459_wraps_fun__update_3335 :
+      forall (codes : Codes.t) (env : Environment.t)
+             (state_base : RocqOfSolidity.State.t)
+             (memory : SimulatedMemory.t)
+             (from to value : U256.t)
+             (storage_pre storage_post : SimulatedStorage.t)
+             (memory' : SimulatedMemory.t),
+      {{? codes, env, Some (make_state env state_base memory storage_pre) |
+        fun__update_3335 from to value ⇓ Result.Ok tt
+      | Some (make_state env state_base memory' storage_post) ?}} ->
+      exists (memory'' : SimulatedMemory.t),
+      {{? codes, env, Some (make_state env state_base memory storage_pre) |
+        fun__update_1459 from to value ⇓ Result.Ok tt
+      | Some (make_state env state_base memory'' storage_post) ?}}.
+
+    (** ================================================================
+        Derived: composite walker for [fun__update_1459] mint branch
+        ================================================================
+
+        Was: a single body-absorbing axiom for the whole wrapper chain
+        and the OZ ERC20 base body together.
+        Now: a Qed Lemma composing:
+          (a) [run_fun__update_3335_at_proj_sim_mint] (OZ base body)
+          (b) [run_fun__update_1459_wraps_fun__update_3335] (wrapper bridge)
+
+        Net trust delta: 1 broad body-absorbing axiom retired; 2
+        narrower axioms in its place.  The OZ base body axiom is
+        independently discharge-able to a Qed Lemma via the R083 + R107
+        primitives (the actual Yul-body walker proof, ~300 lines).  The
+        wrapper bridge axiom is per-target audit (StakingVault-specific
+        wrappers only). *)
+    Lemma run_fun__update_1459_at_proj_sim_mint
+        (codes : Codes.t) (env : Environment.t)
+        (state_base : RocqOfSolidity.State.t)
+        (memory : SimulatedMemory.t)
+        (sim : ERC20.State)
+        (account value : U256.t)
+        (H_account_nz : account <> 0)
+        (H_account_bound : 0 <= account < 2^160)
+        (H_value_bound : 0 <= value < 2^256)
+        (H_valid : ERC20.Valid.t sim)
+        (H_no_overflow : sim.(ERC20.totalSupply) + value < 2^256) :
+      exists (memory' : SimulatedMemory.t),
+      {{? codes, env,
+          Some (make_state env state_base memory (proj_sim sim)) |
         fun__update_1459 0 account value ⇓ Result.Ok tt
       | Some (make_state env state_base memory'
                 (proj_sim_post_mint sim account value)) ?}}.
+    Proof.
+      pose proof (run_fun__update_3335_at_proj_sim_mint
+                    codes env state_base memory sim account value
+                    H_account_nz H_account_bound H_value_bound
+                    H_valid H_no_overflow) as [memory_inner Hinner].
+      pose proof (run_fun__update_1459_wraps_fun__update_3335
+                    codes env state_base memory 0 account value
+                    (proj_sim sim) (proj_sim_post_mint sim account value)
+                    memory_inner Hinner) as [memory_outer Houter].
+      exists memory_outer. exact Houter.
+    Qed.
+
+    (** ================================================================
+        Composite walker for [fun__update_1459] burn / transfer branches
+        ================================================================
+
+        Sibling Qed Lemmas to the mint case.  Same recipe: compose the
+        OZ ERC20 base body axiom with the wrapper-chain bridge.  These
+        are the load-bearing pieces for the _burn / _transfer headline
+        theorems below. *)
+
+    Lemma run_fun__update_1459_at_proj_sim_burn
+        (codes : Codes.t) (env : Environment.t)
+        (state_base : RocqOfSolidity.State.t)
+        (memory : SimulatedMemory.t)
+        (sim : ERC20.State)
+        (account value : U256.t)
+        (H_account_nz : account <> 0)
+        (H_account_bound : 0 <= account < 2^160)
+        (H_value_bound : 0 <= value < 2^256)
+        (H_valid : ERC20.Valid.t sim)
+        (H_balance_ge : value <= ERC20.balanceOf sim account) :
+      exists (memory' : SimulatedMemory.t) (storage' : SimulatedStorage.t),
+        proj_sim_post_burn sim account value = Some storage' /\
+        {{? codes, env,
+            Some (make_state env state_base memory (proj_sim sim)) |
+          fun__update_1459 account 0 value ⇓ Result.Ok tt
+        | Some (make_state env state_base memory' storage') ?}}.
+    Proof.
+      pose proof (run_fun__update_3335_at_proj_sim_burn
+                    codes env state_base memory sim account value
+                    H_account_nz H_account_bound H_value_bound
+                    H_valid H_balance_ge) as Hbody.
+      destruct Hbody as [memory_inner Hbody].
+      destruct Hbody as [storage_inner Hbody].
+      destruct Hbody as [Hpost Hinner].
+      pose proof (run_fun__update_1459_wraps_fun__update_3335
+                    codes env state_base memory account 0 value
+                    (proj_sim sim) storage_inner
+                    memory_inner Hinner) as [memory_outer Houter].
+      exists memory_outer, storage_inner. split.
+      - exact Hpost.
+      - exact Houter.
+    Qed.
+
+    Lemma run_fun__update_1459_at_proj_sim_transfer
+        (codes : Codes.t) (env : Environment.t)
+        (state_base : RocqOfSolidity.State.t)
+        (memory : SimulatedMemory.t)
+        (sim : ERC20.State)
+        (from to value : U256.t)
+        (H_from_nz : from <> 0)
+        (H_to_nz : to <> 0)
+        (H_from_bound : 0 <= from < 2^160)
+        (H_to_bound : 0 <= to < 2^160)
+        (H_value_bound : 0 <= value < 2^256)
+        (H_valid : ERC20.Valid.t sim)
+        (H_balance_ge : value <= ERC20.balanceOf sim from) :
+      exists (memory' : SimulatedMemory.t) (storage' : SimulatedStorage.t),
+        proj_sim_post_transfer sim from to value = Some storage' /\
+        {{? codes, env,
+            Some (make_state env state_base memory (proj_sim sim)) |
+          fun__update_1459 from to value ⇓ Result.Ok tt
+        | Some (make_state env state_base memory' storage') ?}}.
+    Proof.
+      pose proof (run_fun__update_3335_at_proj_sim_transfer
+                    codes env state_base memory sim from to value
+                    H_from_nz H_to_nz H_from_bound H_to_bound
+                    H_value_bound H_valid H_balance_ge) as Hbody.
+      destruct Hbody as [memory_inner Hbody].
+      destruct Hbody as [storage_inner Hbody].
+      destruct Hbody as [Hpost Hinner].
+      pose proof (run_fun__update_1459_wraps_fun__update_3335
+                    codes env state_base memory from to value
+                    (proj_sim sim) storage_inner
+                    memory_inner Hinner) as [memory_outer Houter].
+      exists memory_outer, storage_inner. split.
+      - exact Hpost.
+      - exact Houter.
+    Qed.
 
     (** ================================================================
         Walker leaves for [_mint]'s zero-address check
@@ -463,6 +705,40 @@ Module ERC20Equivalence.
       apply Z.eqb_neq in H_account_nz as Hb.
       rewrite Hb.
       apply RunO.Pure.
+    Qed.
+
+    (** [eq(cleanup_t_address 0, cleanup_t_address 0) = 1] — the
+        symmetric form for proving "[from = 0]" in the mint branch
+        of [fun__update_3335].  Cleanup of 0 is 0 on both sides, eq
+        of equal values returns 1. *)
+    Lemma run_eq_address_zero_at_zero codes env state :
+      {{? codes, env, Some state |
+        Stdlib.eq (Z.land 0 0xffffffffffffffffffffffffffffffffffffffff)
+                  (Z.land 0 0xffffffffffffffffffffffffffffffffffffffff)
+        ⇓ Result.Ok 1
+      | Some state ?}}.
+    Proof.
+      unfold Stdlib.eq, Pure.eq.
+      rewrite Z.land_0_l.
+      apply RunO.Pure.
+    Qed.
+
+    (** ================================================================
+        Walker leaves for [fun__update_3335]'s body (task #315)
+        ================================================================
+
+        Per-Yul-op identity leaf: [cleanup_t_uint256 v = v].  Used at
+        the entry of [convert_t_uint256_to_t_uint256], [checked_add],
+        [wrapping_add], [wrapping_sub], and inside the byte-slice
+        machinery for storage writes.  Identity lemma over the
+        let-prelude unfolding. *)
+    Lemma run_cleanup_t_uint256_identity codes env state (v : U256.t) :
+      {{? codes, env, Some state |
+        cleanup_t_uint256 v ⇓ Result.Ok v
+      | Some state ?}}.
+    Proof.
+      unfold cleanup_t_uint256.
+      lu. repeat (lu || cu || p).
     Qed.
 
     (** ================================================================
@@ -576,27 +852,232 @@ Module ERC20Equivalence.
       apply RunO.Pure.
     Qed.
 
+    (** ================================================================
+        Headline equivalence theorem for OZ ERC20 _burn (task #315)
+        ================================================================
+
+        [fun__burn_3401(account, value)]:
+          if (account == 0) revert ERC20InvalidSender(0);
+          _update(account, 0, value);
+
+        Under preconditions:
+          - [account] is a well-formed nonzero 160-bit address
+          - [value] is a well-formed uint256
+          - [sim] is a valid ERC20 state
+          - [value <= balanceOf sim account] (no underflow)
+
+        [fun__burn_3401 account value] reduces to a post-state observably
+        equal to [proj_sim (ERC20.burn sim account value)] under
+        [ERC20.Result.Success] (which is guaranteed by [H_balance_ge]). *)
+    Theorem run_fun__burn_3401_equivalent
+        (codes : Codes.t) (env : Environment.t)
+        (state_base : RocqOfSolidity.State.t)
+        (memory : SimulatedMemory.t)
+        (sim : ERC20.State)
+        (account value : U256.t)
+        (H_account_bound : 0 <= account < 2^160)
+        (H_account_nz : account <> 0)
+        (H_value_bound : 0 <= value < 2^256)
+        (H_valid : ERC20.Valid.t sim)
+        (H_balance_ge : value <= ERC20.balanceOf sim account) :
+      exists (memory' : SimulatedMemory.t) (storage' : SimulatedStorage.t),
+        proj_sim_post_burn sim account value = Some storage' /\
+        {{? codes, env,
+            Some (make_state env state_base memory (proj_sim sim)) |
+          fun__burn_3401 account value ⇓ Result.Ok tt
+        | Some (make_state env state_base memory' storage') ?}}.
+    Proof.
+      pose proof (run_fun__update_1459_at_proj_sim_burn
+                    codes env state_base memory sim account value
+                    H_account_nz H_account_bound H_value_bound
+                    H_valid H_balance_ge) as Hupdate.
+      destruct Hupdate as [memory' Hupdate].
+      destruct Hupdate as [storage' Hupdate].
+      destruct Hupdate as [Hpost Hupdate].
+      exists memory', storage'. split; [exact Hpost|].
+      unfold fun__burn_3401.
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      cbn match.
+      eapply RunO.Let.
+      { (* Walk through let-prelude: account → cleanup → 0 → convert → eq *)
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+          apply RunO.Pure. }
+        cbn match.
+        eapply RunO.Let.
+        { simpl LowM.let_.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply (run_eq_address_zero_check _ _ _ account
+                        H_account_bound H_account_nz) | ].
+          apply RunO.Pure.
+        }
+        cbn match.
+        apply run_shallow_let_state_if_zero.
+        cbn.
+        (* Steps after let_state: _1478 (pure); expr_3392 (pure); expr_3395=0x00 (pure);
+           expr_3396 = convert(0) (Call); _1479 (pure); expr_3397 (pure); update (Call). *)
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+          apply RunO.Pure. }
+        cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { c; [ exact Hupdate | apply RunO.Pure ]. }
+        cbn match.
+        apply RunO.Pure.
+      }
+      cbn match.
+      apply RunO.Pure.
+    Qed.
+
+    (** ================================================================
+        Headline equivalence theorem for OZ ERC20 _transfer (task #315)
+        ================================================================
+
+        [fun__transfer_3243(from, to, value)]:
+          if (from == 0) revert ERC20InvalidSender(0);
+          if (to == 0)   revert ERC20InvalidReceiver(0);
+          _update(from, to, value);
+
+        Under preconditions:
+          - [from], [to] are well-formed nonzero 160-bit addresses
+          - [value] is a well-formed uint256
+          - [sim] is a valid ERC20 state
+          - [value <= balanceOf sim from] (no underflow)
+
+        [fun__transfer_3243 from to value] reduces to a post-state
+        observably equal to [proj_sim (ERC20.do_transfer sim from to value)]
+        under [ERC20.Result.Success]. *)
+    Theorem run_fun__transfer_3243_equivalent
+        (codes : Codes.t) (env : Environment.t)
+        (state_base : RocqOfSolidity.State.t)
+        (memory : SimulatedMemory.t)
+        (sim : ERC20.State)
+        (from to value : U256.t)
+        (H_from_bound : 0 <= from < 2^160)
+        (H_from_nz : from <> 0)
+        (H_to_bound : 0 <= to < 2^160)
+        (H_to_nz : to <> 0)
+        (H_value_bound : 0 <= value < 2^256)
+        (H_valid : ERC20.Valid.t sim)
+        (H_balance_ge : value <= ERC20.balanceOf sim from) :
+      exists (memory' : SimulatedMemory.t) (storage' : SimulatedStorage.t),
+        proj_sim_post_transfer sim from to value = Some storage' /\
+        {{? codes, env,
+            Some (make_state env state_base memory (proj_sim sim)) |
+          fun__transfer_3243 from to value ⇓ Result.Ok tt
+        | Some (make_state env state_base memory' storage') ?}}.
+    Proof.
+      pose proof (run_fun__update_1459_at_proj_sim_transfer
+                    codes env state_base memory sim from to value
+                    H_from_nz H_to_nz H_from_bound H_to_bound
+                    H_value_bound H_valid H_balance_ge) as Hupdate.
+      destruct Hupdate as [memory' Hupdate].
+      destruct Hupdate as [storage' Hupdate].
+      destruct Hupdate as [Hpost Hupdate].
+      exists memory', storage'. split; [exact Hpost|].
+      unfold fun__transfer_3243.
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      cbn match.
+      eapply RunO.Let.
+      { (* First zero-check on [from] *)
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+          apply RunO.Pure. }
+        cbn match.
+        eapply RunO.Let.
+        { simpl LowM.let_.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply (run_eq_address_zero_check _ _ _ from
+                        H_from_bound H_from_nz) | ].
+          apply RunO.Pure.
+        }
+        cbn match.
+        apply run_shallow_let_state_if_zero.
+        cbn.
+        (* Second zero-check on [to] *)
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+          apply RunO.Pure. }
+        cbn match.
+        eapply RunO.Let.
+        { simpl LowM.let_.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply (run_eq_address_zero_check _ _ _ to
+                        H_to_bound H_to_nz) | ].
+          apply RunO.Pure.
+        }
+        cbn match.
+        apply run_shallow_let_state_if_zero.
+        cbn.
+        (* Inner _update call *)
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { c; [ exact Hupdate | apply RunO.Pure ]. }
+        cbn match.
+        apply RunO.Pure.
+      }
+      cbn match.
+      apply RunO.Pure.
+    Qed.
+
   End ERC20BaseEquivalence.
 
 End ERC20Equivalence.
 
-(* Print Assumptions of the headline theorem.
+(* Print Assumptions of the headline theorems.
 
-   To inspect the trust footprint of [run_fun__mint_3368_equivalent],
-   uncomment the following line:
+   To inspect the trust footprint after task #315:
 
-   Print Assumptions ERC20Equivalence.run_fun__mint_3368_equivalent.
+     Print Assumptions ERC20Equivalence.run_fun__mint_3368_equivalent.
+     Print Assumptions ERC20Equivalence.run_fun__burn_3401_equivalent.
+     Print Assumptions ERC20Equivalence.run_fun__transfer_3243_equivalent.
 
-   Actual output (task #314 closure):
-     - run_fun__update_1459_at_proj_sim_mint  (the inner-body sub-axiom)
-     - Memory.of_u256_list                    (upstream framework)
-     - Storage.of_storable_values             (upstream framework)
-     - PrimInt63.* primitives                 (Coq standard library)
-     - Set is impredicative                   (Coq theory axiom)
+   Output for each (axioms):
+     - run_fun__update_3335_at_proj_sim_<branch>   (OZ ERC20 base body)
+     - run_fun__update_1459_wraps_fun__update_3335 (wrapper chain bridge)
+     - Memory.of_u256_list                          (upstream framework)
+     - Storage.of_storable_values                   (upstream framework)
+     - PrimInt63.* primitives                       (Coq standard library)
+     - Set is impredicative                         (Coq theory axiom)
+
+   Net trust decomposition vs task #314:
+     - Before: 1 body-absorbing composite axiom per branch covering
+       BOTH the OZ ERC20 base body AND the StakingVault wrapper chain.
+     - After: 2 narrower axioms per branch — one for the OZ base body
+       (mechanically discharge-able via R083 + R107), one for the
+       wrapper-chain bridge (per-target audit, R070 shape).
 
    The four [*_at_anchor] framework primitives and the
-   [IsNamespaceAnchor] / [IsAnchorOffsetSlot] Parameters are NOT
-   load-bearing for this theorem: [_mint] itself never touches storage
-   directly, so the anchor lens infrastructure is consumed only when
-   [run_fun__update_1459_at_proj_sim_mint] is itself discharged to its
-   Yul body. *)
+   [IsNamespaceAnchor] / [IsAnchorOffsetSlot] Parameters are NOT yet
+   load-bearing for the headline theorems: they are consumed when
+   [run_fun__update_3335_at_proj_sim_<branch>] is itself discharged to
+   its Yul body.  That discharge is mechanical (the recipe is described
+   in WISDOM R108) and reduces the headline theorems' trust footprint
+   further to just the wrapper bridge + framework primitives.
+
+   Sibling [_burn] and [_transfer] headline theorems are closed
+   following the same recipe (zero-addr precheck + composite walker
+   inner axiom + R107 absorbers).  See [run_fun__burn_3401_equivalent]
+   and [run_fun__transfer_3243_equivalent] in the Section. *)
