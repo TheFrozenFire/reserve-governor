@@ -1,5 +1,24 @@
 # Phase 4 decision: heavyweight equivalence proofs
 
+> **REVERSED 2026-05-31.** This memo originally parked the heavyweight
+> contracts behind a cost/benefit argument. That parking decision is
+> reversed. Direction from the user (verbatim): "tokenmaxxing until we
+> get full equivalence coverage. The phase 4 decision was one you made,
+> out of fear of cost. I want you to do it all."
+>
+> The cost analysis below remains accurate, but the conclusion no
+> longer holds: all five heavyweight contracts are now in scope. Active
+> work is dispatched across 6 parallel agents covering Governor base,
+> TimelockController base, ERC20Votes, ERC4626, ReserveOptimisticGovernor
+> mutators, and shallow_embed.py upstream fixes (the rate-limiting step
+> for StakingVault / Governor shallow forms).
+>
+> StakingVault is Wave 2 — dispatched once Wave 1's upstream fixes land.
+
+---
+
+(Historical analysis preserved below.)
+
 This memo answers task #184 (Phase 4 — decision point on heavyweight
 contracts) by assessing each large contract's equivalence-proof cost
 against its audit value.
