@@ -73,6 +73,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R059: `set_eq_at_role` membership equivalence
 - R051: Composite-axiom shape for milestone Qeds
 - R072: Abstract-base-class equivalence — slot-agnostic helpers + lens
+- R076: ERC4626 equivalence — share-asset arithmetic + inflation defense
 
 ### The R050 staticcall recipe
 - R063: `staticcall` as composite of existing primitives
@@ -720,6 +721,104 @@ per mutator).
 - `proofs/equivalence/Checkpoints.v` — 7 sanity lemmas (Trace208)
 - `proofs/equivalence/Votes.v` — 17 sim-level lemmas + Section
   template + walker documentation
+- `proofs/equivalence/ERC4626.v` — 20+ sim-level lemmas + Section
+  template with asset-balance lens (see R076)
+
+## R076: ERC4626 equivalence (share-asset arithmetic + inflation defense)
+
+OZ's `ERC4626` (`token/ERC20/extensions/ERC4626.sol`) is an
+abstract base extending `ERC20`. It bridges a **shares** ERC20
+(issued by the vault) with an **assets** ERC20 (external,
+referenced by the immutable `_asset` address). Four conversion
+functions — `convertToShares` / `convertToAssets` / `previewMint` /
+`previewWithdraw` / `previewRedeem` / `previewDeposit` —
+implement `Math.mulDiv` between the two ledgers with explicit
+rounding direction.
+
+The structural challenge: `totalAssets()` reads the external
+asset's balance via a `staticcall` to `IERC20(asset).balanceOf(this)`.
+There are two equivalent strategies — see top of
+`proofs/equivalence/ERC4626.v` modeling note.
+
+**Methodology decisions (slot-agnostic, Option 2 per R072):**
+
+1. **`_asset` opaque address — state field, not Section parameter.**
+   The vault carries `asset_address : Address` directly on its
+   sim state. Equivalence threads `lens_asset_address_correct` as
+   a hypothesis. Inheritor discharges by `reflexivity` at
+   instantiation. Same shape as `voting_units` in `mocks/Votes.v`.
+
+2. **`totalAssets()` — Section-parameter `project_asset_balance` +
+   R063 discharge.** The mock carries `total_assets : U256.t` as a
+   snapshot field. The equivalence file declares a
+   `project_asset_balance : SimulatedStorage.t -> U256.t` Section
+   parameter and a `lens_total_assets_correct` hypothesis. At
+   instantiation, the inheritor discharges the hypothesis by a
+   single R063 staticcall-bridge lemma (`StaticCallBridge.sc_word`).
+   This factors the staticcall away from the conversion-function
+   walkers entirely: every `convertToShares` / `convertToAssets`
+   walker becomes a closed-form muldiv against the projected
+   asset balance.
+
+3. **Rounding-direction semantics — `Rounding` enum + `muldiv`
+   primitive.** OZ's `Math.Rounding` has four constructors; the
+   mock ports them verbatim. The `muldiv` primitive computes
+   `floor(x*y/d)` with an optional `+1` bump when the rounding
+   mode is `Ceil`/`Expand` and the remainder is non-zero. Since
+   the sim is Z-valued, this is exact (no 512-bit arithmetic
+   needed). The four public functions select their rounding to
+   always **favor the vault**:
+     - `previewDeposit`  → `_convertToShares` Floor
+     - `previewMint`     → `_convertToAssets` Ceil
+     - `previewWithdraw` → `_convertToShares` Ceil
+     - `previewRedeem`   → `_convertToAssets` Floor
+
+4. **`_decimalsOffset` virtual — `nat` state field bounded ≤ 77.**
+   The virtual is fixed at construction in OZ; the mock carries
+   `decimals_offset : nat` on state. The `Valid.t` invariant
+   bounds it at ≤ 77 (since `10^77 < 2^256 < 10^78`). The
+   inflation-attack defense formula `shares = assets *
+   (totalSupply + 10^offset) / (totalAssets + 1)` is then the
+   direct definition of `_convertToShares`.
+
+**Headline inflation-attack property (`inflation_attack_bound`):**
+
+At `totalSupply = 0` (the empty vault), the first depositor's
+share count is
+
+  `convertToShares s assets = floor(assets * 10^offset / (totalAssets + 1))`
+
+regardless of any donation that has inflated `totalAssets`. The
+`10^offset` virtual-shares multiplier in the numerator is
+**static** — the attacker's donation cannot reduce it. This
+caps the attacker's profit at the cost of `10^offset` virtual
+shares per round.
+
+At `offset = 0` (the OZ default), the bound collapses to the
+trivial single-virtual-share defense; at `offset = 6` (a typical
+recommendation), the attacker pays `10^6` virtual shares of
+dilution per round. The defense's strength scales exponentially
+with offset.
+
+**Composition with downstream contracts:**
+
+- `StakingVault` (#256) inherits `ERC4626 + ERC20Votes`. The
+  ERC4626 equivalence file's Section is the bridge: the
+  inheritor instantiates `project_erc4626`, `project_asset_balance`,
+  and discharges the three lens-correctness hypotheses.
+  Composing with `proofs/equivalence/Votes.v` is straightforward —
+  the two Sections are independent (no slot overlap).
+
+- The R063 staticcall discharge happens once, in the inheritor's
+  storage-projection setup, and is then reused across all four
+  conversion functions and `maxWithdraw`.
+
+**Trust:** zero new framework axioms. All sim-level lemmas are
+Qed against `mocks/ERC20.v` and `mocks/ERC4626.v`. The four lens
+correctness hypotheses are Section parameters discharged at
+instantiation time. Total trust budget for an inheritor's
+ERC4626 walkers: 1 R063 staticcall bridge + 3 `reflexivity`-grade
+lens lemmas, same shape as Votes.
 
 ---
 
