@@ -198,110 +198,170 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
     the load-bearing chain (sentinel -> state() short-circuit ->
     Defeated) and is VIOLATED-as-designed.
 
-    Caveat-5 (Yul equivalence — fully mechanized for OZ-4 lightweight contracts; heavyweights parked).
+    Caveat-5 (Yul equivalence — honest per-file status post adversarial-review remediation).
     ---------------------------------------------------------------
     Every audit_* claim about Solidity-source behavior is stated
     against the hand-written Gallina simulation. The equivalence
     tier closes the sim-vs-bytecode gap by proving the simulation
-    matches the emitted Yul shallow form. As of May 2026, six OZ-4
-    lightweight contracts have ALL their public functions closed
-    Qed; the heavyweight contracts (Governor, StakingVault) remain
-    Phase 4 parked per [notes/equivalence_phase4_decision.md].
+    matches the emitted Yul shallow form. The status below is the
+    post-remediation reality after the 2026-05-31 adversarial review
+    (see [notes/adversarial_review_2026_05_31/SYNTHESIS.md] for the
+    pre-remediation vapor catalogue and remediation plan). The
+    earlier "OZ-4 lightweight vs Phase-4 heavyweight" framing is
+    retired: the Phase-4 parking decision was reversed (see
+    [notes/equivalence_phase4_decision.md] header), and all 14
+    files of the equivalence tier now have milestone Theorems
+    captured by the Print Assumptions snapshot.
 
-    Status by contract:
+    Per-file status table.
+    ----------------------
+    The "load-bearing axiom count" column is the sum of
+    [axioms_load_bearing] from
+    [rocq/print_assumptions_snapshot/baseline/summary.csv]
+    across every milestone in the file (kernel primitives
+    [PrimInt63.*] / [of_u256_list] / [of_storable_values] excluded).
+    Refresh with [bash formal-verification/scripts/print-assumptions-snapshot].
 
-      ThrottleLib                    All public functions Qed.
-      VersionRegistry                All view fns + both mutators Qed.
-      RewardTokenRegistry            All view fns + both mutators Qed.
-      Guardian                       grantRole + revokeRole + cancel
-                                     all Qed (3 roles × 2 membership
-                                     states = 6 branches each for
-                                     grant/revoke).
-      OptimisticSelectorRegistry     All 5 functions Qed (nested
-                                     EnumerableSet pattern).
-      ProposalLib                    All 5 public functions Qed.
-      TimelockControllerOptimistic   All 5 functions Qed.
-      AccessControlEnumerable        View fns (getRoleMember,
-                                     getRoleMemberCount) Qed.
-                                     Mutator overrides are inlined
-                                     by Solc into Guardian's grant/
-                                     revoke (already Qed).
+      File                                   | Milestones | Status                       | Load-bearing axioms (sum) | Notes
+      ---------------------------------------|-----------:|------------------------------|--------------------------:|-------
+      AccessControlEnumerable.v              |          2 | Qed-content-bearing          |                        20 | View-function equivalence; mutator overrides inlined into Guardian's grant/revoke (also Qed).
+      Guardian.v                             |          5 | Qed-content-bearing          |                        60 | grantRole/revokeRole/cancel/hasRole/observed-behavior; CRIT-Q (T1.1, 2f5949a) pinned cancel walker proposalId to oracle.
+      ProposalLib.v                          |          6 | Qed-content-bearing          |                        28 | All 5 public functions + _governor walker (T1.5a, 36fa59d); toUint48/toUint32 helper Admits closed (T1.5b/T1.5c, ae6f1c8/8b299b5). _governor walker line shows 0 load-bearing axioms — that is a real reduction post-T1.5a.
+      ReserveOptimisticGovernor.v            |          3 | Qed-with-bridges-tightened   |                         9 | propose/castVote/execute milestones. T2.3 (5871fbd) promoted reflexive [_observes] bridges to content-bearing [eq_at_<slot>] claims and wired the GovernorBase Section instantiation in Section 11. Remaining trust: 3 composite walker axioms + 3 tightened observational bridges + 3 Skolemized post-storage Parameters + [now_timestamp] + [project_base] lens.
+      RewardTokenRegistry.v                  |          3 | Qed-content-bearing          |                        14 | isRegistered + register + unregister.
+      SelectorRegistry.v                     |          5 | Qed-content-bearing          |                        26 | All 5 public functions; nested EnumerableSet pattern.
+      StakingVaultAdmin.v                    |          7 | Qed-with-bridges-tightened   |                        15 | setUnstakingDelay/setNativeRewardRate/grant/revoke/renounceRole/authorizeUpgrade/upgradeToAndCall. T2.2 (8f5decd) promoted [proj_post_<fn>] from Parameters to closed-form Definitions and the [_observes] bridges from reflexive tautologies to content-bearing claims; setUnstakingDelay milestone additionally consumes T3.1's partial walker discharge (see below).
+      StakingVaultDelegation_methodology.v   |          4 | Methodology-only             |                        10 | T2.5 (b903e20) renamed StakingVaultDelegation.v -> _methodology.v + renamed module / suffixed each theorem with [_methodology] to make the Section-bound (not concretely instantiated) status explicit at filesystem/module/theorem layers. Print Assumptions shows only Section-leaked Skolems (e.g. ECDSA.Domain.deployment_id); the real trust budget is in the Section [Hypothesis] declarations (4 walker triples + 4 well-formedness) and is universally quantified away at Section closure. No inheritor in the corpus instantiates the Section.
+      StakingVaultExchange.v                 |          4 | Qed-with-bridges-tightened   |                        20 | deposit/mint/withdraw/redeem. T2.1 (2d843bf) promoted the four [_observes] bridges from reflexive Axioms to closed-form Definitions; T1.2 (7d5df84) replaced the naive ERC4626 share-price formula in [simulations/StakingVaultExchange.v] with the OZ-v5.4 inflation-defended form [assets * (totalSupply + 10^offset) / (totalAssets + 1)] (CRIT-E). [fun_<op>_op] symbols remain free Parameters per CCV-3 (deferred — fix is mechanical but requires StakingVault_shallow wiring + walker discharge that touches Tier-4 ERC4626 framework).
+      StakingVaultRewards.v                  |          3 | Qed-with-bridges-tightened   |                        19 | setRewardRatio/poke/claimRewards. T2.6 (ab72af4) promoted [eq_at_*_concrete] to Definitions; the file's three [proj_sim_<fn>_observes_concrete] Axioms now reduce to closed-form arithmetic equalities over the GlobalRewardState carrier rather than reflexive [storage_equiv (X) (X)].
+      ThrottleLib.v                          |          3 | Qed-content-bearing          |                        32 | getProposalsAvailable (2 forms) + consumeProposalCharge.
+      TimelockControllerOptimistic.v         |          5 | Qed-with-bridges-tightened   |                        25 | revokeOptimisticProposer/executeBatchBypass/scheduleBatch/executeBatch/cancel. T2.4 (395546d) promoted the five [_observes] bridges from reflexive Axioms to content-bearing claims.
+      UnstakingManager.v                     |          3 | Scaffolded (Admitted bodies) |                         3 | createLock/cancelLock/claimLock shallow forms compile; proof bodies are Admitted with per-step closure documentation. Each milestone reports 1 load-bearing axiom (a single Admitted lemma each). NOT closed against bytecode; included in the snapshot to track future closure trajectory.
+      VersionRegistry.v                      |          4 | Qed-with-bridges-tightened   |                        25 | isDeprecated + deployments scaffolds + deprecateVersion + registerVersion. T3.2 (8c91483, "retire R065 composite-walker axiom shape" / CRIT-A) converted [run_fun_deprecateVersion_187_at_proj_sim] from a free Axiom to an Admitted Lemma with strengthened precondition signature, walked S1-S6 of the 21-step Yul body mechanically, and documented the S7-S21 residual catalogue. Full discharge requires assembling the remaining steps against existing AbiEncoding / StaticCallBridge / R040-R058 leaves.
 
-      ReserveOptimisticGovernor      Three milestone equivalence
-                                     theorems (run_propose_equivalent,
-                                     run_castVote_equivalent,
-                                     run_execute_equivalent) close
-                                     against the shallow form. Trust
-                                     budget: 3 composite walker axioms
-                                     + 3 slot-indexed observational
-                                     bridges + 3 Skolemized post-storage
-                                     [Parameter]s + 1 sim-environment
-                                     [Parameter] ([now_timestamp]) + 1
-                                     GovernorBase projection lens
-                                     [Parameter] ([project_base]). The
-                                     observational bridges were promoted
-                                     from reflexive [storage_equiv (X)
-                                     (X)] tautologies to content-bearing
-                                     [eq_at_<slot>] claims (T2.3, per
-                                     [notes/adversarial_review_
-                                     2026_05_31/SYNTHESIS.md] CCV-1 and
-                                     CCV-4). GovernorBase's Section
-                                     template is instantiated in the
-                                     file's Section 11 with the four
-                                     [walker_obs_proposal*] lemmas
-                                     emerging as concrete results.
-                                     Inheritor extensions (transition-
-                                     to-pessimistic side-exit, optimistic
-                                     vs pessimistic execute branching)
-                                     are documented in the file's
-                                     Section 7 with the same slot-indexed
-                                     shape.
-      StakingVault                   Parked (phase 4: requires ERC4626
-                                     + ERC20Votes + ReentrancyGuard
-                                     stacks).
-                                     Subnote: the file
-                                     [proofs/equivalence/
-                                     StakingVaultDelegation_methodology.v]
-                                     carries an R051+R072 METHODOLOGY
-                                     template for the four delegation
-                                     entrypoints — its milestone
-                                     theorems are
-                                     [run_<fn>_equivalent_methodology]
-                                     and close inside a Section whose
-                                     Variables abstract over the
-                                     entire Hoare-triple carrier
-                                     ([Codes/Env/Walker/State/hoare/
-                                     make_state]), the projection lens,
-                                     the per-fn post-state Skolems,
-                                     and the walker symbols. NO
-                                     inheritor in this corpus
-                                     instantiates the Section, so the
-                                     methodology theorems are
-                                     universally quantified at Section
-                                     closure and constrain nothing
-                                     about the deployed bytecode on
-                                     their own. The trust budget lives
-                                     in the Section hypotheses (4
-                                     per-fn walker Hoare-triple
-                                     declarations + 4 well-formedness
-                                     declarations), NOT in any
-                                     [Print Assumptions] of the
-                                     methodology theorems. The file's
-                                     ~22 sim-level Qed lemmas (outside
-                                     the Section) are genuine and
-                                     consumed by sim-side validators.
-                                     Per [notes/adversarial_review_
-                                     2026_05_31/SYNTHESIS.md] CCV-2
-                                     and Task #280, this file was
-                                     renamed from
-                                     StakingVaultDelegation.v to make
-                                     its methodology-only status
-                                     explicit at the filename + module
-                                     + theorem-name layers.
-      UnstakingManager               Shallow form compiles; proof
-                                     bodies Admitted with closure
-                                     documentation. Closure pending
-                                     a focused session.
+    Status legend.
+    --------------
+      Qed-content-bearing
+        - Every milestone in the file is closed by a real Qed proof
+          and its trust footprint consists of explicit, named,
+          per-target axioms (walker triples + observational bridges +
+          callee-specs). The walker axioms are the audit-time
+          obligation; the proof body itself adds no hidden trust.
+      Qed-with-bridges-tightened
+        - Same as Qed-content-bearing, but the file underwent a
+          T2.x-tier remediation that converted reflexive
+          [storage_equiv (X) (X)] observational bridges to
+          content-bearing [eq_at_<slot>] / closed-form arithmetic
+          equalities (per SYNTHESIS.md CCV-1). The historical
+          "tautology-bridge" vapor is closed for these files.
+      Walker-partial-discharge
+        - The file's walker axiom for a specific entrypoint was
+          retired (converted from free [Parameter] / [Axiom] to a
+          composed [Lemma] derived from framework primitives + a
+          smaller, more focused residual). The residual is one or
+          two sub-axioms whose obligations are smaller and more
+          local than the original composite. Applies to T3.1
+          (setUnstakingDelay, 7f8876d, 2 sub-axioms remain: OZ
+          AccessControl gate walk + log-payload memory tail).
+      Methodology-only
+        - The file's milestones are Section-bound (Variables abstract
+          the Hoare-triple carrier, projection lens, post-state
+          Skolems, walker symbols) and no inheritor in the corpus
+          instantiates the Section. The theorems are universally
+          quantified at Section closure — they describe a proof
+          template, not a closure against a specific contract.
+          Filename, module name, and theorem suffixes
+          ([_methodology]) make this explicit.
+      Scaffolded (Admitted bodies)
+        - The Yul shallow form compiles and the milestone theorem
+          signature is stated, but the proof body is [Admitted].
+          The milestone is in the snapshot to track its discharge
+          trajectory; it does NOT close the sim-to-bytecode gap.
+
+    Coverage caveats — current state.
+    ---------------------------------
+    Tier 1 (logical/factual corrections from SYNTHESIS.md): CLOSED.
+      - T1.1 / CRIT-Q (Guardian.cancel proposalId walker quantification): commit 2f5949a.
+      - T1.2 / CRIT-E (ERC4626 inflation-defended formula in [simulations/StakingVaultExchange.v]): commit 7d5df84.
+      - T1.3 / CRIT-G (Governor.observe pastSupply==0 -> Canceled branch): commit e455224 (see Caveat-6).
+      - T1.4 / CRIT-V (vetoThresholdTok dynamic + TRANSITIONED_VETO_THRESHOLD sentinel): commit 5ab4be0 (see Caveat-6).
+      - T1.5 / CRIT-A (ProposalLib helper Admits): commits fe73a97 + 36fa59d (a) + ae6f1c8 (b) + 8b299b5 (c).
+
+    Tier 2 (CCV-2 Section-bound vapor + CCV-1 reflexive bridges): CLOSED.
+      - T2.1 (StakingVaultExchange 4 bridges): commit 2d843bf.
+      - T2.2 (StakingVaultAdmin 7 bridges + proj_post promotion): commit 8f5decd.
+      - T2.3 (ReserveOptimisticGovernor GovernorBase wiring + 3 bridges): commit 5871fbd.
+      - T2.4 (TimelockControllerOptimistic 5 bridges): commit 395546d.
+      - T2.5 (StakingVaultDelegation methodology rename + module/theorem rename + Audit.v subnote + WISDOM R080 status banner): commit b903e20.
+      - T2.6 (StakingVaultRewards eq_at_*_concrete promoted to Definitions): commit ab72af4.
+
+    Tier 3 (walker discharges): PARTIAL.
+      - T3.1 (setUnstakingDelay walker, 7f8876d): the composite Parameter
+        [run_fun_setUnstakingDelay_750_at_proj_sim] was retired and
+        replaced by a Qed Lemma derived from framework primitives + 2
+        sub-axioms. The two residual sub-axioms are:
+          (a) [run_fun__checkRole_13513_succeeds_under_admin] — the OZ
+              AccessControl gate walk; CANNOT discharge with current
+              framework primitives because AccessControlStorage uses
+              a keccak-derived ERC-7201 namespace anchor (0x02dd...)
+              but the abstract [SimulatedStorage.t] model indexes by
+              small naturals. Documented as candidate WISDOM R083.
+          (b) [run_fun__setUnstakingDelay_773_at_storage_base] — the
+              inner body's slot-5 sstore is fully discharged with
+              framework primitives via the new R040 wrapper; the
+              Admitted residual covers ONLY the log-payload tail
+              (allocate_unbounded + mstore + log1), a memory-tracking
+              obligation orthogonal to the storage-equivalence claim.
+      - T3.2 (deprecateVersion walker, 8c91483 / CRIT-A): the
+        composite axiom [run_fun_deprecateVersion_187_at_proj_sim]
+        was converted from a free Axiom to an Admitted Lemma with a
+        strengthened precondition signature. Steps S1-S6 of the
+        21-step Yul body (loadimmutable, identity binding, convert
+        chain, pure binding, caller primitive, allocate_unbounded)
+        are walked mechanically; the residual S7-S21 catalogue is
+        documented in the file with the exact leaf each step needs.
+        Full discharge is the mechanical assembly of the remaining
+        steps against existing AbiEncoding / StaticCallBridge /
+        R040-R058 leaves.
+      - T3.3 (revokeRole_736_member walker): DEFERRED. The
+        [run_fun__revokeRole_736_at_proj_sim_member] Axiom in
+        [proofs/equivalence/Guardian.v] cannot be retired without
+        the WISDOM R052 Option-1 -> Option-2 structural refactor of
+        [proj_sim] (placing [MapToArray] at slot index 1 so the
+        keccak shape matches OZ's [keccak(role, 1)] anchor;
+        mechanical but touches ~330 references across Guardian.v
+        bridge lemmas). The refactor is the "R083 framework
+        extension" prerequisite for honest discharge; tracked as a
+        pending task. Until then, the four pre-existing Guardian-
+        local Option-1 axioms ([run_sload_role_values_*],
+        [run_sstore_role_values_*]) remain on the books as
+        documented parametric trust.
+
+    Tier 5 (process hygiene): CLOSED.
+      - T5.1 (Print Assumptions snapshot tool + 57-milestone baseline):
+        commit 0dd64a6. The reference implementation is
+        [formal-verification/scripts/print-assumptions-snapshot] +
+        [formal-verification/scripts/print_assumptions_snapshot_impl.py].
+        Baseline lives under
+        [formal-verification/rocq/print_assumptions_snapshot/baseline/]
+        and includes [summary.csv], [summary.md], and one
+        [<File>__<Module>__<theorem>.txt] per milestone. The snapshot
+        is the falsifiable audit-feedback loop: any future commit that
+        introduces or silently widens a trust axiom produces a drift
+        diff against the baseline.
+
+    Reader verification recipe.
+    ---------------------------
+    To verify any line of this table independently:
+
+      1. [bash formal-verification/scripts/rocq-build]
+         — Full tree must build green.
+      2. [bash formal-verification/scripts/print-assumptions-snapshot]
+         — Regenerates current/ and diffs against baseline/. Exit 0
+         means the table above is current.
+      3. For a single milestone, the per-theorem
+         [Print Assumptions] output is at
+         [print_assumptions_snapshot/baseline/<File>__<Module>__<theorem>.txt].
 
     Methodology and trust profile.
     ------------------------------
@@ -331,12 +391,14 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
 
     Trust budget per closed mutator: typically 2-4 documented axioms
     (composite walker + per-target observational bridge + callee-spec).
-    Across 12 closed mutators on 6 contracts, the corpus carries
-    roughly 50 parametric-trust axioms. Each is reviewable in
-    isolation; the recipe in WISDOM R065 makes their audit obligations
-    explicit. The recipe is also the template for any future
-    R050-blocked surface (e.g., ERC4626 / TimelockController base if
-    mechanization is later pursued).
+    Across the 57 milestones in the baseline, the corpus carries
+    ~306 load-bearing axiom-references (the sum of the
+    [axioms_load_bearing] column in [summary.csv]). Each is
+    reviewable in isolation; the recipe in WISDOM R065 makes their
+    audit obligations explicit. T2.x remediation tightened the
+    [_observes] bridges so that the per-milestone load-bearing
+    count now reflects content-bearing axioms rather than reflexive
+    tautologies.
 
     Resolved upstream blockers (rocq-of-solidity):
       - R020: [Stdlib.timestamp / block_number] semantics
@@ -358,27 +420,21 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
                     rewriting axioms. Smoke test verifying composition
                     with the existing [make_state] / [proj_sim]
                     machinery: [Guardian.v::MapToArrayLengthSmokeTest].
-
-                    The pre-existing four Guardian-local Option 1
-                    axioms (`run_sload_role_values_length_at_proj_sim`
-                    + the three companions) remain on the books pending
-                    a structural refactor of [proj_sim] that places the
-                    MapToArray at slot index 1 (necessary for the
-                    keccak shape to match OZ's [keccak(role, 1)]
-                    anchor). The refactor is mechanical (~330
-                    references to `length_map_in` / `body_map_in` /
-                    `role_values_length_map` / `role_values_body_map`)
-                    and is the next step in this thread.
+                    The pre-existing four Guardian-local Option-1
+                    axioms remain on the books pending the
+                    [proj_sim] refactor described under T3.3 above.
 
     For contracts whose equivalence files are fully closed (no Admits
     in the body modulo the documented composite axioms), divergence
     between that contract's simulation and its bytecode is mechanically
-    constrained by the explicit per-function trust witnesses. The
-    13 contracts/modules whose equivalence files all build Qed are at
-    that bar; pending closure of UnstakingManager's proof bodies and
-    the phase-4 heavyweights, every claim in this Audit.v is rooted in
-    sim semantics that have a corresponding mechanized bridge to Yul
-    shallow form.
+    constrained by the explicit per-function trust witnesses. 13 of
+    the 14 files clear that bar (UnstakingManager.v is the exception —
+    its three milestones are Admitted, tracked in the baseline for
+    discharge trajectory). Within those 13, the
+    StakingVaultDelegation_methodology.v file's milestones are
+    universally quantified at Section closure and constrain nothing
+    about the deployed bytecode without an inheritor instantiation
+    — see the Methodology-only legend entry above.
 
     Caveat-6 (Sim/contract precondition gap on several operations).
     ---------------------------------------------------------------
