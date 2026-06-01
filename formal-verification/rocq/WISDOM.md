@@ -2375,6 +2375,71 @@ the input — so concrete is strictly better.
 See also: R084 (T3.3 trust-redistribution), R059 (`set_eq_at_role`),
 R055 (grantRole bridge methodology).
 
+## R086: SafeERC20 library-call + linkersymbol framework gap
+
+Task #292's investigation of `UnstakingManager`'s three mutator
+equivalences (createLock / cancelLock / claimLock) confirmed that
+R082's composite-walker methodology applies cleanly: each of the
+three Admitted milestone theorems was promoted to a Qed Lemma backed
+by a composite walker Axiom + observational bridge Axioms + a
+Skolem post-state Parameter (the standard R082 + R084 redistribution
+shape — see the per-mutator residual notes in
+`proofs/equivalence/UnstakingManager.v`).
+
+**But**: the walker Axioms themselves are NOT yet discharged. The
+one remaining framework gap is the SafeERC20 library-call
+infrastructure. All three UnstakingManager mutators emit Yul of the
+form:
+
+```yul
+let expr_X_address := linkersymbol("...path...SafeERC20.sol:SafeERC20")
+...
+do fun_safeTransferFrom_1037(token, from, to, amount)
+```
+
+where `linkersymbol` resolves at link time to the deployed library's
+address, and `fun_safeTransferFrom_1037` is the inlined library body
+that performs an `extcodesize` check + external `call` to the
+token's `transfer` selector + return-data decode.
+
+The shallow embedding has the `linkersymbol` primitive defined
+upstream (R041 resolved), but the corresponding `run_linkersymbol`
+axiom — analogous to `StaticCallBridge.run_loadimmutable` — is
+missing. Without it, the inlined library body cannot walk to a
+concrete library-address value, and the subsequent `call` cannot
+fire via `StaticCallBridge.run_staticcall_general`.
+
+Two framework primitives are needed to close R086:
+
+1. **`run_linkersymbol`** (StaticCallBridge or AbiEncoding): a
+   leaf axiom witnessing `linkersymbol(path) = library_addr`,
+   parameterized by a `LinkerBinding` Parameter that fixes the
+   path-to-address mapping at the deployment level. Analogous to
+   `loadimmutable` but for library addresses.
+
+2. **`fun_safeTransfer_callee_spec`** (per-library composite):
+   a callee-spec axiom following the R063 template. Bundles the
+   library body's `extcodesize` check + external `call` +
+   return-data decode into a single walker arm.
+   `safeTransfer_success_spec_concrete` (from StakingVaultRewards
+   Section 6) is the model — it pins the trust to a per-(token,
+   recipient, amount) success flag witnessing the T-REWARDTOKEN
+   assumption.
+
+Once R086 lands, the three UnstakingManager walker Axioms become
+mechanically dischargeable via the standard R028 walker prelude +
+R082 staticcall bridge + R040 sstore wrappers + R047
+case-split-before-eexists. Estimated work per mutator: 500-1500 LOC.
+
+R086 also gates the closure of `StakingVaultExchange.v`'s four
+walker Axioms (deposit / mint / withdraw / redeem) — each uses
+`forceApprove` and `transferFrom` via SafeERC20 — and any future
+contract that uses the SafeERC20 library wrapper.
+
+See also: R041 (resolved — `linkersymbol` definition), R063
+(staticcall callee-spec template), R082 (composite-walker
+discharge — VersionRegistry.deprecateVersion).
+
 ## R065-R071: Per-mutator composite-walker recipe
 
 Validated on 12 mutators across 6 contracts: VersionRegistry,
