@@ -1002,6 +1002,31 @@ Module UnstakingManagerEquivalence.
     forall (token from to : Address) (amount : U256.t),
     safeTransferFrom_success_spec token from to amount.
 
+  (** ----- T-VAULT deployment-fact spec (R098 / cancelLock) -----
+
+      cancelLock's body dispatches a direct [Stdlib.call] to the
+      registered StakingVault.deposit selector (0x6e553f65), passing
+      [amount] (the cancelled lock's amount) + [user] (the lock's
+      original creator) as the deposit's [assets] + [receiver]
+      arguments.  Per R098's structural diagnosis, this is NOT a
+      SafeERC20 wrapper — it's a direct external call to the
+      registered StakingVault.
+
+      The audit-time T-VAULT trust boundary: the deployed StakingVault
+      is well-behaved per its ERC4626 contract — [deposit(assets,
+      receiver)] returns a non-zero share count and does not revert.
+
+      Surfaced as a [Parameter] (success spec) per the R094 T-TOKEN
+      pattern.  No [Axiom] discharge is attempted in this commit;
+      the witness is the future-work obligation tied to the inner-body
+      walker discharge (Phase B per R098).  The [Parameter] declaration
+      makes the obligation EXPLICIT so that when the cancelLock inner-
+      body walker is closed in a follow-up task, the T-VAULT
+      precondition is already named at the audit layer. *)
+
+  Parameter stakingVault_deposit_success_spec :
+    Address (* vault *) -> U256.t (* assets *) -> Address (* receiver *) -> Prop.
+
   Axiom forceApprove_T_TOKEN :
     forall (token spender : Address) (value : U256.t),
     forceApprove_success_spec token spender value.
