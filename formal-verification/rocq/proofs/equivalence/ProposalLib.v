@@ -450,31 +450,46 @@ Module ProposalLibEquivalence.
       — a chain of identity casts on [address()], which returns the
       runtime's contract address. We model that as the same address,
       since every cast in the chain is value-identity at the U256
-      level. *)
-  (** [_governor()] in Solidity is
-        [ReserveOptimisticGovernor(payable(address(this)))]
-      — a chain of identity casts on [address()], which returns the
-      runtime's contract address. We model that as the same address,
-      since every cast in the chain is value-identity at the U256
       level.
 
-      RESIDUAL: the walker pattern for stepping through the let_ /
-      strong_let_ tower mixed with the [Stdlib.address] primitive
-      (which uses [let*] = M.let_, producing the LowM.let_ Fixpoint
-      form mid-body) is non-trivial. The naive [repeat (lu || cu)]
-      over-advances; explicit [l. { c. { leaf. } p. }] per-step
-      requires careful matching of the LowM.Let / LowM.let_
-      alternation that the M.monadic elaboration produces.
-
-      The leaves above ([run_convert_t_contract_ProposalLib_to_t_address],
-      etc.) are all closed Qed. The composition is the missing piece. *)
+      Proof shape: standard walker drains the leading [let~] tower,
+      then [unfold Stdlib.address; cbn] exposes the [LowM.Primitive
+      GetEnvironment] step which we discharge with [RunO.Primitive].
+      The follow-on [repeat (lu || cu || p)] cascade unfolds the
+      nested [convert_*] casts down to a chain of [Pure.and v mask]
+      applications, which [uint160_implies_and_mask] collapses to
+      [v] under [H_addr]. PureEq closes the final equality. *)
   Theorem run_fun__governor_679_equivalent codes env state
       (H_addr : 0 <= env.(Environment.address) < 2^160) :
     {{? codes, env, Some state |
       fun__governor_679 ⇓ Result.Ok env.(Environment.address)
     | Some state ?}}.
   Proof.
-  Admitted.
+    unfold fun__governor_679.
+    lu. l. { c. { apply run_zero_value_for_split_t_contract. } p. }
+    repeat (lu || cu || p).
+    unfold Stdlib.address.
+    cbn.
+    eapply RunO.Primitive; [reflexivity|].
+    repeat (lu || cu || p).
+    unfold Pure.and.
+    pe.
+    - (* The goal is [Result.Ok (Z.land ... v ...) = Result.Ok v]. *)
+      f_equal.
+      (* Six nested [Z.land _ mask] applications; each is identity
+         since the inner value stays in [0, 2^160). Stage the
+         identity rewrite via an [assert] so that [rewrite !]
+         drains all occurrences in one pass. *)
+      assert (Hid : Z.land env.(Environment.address)
+                      1461501637330902918203684832716283019655932542975
+                    = env.(Environment.address)).
+      { change 1461501637330902918203684832716283019655932542975
+          with 0xffffffffffffffffffffffffffffffffffffffff.
+        rewrite <- uint160_implies_and_mask by exact H_addr.
+        reflexivity. }
+      rewrite !Hid. reflexivity.
+    - reflexivity.
+  Qed.
 
   (** ========================================================
         Tier 0 — [SafeCast.toUint48] / [toUint32] within-bound
