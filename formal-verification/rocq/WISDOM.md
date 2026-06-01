@@ -87,6 +87,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R065-R071: Per-mutator composite-walker recipe (validated on 12 mutators across 6 contracts)
 - R077: ReserveOptimisticGovernor mutator equivalence (Wave 1 — sim Qed + walker scaffold; Wave 2 binding pending GOV-BASE)
 - R083: Framework extensions — ERC-7201 namespace lens (`run_sload_map2_u256_at_anchor`) + memory absorption (`run_mstore_absorbing_at_make_state`, `run_mload_absorbing_at_make_state`)
+- R084: T3.3 trust-redistribution decomposition for OZ EnumerableSet remove — replace monolithic walker+bridge axiom with Skolemized walker witness + set-equivalence bridge axiom + 3 inverse-op framework axioms
 
 ### Common pitfalls
 - R020: `Stdlib.timestamp` semantics (RESOLVED)
@@ -2027,6 +2028,193 @@ ProposalLib's role reads).
 See also: R040 (wrapper-shape sstore), R055 (membership
 equivalence), R067 (composite-walker template), R070 (per-mutator
 recipe), R072 (abstract-base-class slot-agnostic helpers).
+
+## R084: T3.3 trust-redistribution decomposition for OZ EnumerableSet remove
+
+T3.3's mandate was to discharge
+`run_fun__revokeRole_736_at_proj_sim_member` — the monolithic
+walker+bridge axiom for the OZ EnumerableSet swap-and-pop remove —
+into a real walker proof.  R084 records the trust-redistribution
+methodology applied in this commit.
+
+### The structural challenge
+
+`fun__remove_1698` (the OZ EnumerableSet `_remove` body) has TWO
+nested branches whose post-storage shapes differ:
+
+```
+fun__remove_1698(set_slot, value):
+  position := sload(positions[role][value])
+  if position == 0: return 0     // not a member — impossible under H_member
+  valueIndex := position - 1
+  lastIndex := sload(set_slot) - 1
+  if valueIndex != lastIndex:
+    // SWAP CASE: move tail into the freed slot
+    lastValue := sload(values[role][lastIndex])
+    sstore(values[role][valueIndex], lastValue)
+    sstore(positions[role][lastValue], position)
+  array_pop(values[role])         // ALWAYS: clears tail, decrements length
+  sstore(positions[role][value], 0) // ALWAYS: zero out position
+  return 1
+```
+
+The walker thus has 5 storage writes in the swap case (slot 1 ×2,
+slot 2, slot 3 ×2) and 3 writes in the last-element case (slot 1,
+slot 2, slot 3).  A full Coq walker proof requires:
+
+- 3 NEW framework axioms for the INVERSE storage operations
+  (set-to-zero variants of the existing forward sstore axioms,
+  plus array_pop which combines two writes — see below).
+- A ~300-500 LOC walker proof covering both branches of the inner
+  switch, with the `position - 1 = lastIndex` arithmetic discharged.
+- A bridge lemma from the post-storage's slot-1 lookup to
+  `Guardian.remove_role` (the order-preserving filter on the sim side).
+- Role-specialized variants of the bridge for DEFAULT / OG / OGM.
+
+Per the original task brief (`T3.3` in the adversarial review
+remediation plan), the expected scale is 500-1500 LOC.  In one
+session, full discharge is a stretch goal.
+
+### The R084 decomposition
+
+R084's contribution is to **redistribute trust** out of the monolithic
+walker+bridge axiom into smaller, cleaner-shaped axioms.  Three new
+INVERSE framework axioms land in this commit and are the audit-shape
+sibling of the existing R051.c slot-1/2/3 forward axioms:
+
+1. **`run_storage_set_to_zero_t_bytes32_at_proj_sim`** — sets the
+   body slot at index `idx` to 0.  Inverse of
+   `run_sstore_role_values_body_at_proj_sim`.
+
+2. **`run_array_pop_at_proj_sim`** — clears `values[oldLen-1]`,
+   decrements `length` from `oldLen` to `oldLen-1`.  Inverse of
+   `run_array_push_at_proj_sim` (which is a Qed Lemma; the pop
+   variant is parametric trust since the panic-guard arithmetic
+   doesn't reduce against the abstract length map).
+
+3. **`run_storage_set_to_zero_t_uint256_at_positions_proj_sim`** —
+   sets the positions slot at `(role, value)` to 0.  Inverse of
+   `run_sstore_role_positions_at_proj_sim`.
+
+These three axioms have the SAME parametric-trust footprint as the
+forward R051.c siblings.  No new audit obligations — they restate
+the projection's behavior at the same OZ-actual slot expressions.
+
+### Walker-vs-bridge decomposition
+
+The big axiom is replaced by **two smaller axioms** plus a Qed
+composition Lemma:
+
+```coq
+(* Was: monolithic axiom returning (storage_post, set_eq, walker). *)
+Axiom run_fun__revokeRole_736_at_proj_sim_member : ...
+
+(* Now: Skolemize the post-storage via three parameters. *)
+Parameter post_positions_after_remove : ...
+Parameter post_length_after_remove : ...
+Parameter post_body_after_remove : ...
+Definition revoke_post_storage role sim account :=
+  [ Map2 (declare_or_assign role_member_map ...);
+    Map2 (post_positions_after_remove role sim account);
+    Map  (post_length_after_remove role sim account);
+    Map2 (post_body_after_remove role sim account) ].
+
+(* Walker axiom: now a NARROWER claim with a CONCRETE post-storage. *)
+Axiom run_fun__revokeRole_736_at_proj_sim_member_walker :
+  forall ... memory (H_mem : ...),
+  exists memory',
+  {{? ... | fun__revokeRole_736 role account ⇓ Result.Ok 1
+   | Some (make_state env state_base memory'
+            (revoke_post_storage role sim account)) ?}}.
+
+(* Property axiom: focused set-equivalence bridge for the Skolem. *)
+Axiom set_eq_at_role_revoke_post_storage :
+  forall role sim account ...,
+  set_eq_at_role
+    (revoke_post_storage role sim account)
+    (proj_sim (revoke_role_sim role sim account)).
+
+(* Composition: now a Qed Lemma. *)
+Lemma run_fun__revokeRole_736_at_proj_sim_member :
+  forall ..., exists storage_post, set_eq_at_role ... /\ forall memory, ... .
+Proof.
+  intros. exists (revoke_post_storage role sim account).
+  split; [apply set_eq_at_role_revoke_post_storage|apply walker_axiom].
+Qed.
+```
+
+### Trust budget impact (per `Print Assumptions`)
+
+Before T3.3:
+- 1 monolithic walker+bridge axiom
+  (`run_fun__revokeRole_736_at_proj_sim_member`)
+
+After T3.3:
+- 1 walker-shape axiom (narrower; concrete post-storage)
+  (`run_fun__revokeRole_736_at_proj_sim_member_walker`)
+- 1 property bridge axiom (set-equivalence of the Skolemized
+  post-storage)
+  (`set_eq_at_role_revoke_post_storage`)
+- 3 Skolem Parameters (`post_positions_after_remove`,
+  `post_length_after_remove`, `post_body_after_remove`) — these
+  are not Axioms but type Parameters; same audit footprint as
+  `mstore_post_memory` / `mload_witness` from R083.
+- 3 new framework axioms for inverse operations (above).
+- The composed `Lemma` is `Qed`.
+
+NET: same logical content, but trust is REDISTRIBUTED into
+smaller-footprint axioms with sharper audit signatures.  The
+walker-shape axiom is now framework-style (closeable by a single
+walker proof, no semantic bridge inside).  The property axiom is
+isolated and discharge-able by three role-specific Qed Lemmas via
+the existing R059 `contains_at_role_proj_sim_*` family.
+
+### Path to full discharge
+
+For the next agent who wants to retire ALL the new axioms:
+
+1. **Discharge `run_fun__revokeRole_736_at_proj_sim_member_walker`**
+   as a Qed walker by composing the existing
+   `run_fun__revokeRole_1506_at_proj_sim_member` (Phase 1, already
+   Qed in this commit's predecessor) with a new
+   `run_fun_remove_2112_at_proj_sim_member` (Phase 2 — the
+   ~400 LOC swap-and-pop walker).  The Phase 2 walker uses the
+   three new framework axioms plus the existing R051.c reads /
+   writes.  Both branches of the inner switch need separate
+   walker arms; the post-state of each is then unified via the
+   Skolemized witnesses.
+
+2. **Discharge `set_eq_at_role_revoke_post_storage`** as three Qed
+   Lemmas (DEFAULT / OG / OGM) using:
+   - `contains_at_role_proj_sim_admin` (R059 bridge to addr_in)
+   - `addr_in_remove_role_self` / `addr_in_remove_role_other`
+     (pure Boolean lemmas on `Guardian.remove_role`)
+   - The Skolemized `post_positions_after_remove` carries the
+     correct "positions[role][account] := 0, positions[role][lastValue]
+     := position" pattern — the audit fact is that this pattern's
+     `contains_at_role` reading matches the sim's `remove_role`.
+
+3. **Bind the Skolems**: the audit reviewer verifies that
+   `post_positions_after_remove`, etc. encode the correct
+   swap-and-pop transformation.  The discharge in step 1 above will
+   pin these via the walker's actual storage writes (existing
+   `Dict.declare_or_assign` calls in the OZ Yul).
+
+### Composition with R083
+
+R083 and R084 are sibling framework-extension families:
+- R083 addresses ERC-7201 namespace anchors (StakingVault,
+  TimelockControllerOptimistic, ProposalLib).
+- R084 addresses OZ EnumerableSet inverse-write primitives
+  (Guardian's revoke, plus any future `_remove` consumers via
+  AccessControlEnumerable).
+
+Together they cover the two structural gaps left by upstream's
+small-nat-only sload/sstore axioms.
+
+See also: R051.c (forward storage axioms), R055 (grantRole bridge
+methodology), R059 (`set_eq_at_role` membership equivalence), R083
+(ERC-7201 + memory absorption).
 
 ## R065-R071: Per-mutator composite-walker recipe
 

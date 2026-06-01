@@ -14,6 +14,16 @@ RocqOfSolidity.CanonizeState.update_memory_eq :
     (RocqOfSolidity.make_state environment state memory storage) =
   RocqOfSolidity.make_state environment state new_memory storage
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+GuardianEquivalence.set_eq_at_role_revoke_post_storage :
+  forall (role : RocqOfSolidity.U256.t) (sim : Guardian.Guardian.State.t)
+    (account : Guardian.Guardian.Address),
+  role = GuardianEquivalence.DEFAULT_ADMIN_ROLE_bytes32 \/
+  role = GuardianEquivalence.OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+  role = GuardianEquivalence.OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32 ->
+  GuardianEquivalence.set_eq_at_role
+    (GuardianEquivalence.revoke_post_storage role sim account)
+    (GuardianEquivalence.proj_sim
+       (GuardianEquivalence.revoke_role_sim role sim account))
 GuardianEquivalence.run_sload_role_admin_at_proj_sim :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
@@ -96,7 +106,7 @@ RocqOfSolidity.run_keccak256_tuple2 :
                 (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))
           (BinNums.Zpos (BinNums.xO BinNums.xH)))) 
     (Some state)
-GuardianEquivalence.run_fun__revokeRole_736_at_proj_sim_member :
+GuardianEquivalence.run_fun__revokeRole_736_at_proj_sim_member_walker :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t) (sim : Guardian.Guardian.State.t)
@@ -116,24 +126,38 @@ GuardianEquivalence.run_fun__revokeRole_736_at_proj_sim_member :
   RocqOfSolidity.StorableValue.map_get_u256
     (GuardianEquivalence.role_member_map sim) (role, account) =
   BinNums.Zpos BinNums.xH ->
-  exists storage_post : RocqOfSolidity.SimulatedStorage.t,
-    GuardianEquivalence.set_eq_at_role storage_post
-      (GuardianEquivalence.proj_sim
-         (GuardianEquivalence.revoke_role_sim role sim account)) /\
-    (forall memory : list RocqOfSolidity.U256.t,
-     (exists
-        (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
-        memory = (w0 :: w1 :: rest)%list) ->
-     exists memory' : RocqOfSolidity.SimulatedMemory.t,
-       RocqOfSolidity.RunO.t codes env
-         (RocqOfSolidity.Result.Ok (BinNums.Zpos BinNums.xH))
-         (Some
-            (RocqOfSolidity.make_state env state_base memory
-               (GuardianEquivalence.proj_sim sim)))
-         (Guardian_shallow.Guardian_325.Guardian_325_deployed.fun__revokeRole_736
-            role account)
-         (Some
-            (RocqOfSolidity.make_state env state_base memory' storage_post)))
+  forall memory : list RocqOfSolidity.U256.t,
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env
+      (RocqOfSolidity.Result.Ok (BinNums.Zpos BinNums.xH))
+      (Some
+         (RocqOfSolidity.make_state env state_base memory
+            (GuardianEquivalence.proj_sim sim)))
+      (Guardian_shallow.Guardian_325.Guardian_325_deployed.fun__revokeRole_736
+         role account)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (GuardianEquivalence.revoke_post_storage role sim account)))
+GuardianEquivalence.post_positions_after_remove :
+  RocqOfSolidity.U256.t ->
+  Guardian.Guardian.State.t ->
+  Guardian.Guardian.Address ->
+  RocqOfSolidity.Dict.t (RocqOfSolidity.U256.t * RocqOfSolidity.U256.t)
+    RocqOfSolidity.U256.t
+GuardianEquivalence.post_length_after_remove :
+  RocqOfSolidity.U256.t ->
+  Guardian.Guardian.State.t ->
+  Guardian.Guardian.Address ->
+  RocqOfSolidity.Dict.t RocqOfSolidity.U256.t RocqOfSolidity.U256.t
+GuardianEquivalence.post_body_after_remove :
+  RocqOfSolidity.U256.t ->
+  Guardian.Guardian.State.t ->
+  Guardian.Guardian.Address ->
+  RocqOfSolidity.Dict.t (RocqOfSolidity.U256.t * RocqOfSolidity.U256.t)
+    RocqOfSolidity.U256.t
 RocqOfSolidity.Memory.of_u256_list :
   list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
 RocqOfSolidity.Storage.of_storable_values :

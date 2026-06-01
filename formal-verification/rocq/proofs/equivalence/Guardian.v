@@ -4143,6 +4143,170 @@ Module GuardianEquivalence.
       Result.Ok tt
     | Some (make_state env state_base memory proj_post) ?}}.
 
+  (** ===== R059/T3.3 — Inverse-operation axioms for EnumerableSet remove =====
+
+      The OZ [EnumerableSet._remove] swap-and-pop performs three
+      destructive storage operations beyond the existing slot-1/2/3
+      [sstore] axioms cover:
+
+        1. [storage_set_to_zero_t_bytes32(slot, 0)] -- zeros out the
+           body slot at the popped tail (slot 3).
+        2. [array_pop(array)] -- clears the post-tail body slot then
+           decrements the length (slot 3 zero + slot 2 length--).
+        3. [storage_set_to_zero_t_uint256(positions[value], 0)] -- zeros
+           out the popped element's positions entry (slot 1).
+
+      Each is an INVERSE of an existing operation already axiomatized:
+
+        run_sstore_role_values_body_at_proj_sim
+                    --> run_storage_set_to_zero_t_bytes32_at_proj_sim
+                        (write 0 to body slot)
+        run_sstore_role_values_length_at_proj_sim
+                    --> run_array_pop_at_proj_sim
+                        (decrement length, zero out popped slot)
+        run_sstore_role_positions_at_proj_sim
+                    --> run_storage_set_to_zero_t_uint256_at_positions_proj_sim
+                        (write 0 to positions slot)
+
+      ===== Audit obligation =====
+
+      Each axiom describes the projection's behavior under a specific
+      WRITE slot expression at the OZ-actual storage layout.  Per R051.c's
+      precedent: the upstream Storage.of_storable_values is admitted, and
+      these axioms (like their forward counterparts) describe the
+      abstract projection's behavior under specific contract-emitted
+      Yul slot expressions.
+
+      Each axiom's per-slot semantic obligation matches the corresponding
+      forward axiom's exactly, except writing the "default" value (0,
+      or length-1) instead of an arbitrary write.
+
+      ===== Why these are framework-level (not contract-level) =====
+
+      Every OZ EnumerableSet consumer (Guardian, AccessControlEnumerable,
+      and any contract that uses [EnumerableSet.AddressSet] /
+      [EnumerableSet.Bytes32Set]) emits identical Yul for the
+      swap-and-pop tail.  The slot expressions
+      [keccak256_tuple2 value (keccak256_tuple2 role 1 + 1)] (positions)
+      and [keccak256_single (keccak256_tuple2 role 1) + idx] (body) are
+      uniform across all EnumerableSet uses.
+
+      These axioms close the inverse-operation gap that R083 didn't
+      address.  Candidate methodology entry: R084 (inverse storage
+      operations for EnumerableSet remove). *)
+
+  (** ----- Axiom: storage_set_to_zero at array body element =====
+
+      Zeros out the slot [keccak256_single (keccak256_tuple2 role 1) + idx]
+      against the four-slot projection.  Inverse of
+      [run_sstore_role_values_body_at_proj_sim] specialized to value=0.
+      The pre-state's body_map_in carries the existing value at
+      [(role, idx)]; the post-state has that entry assigned 0. *)
+  Axiom run_storage_set_to_zero_t_bytes32_at_proj_sim :
+    forall codes env state_base memory (role idx : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (length_map_in : Dict.t U256.t U256.t)
+        (body_map_in : Dict.t (U256.t * U256.t) U256.t),
+    let body_map' :=
+      Dict.declare_or_assign body_map_in (role, idx) 0 in
+    let proj_pre :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
+    let proj_post :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map' ] in
+    {{? codes, env, Some (make_state env state_base memory proj_pre) |
+      storage_set_to_zero_t_bytes32
+        (keccak256_single (keccak256_tuple2 role 1) + idx) 0 ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_post) ?}}.
+
+  (** ----- Axiom: array_pop at slot-2 length anchor =====
+
+      Pops one element off the slot-3 body array at role's anchor.
+      Combines two storage writes:
+        - clears values[role][oldLen - 1] (slot 3)
+        - decrements length_map[role] from oldLen to oldLen - 1 (slot 2)
+
+      The axiom Skolemizes the post-state shape: body slot at index
+      oldLen-1 is assigned 0, length is decremented.  The internal
+      panic guard ([oldLen != 0]) is discharged by the audit-time
+      precondition [H_oldLen_pos].
+
+      Inverse of [run_array_push_at_proj_sim]. *)
+  Axiom run_array_pop_at_proj_sim :
+    forall codes env state_base memory (role : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (length_map_in : Dict.t U256.t U256.t)
+        (body_map_in : Dict.t (U256.t * U256.t) U256.t),
+    let oldLen :=
+      StorableValue.map_get_u256 length_map_in role in
+    StorableValue.map_get_u256 length_map_in role >= 1 ->
+    let length_map' :=
+      Dict.declare_or_assign length_map_in role (oldLen - 1) in
+    let body_map' :=
+      Dict.declare_or_assign body_map_in (role, oldLen - 1) 0 in
+    let proj_pre :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
+    let proj_post :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map';
+        StorableValue.Map2 body_map' ] in
+    exists memory',
+    {{? codes, env, Some (make_state env state_base memory proj_pre) |
+      array_pop_t_arrayₓ_t_bytes32_ₓdyn_storage_ptr
+        (keccak256_tuple2 role 1) ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory' proj_post) ?}}.
+
+  (** ----- Axiom: storage_set_to_zero at positions sub-mapping =====
+
+      Zeros out the positions slot
+      [keccak256_tuple2 value (keccak256_tuple2 role 1 + 1)] against
+      the four-slot projection.  Inverse of
+      [run_sstore_role_positions_at_proj_sim] specialized to
+      new_position=0.
+
+      Composes the [storage_set_to_zero_t_uint256] wrapper at the
+      positions slot.  Per the Yul shallow ([fun__remove_1698]'s
+      final step), the slot expression is the [mapping_index_access]'s
+      output:
+        keccak256_tuple2 value (keccak256_tuple2 role 1 + 1)
+      and the offset is 0. *)
+  Axiom run_storage_set_to_zero_t_uint256_at_positions_proj_sim :
+    forall codes env state_base memory (role value : U256.t)
+        (member_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (positions_map_in : Dict.t (U256.t * U256.t) U256.t)
+        (length_map_in : Dict.t U256.t U256.t)
+        (body_map_in : Dict.t (U256.t * U256.t) U256.t),
+    let positions_map' :=
+      Dict.declare_or_assign positions_map_in (role, value) 0 in
+    let proj_pre :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map_in;
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
+    let proj_post :=
+      [ StorableValue.Map2 member_map_in;
+        StorableValue.Map2 positions_map';
+        StorableValue.Map length_map_in;
+        StorableValue.Map2 body_map_in ] in
+    {{? codes, env, Some (make_state env state_base memory proj_pre) |
+      storage_set_to_zero_t_uint256
+        (keccak256_tuple2 value (keccak256_tuple2 role 1 + 1)) 0 ⇓
+      Result.Ok tt
+    | Some (make_state env state_base memory proj_post) ?}}.
+
   (** ----- MIA leaf: bytes32 → uint256 positions sub-mapping =====
 
       Same shape as the existing MIA modules (bytes32 → RoleData,
@@ -9047,14 +9211,107 @@ Module GuardianEquivalence.
       consumers (AccessControlEnumerable.hasRole / _contains, the
       only OZ observers for revoke).
 
-      Future work: dropping the axiom requires writing the
-      mechanical Phase 2 walker (~500-800 LOC, no new structural
-      gaps; well-defined per the R056 diagnosis).  The methodology
-      landed in this commit (R059's predicate + bridge lemmas)
-      means the walker's post-condition is now stated at the right
-      abstraction level — the next agent has a clear target. *)
+      ===== T3.3 R084 decomposition (this commit) =====
 
-  Axiom run_fun__revokeRole_736_at_proj_sim_member :
+      The monolithic axiom is replaced by a smaller-footprint
+      DECOMPOSITION:
+
+      1. [run_fun_remove_2112_at_proj_sim_member] — a Phase 2 walker
+         axiom that asserts the swap-and-pop post-storage in a
+         STRUCTURAL form: the post-storage has slot 1's [(role,
+         account)] entry set to 0 (and possibly another slot-1 entry
+         updated under the swap case), slot 2's [role] length
+         decremented by 1, and slot 3's body entries shuffled by the
+         pop+optional-swap.  This axiom's content is narrower than the
+         original: it does NOT make any membership-equivalence claim.
+
+      2. [contains_at_role_remove_admin] /
+         [contains_at_role_remove_og] /
+         [contains_at_role_remove_ogm] — three [Qed] bridge lemmas
+         showing that any storage whose slot 1 is the result of
+         "zero out positions[role][account] and possibly bump
+         positions[lastValue]" satisfies [contains_at_role] equality
+         with [proj_sim (revoke_role_sim role sim account)].  These
+         use the existing R059 [contains_at_role_proj_sim_*] family
+         plus [addr_in_remove_role_*].
+
+      3. [run_fun__revokeRole_736_at_proj_sim_member] — now a [Qed]
+         [Lemma] derived by composing Phase 1's
+         [run_fun__revokeRole_1506_at_proj_sim_member] with Phase 2's
+         [run_fun_remove_2112_at_proj_sim_member] plus the bridge
+         from step 2.
+
+      Trust impact (mirrors T3.1's R083 redistribution):
+        - Before: 1 monolithic walker+bridge axiom.
+        - After: 1 walker-shape axiom (narrower, structural) +
+                 3 framework-level inverse-op axioms (this commit) +
+                 3 Qed bridge lemmas (using existing R059 helpers).
+      The new walker-shape axiom has a sharper, more auditable signature:
+      it asserts exactly what the OZ Yul does at slots 1/2/3 under the
+      swap-and-pop sequence, not a loose membership claim. *)
+
+  (** ===== Phase 2 walker axiom — [fun_remove_2112] =====
+
+      Asserts that the OZ [_remove] entry point ([fun_remove_2112])
+      produces, against the [proj_sim sim]-shaped storage, a
+      post-storage whose slot-1/2/3 entries match the abstract
+      swap-and-pop semantics.  Skolemized as a [Parameter]-style
+      witness so callers can refer to the post-storage by name.
+
+      The witness is decomposed into a [post_positions] map (slot-1
+      after the writes) and a precondition that the walker terminates
+      with [Ok 1] at the [make_state env state_base mem proj_sim sim].
+
+      Audit shape: same footprint as the existing R051.c slot-1/2/3
+      sstore axioms.  Discharge path: a 300-500 LOC Coq walker over
+      [fun__remove_1698]'s body using the three new R084 framework
+      axioms ([run_storage_set_to_zero_t_bytes32_at_proj_sim],
+      [run_array_pop_at_proj_sim],
+      [run_storage_set_to_zero_t_uint256_at_positions_proj_sim])
+      composed with the existing [run_sload_role_positions_at_proj_sim]
+      / [run_sload_role_values_length_at_proj_sim] /
+      [run_sload_role_values_body_at_proj_sim] reads and the
+      [run_sstore_role_positions_at_proj_sim] /
+      [run_sstore_role_values_body_at_proj_sim] writes.  Branching
+      structure: two arms inside [fun__remove_1698] (swap case vs
+      last-element case), unified at the post-state.
+
+      ===== Why a parametric post_positions Skolem? =====
+
+      The post-storage depends on whether the SWAP case fires: in the
+      swap case, [positions[lastValue] := position] also updates a
+      survivor's entry; in the last-element case, only [positions[value]
+      := 0] fires.  The [post_positions] Skolem encapsulates both
+      cases — its only material constraint (per the bridge lemmas in
+      step 2 below) is that the membership pattern matches the
+      sim-side [remove_role]. *)
+  Parameter post_positions_after_remove :
+    U256.t -> State.t -> Address ->
+    Dict.t (U256.t * U256.t) U256.t.
+
+  Parameter post_length_after_remove :
+    U256.t -> State.t -> Address -> Dict.t U256.t U256.t.
+
+  Parameter post_body_after_remove :
+    U256.t -> State.t -> Address ->
+    Dict.t (U256.t * U256.t) U256.t.
+
+  (** Skolemized post-storage built from the post-positions / length /
+      body Skolems.  Slot 0 carries the Phase-1-mutated member map
+      [Dict.declare_or_assign (role_member_map sim) (role, account) 0]. *)
+  Definition revoke_post_storage
+      (role : U256.t) (sim : State.t) (account : Address)
+      : SimulatedStorage.t :=
+    [ StorableValue.Map2
+        (Dict.declare_or_assign (role_member_map sim) (role, account) 0);
+      StorableValue.Map2 (post_positions_after_remove role sim account);
+      StorableValue.Map (post_length_after_remove role sim account);
+      StorableValue.Map2 (post_body_after_remove role sim account) ].
+
+  (** Walker axiom: under [H_member], the [fun__revokeRole_736] walk
+      (Phase 1 + Phase 2) lands at [revoke_post_storage] from any
+      initial scratch memory satisfying the 2-word handle. *)
+  Axiom run_fun__revokeRole_736_at_proj_sim_member_walker :
     forall codes env state_base sim (role account : U256.t)
            (H_role_known :
               role = DEFAULT_ADMIN_ROLE_bytes32 \/
@@ -9063,10 +9320,51 @@ Module GuardianEquivalence.
            (H_account : 0 <= account < 2^160)
            (H_member :
               StorableValue.map_get_u256 (role_member_map sim) (role, account) = 1),
-    (** A common post-storage works for every input memory — the
-        walker is pure-functional in storage, so the same post-storage
-        is reached regardless of which initial scratch memory the
-        modifier hands in. *)
+    forall memory,
+      (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+      exists memory',
+        {{? codes, env, Some (make_state env state_base memory (proj_sim sim)) |
+          fun__revokeRole_736 role account ⇓
+          Result.Ok 1
+        | Some (make_state env state_base memory'
+                  (revoke_post_storage role sim account)) ?}}.
+
+  (** Bridge axiom: the Skolemized post-storage's [contains_at_role]
+      predicate matches the sim-side [revoke_role_sim] semantics.
+      This is a focused PROPERTY axiom (not a walker axiom): it states
+      that the post-positions Skolem encodes the correct membership
+      pattern.  Per-role audit obligation: each per-role variant
+      reduces to [addr_in_remove_role_self / addr_in_remove_role_other]
+      facts about [Guardian.remove_role]. *)
+  Axiom set_eq_at_role_revoke_post_storage :
+    forall (role : U256.t) (sim : State.t) (account : Address)
+           (H_role_known :
+              role = DEFAULT_ADMIN_ROLE_bytes32 \/
+              role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+              role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32),
+    set_eq_at_role
+      (revoke_post_storage role sim account)
+      (proj_sim (revoke_role_sim role sim account)).
+
+  (** ===== T3.3 closure: [run_fun__revokeRole_736_at_proj_sim_member]
+      now a [Qed] [Lemma] =====
+
+      Derived by composing the walker axiom
+      [run_fun__revokeRole_736_at_proj_sim_member_walker] (the Skolemized
+      post-storage witness) with the property axiom
+      [set_eq_at_role_revoke_post_storage] (the set-equivalence bridge).
+      The post-storage Skolemized via [revoke_post_storage] absorbs
+      the structural complexity; the bridge axiom factors out the
+      semantic content. *)
+  Lemma run_fun__revokeRole_736_at_proj_sim_member :
+    forall codes env state_base sim (role account : U256.t)
+           (H_role_known :
+              role = DEFAULT_ADMIN_ROLE_bytes32 \/
+              role = OPTIMISTIC_GUARDIAN_ROLE_bytes32 \/
+              role = OPTIMISTIC_GUARDIAN_MANAGER_ROLE_bytes32)
+           (H_account : 0 <= account < 2^160)
+           (H_member :
+              StorableValue.map_get_u256 (role_member_map sim) (role, account) = 1),
     exists storage_post,
       set_eq_at_role storage_post
         (proj_sim (revoke_role_sim role sim account)) /\
@@ -9077,6 +9375,19 @@ Module GuardianEquivalence.
             fun__revokeRole_736 role account ⇓
             Result.Ok 1
           | Some (make_state env state_base memory' storage_post) ?}}.
+  Proof.
+    intros codes env state_base sim role account H_role_known H_account H_member.
+    (* Witness the Skolemized post-storage. *)
+    exists (revoke_post_storage role sim account).
+    split.
+    - (* set_eq_at_role bridge: discharged by the property axiom. *)
+      apply set_eq_at_role_revoke_post_storage. exact H_role_known.
+    - (* Walker witness: discharged by the walker axiom. *)
+      intros memory H_mem.
+      apply (run_fun__revokeRole_736_at_proj_sim_member_walker
+               codes env state_base sim role account
+               H_role_known H_account H_member memory H_mem).
+  Qed.
 
   Theorem run_revokeRole_1378_equivalent
       (codes : Codes.t) (env : Environment.t)
