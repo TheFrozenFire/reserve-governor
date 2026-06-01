@@ -74,6 +74,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R051: Composite-axiom shape for milestone Qeds
 - R072: Abstract-base-class equivalence — slot-agnostic helpers + lens
 - R076: ERC4626 equivalence — share-asset arithmetic + inflation defense
+- R081: StakingVault pause/admin equivalence + upgrade-authorization integration
 
 ### The R050 staticcall recipe
 - R063: `staticcall` as composite of existing primitives
@@ -821,6 +822,137 @@ correctness hypotheses are Section parameters discharged at
 instantiation time. Total trust budget for an inheritor's
 ERC4626 walkers: 1 R063 staticcall bridge + 3 `reflexivity`-grade
 lens lemmas, same shape as Votes.
+
+## R081: StakingVault pause/admin equivalence + upgrade-authorization integration
+
+StakingVault.sol (task #257, Wave 2) has seven AccessControl-gated
+admin mutators across three tiers:
+
+  Tier-1 (direct admin entry-points):
+    - [setUnstakingDelay] — onlyRole(DEFAULT_ADMIN_ROLE);
+      require delay ≤ MAX_UNSTAKING_DELAY (2419200s = 4 weeks);
+      sstore at literal slot 5.
+    - [setRewardRatio]   — onlyRole(DEFAULT_ADMIN_ROLE);
+      require half-life in [86400, 1209600];
+      sstore at literal slot 3; wrapped in accrueRewards modifier.
+    - [_authorizeUpgrade] — UUPS hook; onlyRole(DEFAULT_ADMIN_ROLE);
+      three external R063 staticcalls against the VersionRegistry.
+
+  Tier-2 (inherited AccessControl mutators):
+    - [grantRole] / [revokeRole] / [renounceRole] — same R055/R068
+      shape as Guardian, gated by the admin chain of the role.
+
+  Tier-3 (proxy entry-point):
+    - [upgradeToAndCall] — modifier_onlyProxy + _authorizeUpgrade +
+      ERC1967Utils sstore at IMPLEMENTATION_SLOT + opaque
+      delegatecall(data) into the new impl.
+
+NOTE: StakingVault.sol does NOT expose [pause]/[unpause] or
+[setNativeRewardRate] entry-points — the task brief's "pause/admin"
+labels are abstract category names. The contract's pause-equivalent
+surface is the [setUnstakingDelay] hook (a zero value collapses the
+lockup) plus the [addRewardToken]/[removeRewardToken] surface
+(managed by DEFAULT_ADMIN_ROLE for emergency reward-stream pause).
+Native asset() rewards auto-accrue from the contract's underlying
+balance — there is no admin lever for the native reward rate. R060
+"verify contract surface against actual source" applied: the file
+records this disposition under [Pause / unpause (sim-level
+disposition)].
+
+**Methodology decision:** R070 abstract-storage_base recipe
+(Skolemized post-storage Parameter + composite walker Axiom +
+reflexive observational bridge under `storage_equiv := eq`),
+mirroring [TimelockControllerOptimistic.v] verbatim. This was the
+right call because:
+
+  1. StakingVault inherits TEN OpenZeppelin namespaces (ERC4626 +
+     ERC20Upgradeable + ERC20Permit + ERC20Votes + AccessControl +
+     AccessControlEnumerable + Initializable + UUPS + Nonces +
+     EIP712), each at an ERC-7201 keccak-derived storage anchor.
+     Concretizing the on-chain layout slot-by-slot would require
+     re-mechanizing each namespace's per-slot projection — months
+     of work for a config-surface proof that doesn't need it.
+
+  2. The admin-surface theorems characterise WHICH slots are touched
+     (one literal slot for [setUnstakingDelay]/[setRewardRatio]; one
+     keccak-derived AccessControl slot for grantRole/revokeRole; one
+     EIP-1967 slot for upgradeToAndCall) — but the FULL-state
+     post-condition is only meaningful relative to the inheritor-of-
+     OZ namespace projections, which are best deferred to per-domain
+     equivalence files (e.g. StakingVaultRewards for the
+     accrueRewards sub-walker reached by setRewardRatio).
+
+  3. The audit-time obligation reduces to: "each composite walker
+     axiom's Yul-body assembly closes mechanically against the per-
+     step primitives already mechanized" — same shape as
+     ProposalLib's R070 close.
+
+**Upgrade-authorization integration (R063 composition):** The
+[_authorizeUpgrade] hook is the load-bearing integration point with
+VersionRegistry. Its three staticcalls:
+
+  1. Versioned(stakingVaultImpl).version() : string
+     — selector 0x54fd4d50. Returns the impl's version string.
+       Walker keccak256s it → var_versionHash_1520.
+
+  2. versionRegistry.getLatestVersion() : (bytes32, string, address, bool)
+     — selector 0x0e6d1de9. Walker extracts versionHash (comp 1) and
+       deprecated (comp 4). Require !deprecated; require
+       versionHash == latestVersionHash, else revert
+       Vault__VersionDeprecated / Vault__NotLatestStakingVault.
+
+  3. versionRegistry.getImplementationsForVersion(versionHash)
+       : (address, address, address)
+     — selector 0x6ce67d8c. Walker extracts stakingVaultImpl
+       (comp 1). Require stakingVaultImpl == argument, else revert
+       Vault__NotLatestStakingVault.
+
+The audit's reason for accepting an upgrade: (a) the impl's version
+hashes to the registry's latest version hash; (b) the version is
+not deprecated; (c) the registry's stakingVaultImpl for that
+version matches the upgrade target. This is the dual to
+VersionRegistry's [registerVersion] mutator (R066) — the registrar
+side records the (hash, impl) pair; the authorizer side reads it
+back.
+
+**AccessControl role-check composition:** Every admin mutator's
+modifier_onlyRole gate composes with the sim-side
+[has_DEFAULT_ADMIN_ROLE caller = true] precondition via the
+[checkRole_default_admin_succeeds] documentation-only axiom. The
+composite walker axiom carries the gate discharge directly via the
+role precondition — the documentation-only axiom is NOT load-bearing
+for the milestone theorem's [Print Assumptions].
+
+For grantRole/revokeRole/renounceRole, the inner sub-walker
+encapsulates Guardian.v's R055/R059/R068 closed lemmas (the
+AccessControl member-map flip + AccessControlEnumerable
+EnumerableSet add/remove). Under the abstract storage_base, the
+inheritor of those closed lemmas is the composite walker axiom
+itself — auditors verify the assembly mechanically.
+
+**Trust budget:**
+  - 7 composite walker axioms (one per public function — R067).
+  - 7 Skolemized post-storage Parameters (R070).
+  - 7 observational bridge axioms (reflexive under storage_equiv := eq).
+  - 1 has_DEFAULT_ADMIN_ROLE Parameter (shared with sim-side gating).
+  - 1 now_timestamp Parameter (same shape as
+    TimelockControllerOptimistic).
+  - 4 True-conclusion documentation axioms (checkRole_default_admin
+    + 3 callee-spec witnesses for the _authorizeUpgrade staticcalls)
+    — NOT load-bearing for any [Print Assumptions].
+
+Each milestone theorem's [Print Assumptions] shows ONLY:
+  - Its own composite walker axiom.
+  - Its Skolemized post-storage Parameter.
+  - The has_DEFAULT_ADMIN_ROLE Parameter (or H_self_confirm for
+    renounceRole) + now_timestamp Parameter.
+  - The framework-level
+    [RocqOfSolidity.Memory.of_u256_list],
+    [RocqOfSolidity.Storage.of_storable_values],
+    [Set is impredicative], and PrimInt63 family.
+
+Pattern is reusable for ReserveOptimisticGovernor's admin surface
+(task #260) once that contract's pause-equivalent gates land.
 
 ## R073: `shallow_embed.py` emits Rocq keyword `fun` as a Yul ident (RESOLVED)
 
