@@ -935,6 +935,48 @@ Module ERC20Equivalence.
       | None => False
       end.
 
+    (** Intermediate-state lens hypotheses for the burn branch (task #319).
+
+        Between burn's two sstores ([slot_balances] then [slot_totalSupply]),
+        the walker visits the state where storage is [vs_bal] (the list
+        obtained by updating only [slot_balances]).  The second sload+sstore
+        targets [slot_totalSupply], so it needs the [IsAnchorOffsetSlot]
+        lens fact + the [nth_error] fact at [slot_totalSupply] to still
+        hold for [vs_bal].
+
+        Since [slot_balances] and [slot_totalSupply] are distinct list
+        indices, [List.update_nth] at [slot_balances] preserves both
+        [nth_error] at [slot_totalSupply] and the offset-slot binding.
+
+        At the inheritor (StakingVault) these discharge by [reflexivity]
+        once the slot indices are literal nats. *)
+
+    Hypothesis ts_offset_after_balances_update_burn :
+      forall (sim : ERC20.State) (account delta : U256.t),
+      match List.update_nth (proj_sim sim) slot_balances
+              (StorableValue.Map
+                (Dict.declare_or_assign
+                  (balances_to_dict sim.(ERC20.balances))
+                  account delta)) with
+      | Some vs_bal =>
+        IsAnchorOffsetSlot vs_bal slot_totalSupply
+                           ERC20_NAMESPACE_ANCHOR 2
+      | None => True
+      end.
+
+    Hypothesis nth_ts_after_balances_update_burn :
+      forall (sim : ERC20.State) (account delta : U256.t),
+      match List.update_nth (proj_sim sim) slot_balances
+              (StorableValue.Map
+                (Dict.declare_or_assign
+                  (balances_to_dict sim.(ERC20.balances))
+                  account delta)) with
+      | Some vs_bal =>
+        List.nth_error vs_bal slot_totalSupply =
+          Some (StorableValue.U256 sim.(ERC20.totalSupply))
+      | None => True
+      end.
+
     (** Hypothesis: slot-independence / sequential composition for
         the transfer branch.  The Yul body, when [from != 0] and
         [to != 0]:
@@ -1601,11 +1643,25 @@ Module ERC20Equivalence.
       apply RunO.Pure.
     Qed.
 
-    (** OZ ERC20 base body axiom for the burn branch ([to = 0]).
-        Audit-time obligation: the body at [StakingVault_shallow.v:10200-10328]
-        implements [_balances[from] -= value], [_totalSupply -= value]
-        under [from = account, to = 0, value = value], reverting if
-        [balances[from] < value]. *)
+    (** OZ ERC20 base body Lemma for the burn branch ([to = 0]).
+
+        Walker proof structure (mirror of mint, task #319):
+        1. Walk getERC20Storage + prelude → eq(from, 0) = 0 via
+           [run_eq_address_zero_check] (since [from = account ≠ 0]).
+        2. Apply [run_let_state_match_pure_zero] to commit to else_branch
+           (the [δ =? 0 then ...] arm in shallow embedding).  This is the
+           balance-debit subblock.
+        3. Walk balance-debit subblock: keccak mapping_index_access(from,
+           anchor), sload (yields balanceOf), lt-check (= 0; absorbed via
+           [run_shallow_let_state_if_zero]), wrapping_sub, sstore at
+           keccak2(from, anchor).
+        4. Walk prelude → eq(to=0, 0) = 1 via [run_eq_address_zero_at_zero].
+        5. Apply [run_let_state_match_pure_nonzero] to commit to if_branch
+           (the totalSupply-decrement arm).
+        6. Walk TS-decrement subblock: sload(anchor+2), wrapping_sub, sstore.
+        7. Walk log3 tail (same as mint).
+        8. Final state: [vs_ts = proj_sim sim'] where [burn sim account value
+           = Success sim'].  Use [proj_sim_pointwise_totalSupply_update]. *)
     Lemma run_fun__update_3335_at_proj_sim_burn :
       forall (codes : Codes.t) (env : Environment.t)
              (state_base : RocqOfSolidity.State.t)
@@ -1623,7 +1679,404 @@ Module ERC20Equivalence.
             Some (make_state env state_base memory (proj_sim sim)) |
           fun__update_3335 account 0 value ⇓ Result.Ok tt
         | Some (make_state env state_base memory' storage') ?}}.
-    Admitted.
+    Proof.
+      intros codes env state_base memory sim account value
+             H_account_nz H_account_bound H_value_bound
+             H_valid H_balance_ge.
+      (* Upfront: skolemize the post-state list via the burn bridge. *)
+      assert (H_ts_bound : 0 <= sim.(ERC20.totalSupply) < 2 ^ 256).
+      { pose proof (ERC20.Valid.supply_u256 sim H_valid) as Hu.
+        unfold U256.Valid.t in Hu. exact Hu. }
+      assert (H_balance_diff_bound :
+                0 <= Pure.sub (ERC20.balanceOf sim account) value < 2 ^ 256).
+      { unfold Pure.sub. split.
+        - apply Z.mod_pos_bound. lia.
+        - apply Z.mod_pos_bound. lia. }
+      assert (H_ts_diff_bound :
+                0 <= Pure.sub sim.(ERC20.totalSupply) value < 2 ^ 256).
+      { unfold Pure.sub. split.
+        - apply Z.mod_pos_bound. lia.
+        - apply Z.mod_pos_bound. lia. }
+      pose proof (proj_sim_pointwise_totalSupply_update sim account value
+                    H_value_bound H_balance_ge) as Hbridge.
+      destruct (List.update_nth (proj_sim sim) slot_balances
+                  (StorableValue.Map
+                     (Dict.declare_or_assign
+                        (balances_to_dict sim.(ERC20.balances)) account
+                        (Pure.sub (ERC20.balanceOf sim account) value))))
+        as [vs_bal|] eqn:Hupd_bal; [|exfalso; exact Hbridge].
+      destruct (List.update_nth vs_bal slot_totalSupply
+                  (StorableValue.U256
+                     (Pure.sub sim.(ERC20.totalSupply) value)))
+        as [vs_ts|] eqn:Hupd_ts; [|exfalso; exact Hbridge].
+      destruct Hbridge as (simq & Hburn & Hproj).
+      (* Now Hburn : ERC20.burn sim account value = Success simq
+             Hproj  : vs_ts = proj_sim simq *)
+      pose proof (ts_offset_after_balances_update_burn
+                    sim account
+                    (Pure.sub (ERC20.balanceOf sim account) value)) as Hoff_after_bal.
+      rewrite Hupd_bal in Hoff_after_bal.
+      pose proof (nth_ts_after_balances_update_burn
+                    sim account
+                    (Pure.sub (ERC20.balanceOf sim account) value)) as Hnth_after_bal.
+      rewrite Hupd_bal in Hnth_after_bal.
+      (* Memory after the keccak mapping_index_access call (first sload's
+         scratch-memory writes). *)
+      pose (memory_post_kc1 :=
+              mapping_index_access_address_post_memory env
+                state_base memory (proj_sim sim)
+                ERC20_NAMESPACE_ANCHOR account).
+      (* Memory after the second mapping_index_access (preceding the sstore). *)
+      pose (memory_post_kc2 :=
+              mapping_index_access_address_post_memory env
+                state_base memory_post_kc1 (proj_sim sim)
+                ERC20_NAMESPACE_ANCHOR account).
+      (* Intermediate state after balance-debit subblock. *)
+      pose (state_post_bal :=
+              Some (State.with_current_storage env
+                      (make_state env state_base memory_post_kc2 (proj_sim sim))
+                      (Storage.of_storable_values vs_bal))).
+      (* Intermediate state after totalSupply-decrement subblock. *)
+      pose (state_post_ts :=
+              Some (State.with_current_storage env
+                      (make_state env state_base memory_post_kc2 vs_bal)
+                      (Storage.of_storable_values vs_ts))).
+      (* Final memory: after log3 abi_encode mstore. *)
+      pose (memory_final :=
+              mstore_post_memory env state_base memory_post_kc2 vs_ts
+                (Pure.add (mload_witness env state_base memory_post_kc2 vs_ts 64) 0)
+                value).
+      exists memory_final, vs_ts.
+      split.
+      { (* proj_sim_post_burn = Some vs_ts *)
+        unfold proj_sim_post_burn.
+        rewrite Hburn. rewrite Hproj. reflexivity. }
+      unfold fun__update_3335.
+      unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+      cbn match.
+      eapply RunO.Let.
+      { (* === Prelude 1: getERC20Storage + binders + eq(from, 0) === *)
+        eapply RunO.Let.
+        { c; [ apply run_fun__getERC20Storage_2971_returns_anchor | ].
+          apply RunO.Pure. }
+        cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+        eapply RunO.Let.
+        { c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+          apply RunO.Pure. }
+        cbn match.
+        eapply RunO.Let.
+        { simpl LowM.let_.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply run_cleanup_t_address | ]. cbn match.
+          c; [ apply (run_eq_address_zero_check _ _ _ account
+                        H_account_bound H_account_nz) | ].
+          apply RunO.Pure. }
+        cbn match.
+        (* === Switch 1: δ = 0, take else_branch (balance-debit subblock).
+           "else_branch" here is the [δ =? 0 then ...] arm. *)
+        eapply run_let_state_match_pure_zero with
+          (state_after_branch := state_post_bal).
+        { apply RunO.Pure. }
+        { (* Balance-debit subblock.
+             Shallow shape:
+               _1725_slot (Pure) ; expr_3274_slot (Pure) ;
+               _1726 := add(anchor, 0) (Call) ;
+               _1727_slot (Pure) ; expr_3275_slot (Pure) ;
+               _1728 (Pure) ; expr_3276 (Pure) ;
+               _1729 := mapping_index_access(anchor, from) (Call) ;
+               _1730 := read_from_storage(_1729) (Call) ;
+               expr_3277 (Pure) ; var_fromBalance_3273 (Pure) ;
+               _1731 (Pure) ; expr_3279 (Pure) ;
+               _1732 (Pure) ; expr_3280 (Pure) ;
+               expr_3281 := lt(cleanup, cleanup) (Call) ;
+               Shallow.if_ revert block ;
+               _1738 .. expr_3296 (4 Pure) ;
+               expr_3297 := wrapping_sub (Call) ;
+               _1740_slot .. expr_3290_slot (2 Pure) ;
+               _1741 := add(anchor, 0) (Call) ;
+               _1742_slot .. expr_3292 (4 Pure) ;
+               _1744 := mapping_index_access(anchor, from) (Call) ;
+               do~ update_storage_value(_1744, expr_3297) (Call) ;
+               expr_3298 (Pure) ; M.pure (Tt, tt). *)
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          (* _1726 := add(anchor, 0) → anchor *)
+          eapply RunO.Let.
+          { c; [ unfold Stdlib.add; apply RunO.Pure | ]. apply RunO.Pure. }
+          cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          (* _1729 := mapping_index_access(anchor+0, from) → keccak2(from, anchor) *)
+          replace (Pure.add ERC20_NAMESPACE_ANCHOR 0) with ERC20_NAMESPACE_ANCHOR.
+          2:{ unfold Pure.add. unfold ERC20_NAMESPACE_ANCHOR.
+              rewrite Z.add_0_r.
+              rewrite Z.mod_small; [reflexivity| split; [discriminate|]; lia]. }
+          eapply RunO.Let.
+          { c.
+            { apply (run_mapping_index_access_t_address_at_make_state
+                       codes env state_base memory (proj_sim sim)
+                       ERC20_NAMESPACE_ANCHOR account
+                       H_account_bound). }
+            apply RunO.Pure. }
+          cbn match.
+          (* sload at keccak2(from, anchor) → map_get_u256 of balances *)
+          eapply RunO.Let.
+          { c.
+            { apply (run_read_from_storage_split_offset_0_t_uint256_at_map_anchor
+                       _ _ _ _ (proj_sim sim) slot_balances
+                       ERC20_NAMESPACE_ANCHOR
+                       (balances_to_dict sim.(ERC20.balances)) account
+                       (namespace_binding sim) (proj_balances_at_slot sim)). }
+            apply RunO.Pure. }
+          cbn match.
+          rewrite (map_get_balances_eq_balanceOf sim account).
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          (* lt(fromBalance, value).  Under [value <= balanceOf sim account],
+             [lt = 0].  Two cleanup_t_uint256 + the lt Stdlib op. *)
+          eapply RunO.Let.
+          { simpl LowM.let_.
+            c; [ apply run_cleanup_t_uint256_id | ]. cbn match.
+            c; [ apply run_cleanup_t_uint256_id | ]. cbn match.
+            c; [ unfold Stdlib.lt; apply RunO.Pure | ].
+            apply RunO.Pure. }
+          cbn match.
+          (* Reduce the lt result to 0 explicitly so that the
+             [Shallow.let_state (Shallow.if_ <lt> ...)] absorber matches.
+             [Pure.lt x y = if x <? y then 1 else 0]; under [value <=
+             balanceOf], this is 0. *)
+          replace (Pure.lt (ERC20.balanceOf sim account) value) with 0.
+          2:{ unfold Pure.lt.
+              destruct (ERC20.balanceOf sim account <? value) eqn:Hlt;
+              [|reflexivity].
+              apply Z.ltb_lt in Hlt. lia. }
+          (* Now we have [let_state~ 'tt := Shallow.if_ 0 _ _ default~ tt in _] *)
+          apply run_shallow_let_state_if_zero.
+          cbn.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          (* wrapping_sub: produces Pure.sub fromBalance value. *)
+          eapply RunO.Let.
+          { c; [ apply run_wrapping_sub_t_uint256 | ]. apply RunO.Pure. }
+          cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          (* _1741 := add(anchor, 0) → anchor *)
+          eapply RunO.Let.
+          { c; [ unfold Stdlib.add; apply RunO.Pure | ]. apply RunO.Pure. }
+          cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          (* _1744 := mapping_index_access(anchor+0, from) — second time. *)
+          replace (Pure.add ERC20_NAMESPACE_ANCHOR 0) with ERC20_NAMESPACE_ANCHOR.
+          2:{ unfold Pure.add. unfold ERC20_NAMESPACE_ANCHOR.
+              rewrite Z.add_0_r.
+              rewrite Z.mod_small; [reflexivity| split; [discriminate|]; lia]. }
+          eapply RunO.Let.
+          { c.
+            { apply (run_mapping_index_access_t_address_at_make_state
+                       codes env state_base memory_post_kc1 (proj_sim sim)
+                       ERC20_NAMESPACE_ANCHOR account
+                       H_account_bound). }
+            apply RunO.Pure. }
+          cbn match.
+          (* sstore at keccak2(from, anchor) with Pure.sub. State here has
+             memory = memory_post_kc2 (after second mapping_index_access). *)
+          eapply RunO.Let.
+          { pose proof (run_update_storage_value_offset_0_t_uint256_to_t_uint256_at_map_anchor
+                          codes env state_base memory_post_kc2
+                          (proj_sim sim) slot_balances ERC20_NAMESPACE_ANCHOR
+                          (balances_to_dict sim.(ERC20.balances))
+                          account
+                          (Pure.sub (ERC20.balanceOf sim account) value)
+                          (namespace_binding sim)) as Hsstore_bal.
+            assert (Hget_proj :
+                      State.get_current_storage env
+                        (make_state env state_base memory_post_kc2 (proj_sim sim))
+                      = Some (Storage.of_storable_values (proj_sim sim))).
+            { unfold make_state.
+              apply State.get_current_storage_with_current_storage_eq. }
+            specialize (Hsstore_bal Hget_proj (proj_balances_at_slot sim)
+                                    H_balance_diff_bound).
+            cbv zeta in Hsstore_bal. rewrite Hupd_bal in Hsstore_bal.
+            c; [ exact Hsstore_bal | ]. apply RunO.Pure. }
+          cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          apply RunO.Pure. }
+        { (* === Body after first switch: prelude → eq(to, 0) = 1 → switch 2 === *)
+          cbn match.
+          (* Now state is state_post_bal.  Canonize. *)
+          unfold state_post_bal.
+          rewrite CanonizeState.update_storage_eq.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+          eapply RunO.Let.
+          { c; [ apply run_convert_t_rational_0_by_1_to_t_address_at_zero | ].
+            apply RunO.Pure. }
+          cbn match.
+          eapply RunO.Let.
+          { simpl LowM.let_.
+            c; [ apply run_cleanup_t_address | ]. cbn match.
+            c; [ apply run_cleanup_t_address | ]. cbn match.
+            c; [ apply run_eq_address_zero_at_zero | ].
+            apply RunO.Pure. }
+          cbn match.
+          (* === Switch 2: δ = 1, take if_branch (TS-decrement subblock). === *)
+          eapply run_let_state_match_pure_nonzero with (δ_val := 1)
+            (state_after_branch := state_post_ts).
+          { discriminate. }
+          { apply RunO.Pure. }
+          { (* TS-decrement subblock. *)
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let.
+            { c; [ unfold Stdlib.add; apply RunO.Pure | ]. apply RunO.Pure. }
+            cbn match.
+            (* sload at anchor+2 → totalSupply.  State storage = vs_bal. *)
+            eapply RunO.Let.
+            { c.
+              { apply (run_read_from_storage_split_offset_0_t_uint256_at_anchor_offset
+                         _ _ _ _ vs_bal slot_totalSupply
+                         ERC20_NAMESPACE_ANCHOR 2 sim.(ERC20.totalSupply)
+                         Hoff_after_bal).
+                - unfold make_state.
+                  apply State.get_current_storage_with_current_storage_eq.
+                - exact Hnth_after_bal. }
+              apply RunO.Pure. }
+            cbn match.
+            (* wrapping_sub *)
+            eapply RunO.Let.
+            { c; [ apply run_wrapping_sub_t_uint256 | ]. apply RunO.Pure. }
+            cbn match.
+            (* sstore at anchor+2 *)
+            eapply RunO.Let.
+            { pose proof (run_update_storage_value_offset_0_t_uint256_to_t_uint256_at_anchor_offset
+                            codes env state_base memory_post_kc2
+                            vs_bal slot_totalSupply
+                            ERC20_NAMESPACE_ANCHOR 2
+                            (Pure.sub sim.(ERC20.totalSupply) value)
+                            sim.(ERC20.totalSupply)
+                            Hoff_after_bal) as Hsstore_ts.
+              assert (Hget_bal :
+                        State.get_current_storage env
+                          (make_state env state_base memory_post_kc2 vs_bal)
+                        = Some (Storage.of_storable_values vs_bal)).
+              { unfold make_state.
+                apply State.get_current_storage_with_current_storage_eq. }
+              specialize (Hsstore_ts Hget_bal Hnth_after_bal H_ts_diff_bound).
+              cbv zeta in Hsstore_ts. rewrite Hupd_ts in Hsstore_ts.
+              c; [ exact Hsstore_ts | ]. apply RunO.Pure. }
+            cbn match.
+            apply RunO.Pure. }
+          { (* === Body after second switch — log3 tail. === *)
+            cbn match.
+            unfold state_post_ts.
+            rewrite CanonizeState.update_storage_eq.
+            cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            eapply RunO.Let; [ apply RunO.Pure | ]. cbn match.
+            (* _1765 := convert_t_address_to_t_address from → from *)
+            eapply RunO.Let.
+            { c.
+              { apply (run_convert_t_address_to_t_address_on_address
+                         _ _ _ account H_account_bound). }
+              apply RunO.Pure. }
+            cbn match.
+            (* _1766 := convert_t_address_to_t_address 0 → 0 *)
+            eapply RunO.Let.
+            { c.
+              { apply (run_convert_t_address_to_t_address_on_address _ _ _ 0).
+                unfold Address.Valid.t. lia. }
+              apply RunO.Pure. }
+            cbn match.
+            unfold Shallow.let_state at 1.
+            unfold M.strong_let_ at 1, M.generic_let at 1.
+            eapply RunO.Let.
+            { (* allocate_unbounded + abi_encode + log3 *)
+              eapply RunO.Let.
+              { c.
+                { unfold allocate_unbounded.
+                  unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+                  cbn match.
+                  eapply RunO.Let.
+                  { eapply RunO.Let.
+                    { c.
+                      { apply (run_mload_absorbing_at_make_state
+                                 codes env state_base memory_post_kc2 vs_ts 64). }
+                      apply RunO.Pure. }
+                    cbn match. apply RunO.Pure. }
+                  cbn match. apply RunO.Pure. }
+                apply RunO.Pure. }
+              cbn match.
+              eapply RunO.Let.
+              { c.
+                { unfold abi_encode_tuple_t_uint256__to_t_uint256__fromStack.
+                  unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+                  cbn match.
+                  eapply RunO.Let.
+                  { eapply RunO.Let.
+                    { c; [ unfold Stdlib.add; apply RunO.Pure | ].
+                      apply RunO.Pure. }
+                    cbn match.
+                    eapply RunO.Let.
+                    { simpl LowM.let_.
+                      c; [ unfold Stdlib.add; apply RunO.Pure | ]. cbn match.
+                      c.
+                      { unfold abi_encode_t_uint256_to_t_uint256_fromStack.
+                        unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+                        cbn match.
+                        eapply RunO.Let.
+                        { eapply RunO.Let.
+                          { simpl LowM.let_.
+                            c; [ apply run_cleanup_t_uint256_id | ]. cbn match.
+                            c.
+                            { apply (run_mstore_absorbing_at_make_state
+                                       codes env state_base memory_post_kc2 vs_ts
+                                       _ _). }
+                            apply RunO.Pure. }
+                          cbn match. apply RunO.Pure. }
+                        cbn match. apply RunO.Pure. }
+                      apply RunO.Pure. }
+                    cbn match. apply RunO.Pure. }
+                  cbn match. apply RunO.Pure. }
+                apply RunO.Pure. }
+              cbn match.
+              eapply RunO.Let.
+              { simpl LowM.let_.
+                c; [ unfold Stdlib.sub; apply RunO.Pure | ]. cbn match.
+                c; [ unfold Stdlib.log3; apply RunO.Pure | ].
+                apply RunO.Pure. }
+              cbn match.
+              apply RunO.Pure. }
+            cbn match.
+            apply RunO.Pure. }
+        }
+      }
+      cbn match.
+      apply RunO.Pure.
+    Qed.
 
     (** OZ ERC20 base body axiom for the transfer branch ([from <> 0],
         [to <> 0]).  Audit-time obligation: the body at
