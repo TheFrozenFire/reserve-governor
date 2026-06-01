@@ -46,8 +46,11 @@ Proof. vm_compute. reflexivity. Qed.
 
 (** ----- Reproduce the CAS Path A: submitted -> active -> succeeded
     -> executed. ----- *)
+(** pastSupply chosen >0 so the [pastSupply == 0 -> Canceled] branch
+    does not fire (T1.3/CRIT-G); paired with vetoThresholdTok = 5 the
+    rest of the calibration is unchanged. *)
 Definition pa_initial : Proposal.t :=
-  fresh_optimistic 101 1001 100 1000 5.
+  fresh_optimistic 101 1001 100 1000 5 100.
 
 Lemma xcheck_path_a_active :
   observe pa_initial 500 = PhaseActive.
@@ -67,7 +70,7 @@ Proof. vm_compute. reflexivity. Qed.
 (** ----- Reproduce the CAS Path B: optimistic veto -> escalation.
     Build a proposal, add veto, transition. ----- *)
 Definition pb_initial : Proposal.t :=
-  fresh_optimistic 201 2001 100 1000 5.
+  fresh_optimistic 201 2001 100 1000 5 100.
 
 Definition pb_vetoed : Proposal.t :=
   add_veto pb_initial 10.
@@ -103,7 +106,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 (** ----- INV-1b: executeOptimistic post-defeat reverts.
     CAS: "executeOptimistic post-defeat -> revert". ----- *)
 Lemma xcheck_execute_post_defeat_reverts :
-  execute_optimistic (add_veto (fresh_optimistic 301 3001 100 1000 5) 5)
+  execute_optimistic (add_veto (fresh_optimistic 301 3001 100 1000 5 100) 5)
                      9999
   = revert_wrong_phase.
 Proof. vm_compute. reflexivity. Qed.
@@ -112,22 +115,22 @@ Proof. vm_compute. reflexivity. Qed.
     Build three proposals with vtt=10, votes 9 / 10 / 11, observe in
     the active window. *)
 Lemma xcheck_inv2_below_active :
-  let p := add_veto (fresh_optimistic 401 4001 100 1000 10) 9 in
+  let p := add_veto (fresh_optimistic 401 4001 100 1000 10 100) 9 in
   observe p 500 = PhaseActive.
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma xcheck_inv2_at_defeated :
-  let p := add_veto (fresh_optimistic 402 4002 100 1000 10) 10 in
+  let p := add_veto (fresh_optimistic 402 4002 100 1000 10 100) 10 in
   observe p 500 = PhaseDefeated.
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma xcheck_inv2_above_defeated :
-  let p := add_veto (fresh_optimistic 403 4003 100 1000 10) 11 in
+  let p := add_veto (fresh_optimistic 403 4003 100 1000 10 100) 11 in
   observe p 500 = PhaseDefeated.
 Proof. vm_compute. reflexivity. Qed.
 
 (** ----- INV-3: executeOptimistic gating. ----- *)
-Definition p_inv3 : Proposal.t := fresh_optimistic 501 5001 100 1000 5.
+Definition p_inv3 : Proposal.t := fresh_optimistic 501 5001 100 1000 5 100.
 
 Lemma xcheck_inv3_active_window_reverts :
   execute_optimistic p_inv3 500 = revert_wrong_phase.
@@ -159,6 +162,7 @@ Definition std_active : Proposal.t :=
      Proposal.phase := PhaseStdActive;
      Proposal.isOptimistic := false;
      Proposal.parent := 601;
+     Proposal.pastSupply := 1;
   |}.
 
 Lemma xcheck_inv4_queue_from_active_reverts :
@@ -179,6 +183,7 @@ Definition std_succeeded : Proposal.t :=
      Proposal.phase := PhaseStdSucceeded;
      Proposal.isOptimistic := false;
      Proposal.parent := 601;
+     Proposal.pastSupply := 1;
   |}.
 
 Lemma xcheck_inv4_queue_from_succeeded_ok :
@@ -212,6 +217,7 @@ Definition opt_marked_std : Proposal.t :=
      Proposal.phase := PhaseStdSucceeded;
      Proposal.isOptimistic := true;
      Proposal.parent := 0;
+     Proposal.pastSupply := 100;
   |}.
 
 Lemma xcheck_inv4b_optimistic_cannot_queue :
@@ -264,6 +270,49 @@ Lemma xcheck_inv6_disallowed_target :
     (FIX_ONE_C / 10) 100 1
     [99] [1000] allow_two 0
   = revert_invalid_call.
+Proof. vm_compute. reflexivity. Qed.
+
+(** ----- CRIT-G (T1.3): pastSupply == 0 -> Canceled. -----
+    Mirrors ReserveOptimisticGovernor.sol:251-253. A proposal whose
+    [pastSupply] is zero observes as [PhaseCanceled] regardless of
+    veto votes or whether the deadline has elapsed. *)
+
+(** Past-snapshot, optimistic, with pastSupply = 0: even in the
+    "would-be Active" window, observe reports Canceled. *)
+Lemma xcheck_pastSupply_zero_active_window_canceled :
+  let p := fresh_optimistic 901 9001 100 1000 5 0 in
+  observe p 500 = PhaseCanceled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Past-deadline, optimistic, with pastSupply = 0: would have been
+    Succeeded, but the contract short-circuits to Canceled. *)
+Lemma xcheck_pastSupply_zero_post_deadline_canceled :
+  let p := fresh_optimistic 902 9001 100 1000 5 0 in
+  observe p 2000 = PhaseCanceled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** With againstVotes meeting the threshold AND pastSupply = 0, the
+    contract still returns Canceled (the pastSupply branch precedes
+    the veto check at ROG.sol:251 before 256-262). *)
+Lemma xcheck_pastSupply_zero_with_vetoes_still_canceled :
+  let p := add_veto (fresh_optimistic 903 9001 100 1000 5 0) 100 in
+  observe p 500 = PhaseCanceled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Pre-snapshot (now < voteStart) with pastSupply = 0: the contract
+    returns Pending BEFORE the pastSupply test (the snapshot >=
+    block.timestamp check at ROG.sol:236-238 precedes the
+    pastSupply test). The sim mirrors that ordering. *)
+Lemma xcheck_pastSupply_zero_pre_snapshot_submitted :
+  let p := fresh_optimistic 904 9001 100 1000 5 0 in
+  observe p 50 = PhaseSubmitted.
+Proof. vm_compute. reflexivity. Qed.
+
+(** [execute_optimistic] reverts on a pastSupply=0 proposal because
+    observe returns Canceled, not Succeeded. *)
+Lemma xcheck_pastSupply_zero_execute_reverts :
+  let p := fresh_optimistic 905 9001 100 1000 5 0 in
+  execute_optimistic p 2000 = revert_wrong_phase.
 Proof. vm_compute. reflexivity. Qed.
 
 End GovernorXCheck.

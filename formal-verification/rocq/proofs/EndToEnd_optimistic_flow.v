@@ -177,7 +177,8 @@ Definition witness_p1 : Governor.Proposal.t :=
                    (init_t0 + init_vetoDelay)
                    init_vetoPeriod
                    (Governor.vetoThresholdTokOf init_vetoThresholdD18
-                                                init_pastSupply).
+                                                init_pastSupply)
+                   init_pastSupply.
 
 (** Step 3: the proposal after [execute_optimistic]. Same record as
     [witness_p1] but with [phase] flipped to [PhaseExecuted]. *)
@@ -191,6 +192,7 @@ Definition witness_p2 : Governor.Proposal.t :=
      Governor.Proposal.phase            := Governor.PhaseExecuted;
      Governor.Proposal.isOptimistic     := witness_p1.(Governor.Proposal.isOptimistic);
      Governor.Proposal.parent           := witness_p1.(Governor.Proposal.parent);
+     Governor.Proposal.pastSupply       := witness_p1.(Governor.Proposal.pastSupply);
   |}.
 
 (** The throttle after one successful consume. *)

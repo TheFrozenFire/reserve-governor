@@ -104,6 +104,7 @@ Definition transition_to_pessimistic_sentinel
           Proposal.phase             := PhaseDefeated;
           Proposal.isOptimistic      := parent.(Proposal.isOptimistic);
           Proposal.parent            := parent.(Proposal.parent);
+          Proposal.pastSupply        := parent.(Proposal.pastSupply);
         |}
       in
       let child := fresh_standard_child
@@ -214,10 +215,17 @@ Proof.
   { rewrite Z.geb_leb. apply Z.leb_gt. rewrite Hvtt. exact Hstrict. }
   unfold observe.
   (* Outer match: only PhaseExecuted/Canceled/StdQueued/StdExecuted are
-     sticky terminal returns — none of them are PhaseDefeated. *)
+     sticky terminal returns — none of them are PhaseDefeated.
+     For the non-sticky phases on the optimistic arm, observe checks
+     [pastSupply =? 0] first (CRIT-G branch). If true, returns
+     PhaseCanceled (not PhaseDefeated). If false, the [vtt >= votes]
+     check fails by Hgeb, and we fall through to PhaseActive or
+     PhaseSucceeded. None of those equal PhaseDefeated. *)
   destruct (p.(Proposal.phase)); try (intros Heq; discriminate);
     destruct (now <? p.(Proposal.voteStart));
     rewrite Hopt;
+    try (intros Heq; discriminate);
+    destruct (p.(Proposal.pastSupply) =? 0);
     try (intros Heq; discriminate);
     rewrite Hgeb;
     destruct (now <? p.(Proposal.voteStart) + p.(Proposal.voteDuration));
@@ -262,6 +270,10 @@ Proof. reflexivity. Qed.
 
 Lemma add_veto_preserves_isOptimistic (p : Proposal.t) (delta : U256.t) :
   (add_veto p delta).(Proposal.isOptimistic) = p.(Proposal.isOptimistic).
+Proof. reflexivity. Qed.
+
+Lemma add_veto_preserves_pastSupply (p : Proposal.t) (delta : U256.t) :
+  (add_veto p delta).(Proposal.pastSupply) = p.(Proposal.pastSupply).
 Proof. reflexivity. Qed.
 
 (** [add_veto] is monotone on [againstVotes] when [delta] is non-negative. *)
@@ -315,6 +327,14 @@ Proof.
   cbn. rewrite IH. apply add_veto_preserves_isOptimistic.
 Qed.
 
+Lemma add_vetoes_preserves_pastSupply
+    (p : Proposal.t) (deltas : list U256.t) :
+  (add_vetoes p deltas).(Proposal.pastSupply) = p.(Proposal.pastSupply).
+Proof.
+  revert p. induction deltas as [|d ds IH]; intros p; [reflexivity|].
+  cbn. rewrite IH. apply add_veto_preserves_pastSupply.
+Qed.
+
 (** Monotonicity over an iterated sequence of non-negative deltas. *)
 Lemma add_vetoes_monotone (p : Proposal.t) (deltas : list U256.t) :
   Forall (fun d => 0 <= d) deltas ->
@@ -337,13 +357,17 @@ Lemma parent_post_transition_observes_defeated
   parent.(Proposal.isOptimistic) = true ->
   parent.(Proposal.voteStart) <= now ->
   parent.(Proposal.againstVotes) >= parent.(Proposal.vetoThresholdTok) ->
+  parent.(Proposal.pastSupply) <> 0 ->
   observe parent now = PhaseDefeated.
 Proof.
-  intros Hph Hopt Hnow Hge.
+  intros Hph Hopt Hnow Hge Hps.
   unfold observe. rewrite Hph.
   assert (Hlt : (now <? parent.(Proposal.voteStart)) = false).
   { apply Z.ltb_ge. lia. }
   rewrite Hlt. rewrite Hopt.
+  assert (Hpsb : (parent.(Proposal.pastSupply) =? 0) = false).
+  { apply Z.eqb_neq. exact Hps. }
+  rewrite Hpsb.
   assert (Hgeb : (parent.(Proposal.againstVotes) >=?
                     parent.(Proposal.vetoThresholdTok)) = true).
   { apply Z.geb_le. lia. }
@@ -367,20 +391,30 @@ Lemma transition_postconditions
   parent'.(Proposal.voteStart) = parent.(Proposal.voteStart) /\
   parent'.(Proposal.vetoThresholdTok) = parent.(Proposal.vetoThresholdTok) /\
   parent'.(Proposal.againstVotes) = parent.(Proposal.againstVotes) /\
-  parent'.(Proposal.againstVotes) >= parent'.(Proposal.vetoThresholdTok).
+  parent'.(Proposal.againstVotes) >= parent'.(Proposal.vetoThresholdTok) /\
+  parent'.(Proposal.pastSupply) = parent.(Proposal.pastSupply) /\
+  (* CRIT-G / T1.3: a successful transition implies the parent's
+     observable phase was Defeated, which requires pastSupply != 0
+     (otherwise observe would have returned Canceled). *)
+  parent'.(Proposal.pastSupply) <> 0.
 Proof.
   intros Hopt Hvs Hok.
   unfold transition_to_pessimistic in Hok.
   destruct (observe parent now) eqn:Hobs; try discriminate.
   injection Hok as Hparent' Hchild.
   (* From Hobs : observe parent now = PhaseDefeated, derive
-     againstVotes >= vetoThresholdTok by inversion on observe. *)
+     againstVotes >= vetoThresholdTok by inversion on observe.
+     The new pastSupply branch: if pastSupply = 0, observe returns
+     Canceled (not Defeated), contradiction. So pastSupply != 0. *)
   unfold observe in Hobs.
   destruct (parent.(Proposal.phase)) eqn:Hph; try discriminate;
     (assert (Hlt : (now <? parent.(Proposal.voteStart)) = false)
        by (apply Z.ltb_ge; lia);
      rewrite Hlt in Hobs;
      rewrite Hopt in Hobs;
+     destruct (parent.(Proposal.pastSupply) =? 0) eqn:Hpsb;
+     [ discriminate
+     | apply Z.eqb_neq in Hpsb ];
      destruct (parent.(Proposal.againstVotes) >=?
                  parent.(Proposal.vetoThresholdTok)) eqn:Hgeb;
      [ apply Z.geb_le in Hgeb
@@ -424,7 +458,7 @@ Proof.
                 parent parent' child
                 new_pid votingDelay votingPeriod now
                 Hopt Hvs Hok)
-    as (Hph' & Hopt' & HvsEq & HvttEq & HavotesEq & Hge').
+    as (Hph' & Hopt' & HvsEq & HvttEq & HavotesEq & Hge' & _HpsEq & Hps').
   set (p' := add_vetoes parent' deltas).
   apply parent_post_transition_observes_defeated.
   - unfold p'. rewrite add_vetoes_preserves_phase. exact Hph'.
@@ -436,6 +470,7 @@ Proof.
   - unfold p'. rewrite add_vetoes_preserves_vetoThresholdTok.
     pose proof (add_vetoes_monotone parent' deltas Hnn) as Hmono.
     lia.
+  - unfold p'. rewrite add_vetoes_preserves_pastSupply. exact Hps'.
 Qed.
 
 (** Convenient corollary: the observable phase is in the "Defeated or
@@ -477,7 +512,7 @@ Qed.
 *)
 
 Definition cal_parent : Proposal.t :=
-  add_veto (fresh_optimistic 901 9001 100 1000 10) 10.
+  add_veto (fresh_optimistic 901 9001 100 1000 10 100) 10.
 
 (** Sanity: [cal_parent] observes as PhaseDefeated in the active window. *)
 Lemma xcheck_cal_parent_defeated :

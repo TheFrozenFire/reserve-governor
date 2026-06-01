@@ -36,7 +36,7 @@ Lemma add_veto_preserves_validity (p : Proposal.t) (delta : U256.t) :
   Valid.proposal (add_veto p delta).
 Proof.
   intros Hv Hbound.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent].
+  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
@@ -70,7 +70,7 @@ Proof.
   destruct (p.(Proposal.isOptimistic)) eqn:Hopt; [discriminate|].
   destruct (phase_eq p.(Proposal.phase) PhaseStdSucceeded); [|discriminate].
   injection Hok as Hp'. rewrite <- Hp'.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent].
+  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
@@ -83,7 +83,7 @@ Proof.
   destruct (p.(Proposal.isOptimistic)); [discriminate|].
   destruct (phase_eq p.(Proposal.phase) PhaseStdQueued); [|discriminate].
   injection Hok as Hp'. rewrite <- Hp'.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent].
+  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
@@ -96,7 +96,7 @@ Proof.
   destruct (negb p.(Proposal.isOptimistic)); [discriminate|].
   destruct (observe p now); try discriminate.
   injection Hok as Hp'. rewrite <- Hp'.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent].
+  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
@@ -123,7 +123,7 @@ Proof.
   destruct (now <? p.(Proposal.voteStart) + p.(Proposal.voteDuration));
     [discriminate|].
   injection Hok as Hp'. rewrite <- Hp'.
-  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent].
+  destruct Hv as [Hpid Hvs Hvd Hvtt Havotes Hparent Hps].
   constructor; simpl; auto.
 Qed.
 
@@ -162,6 +162,7 @@ Lemma propose_optimistic_preserves_validity
   U256.Valid.t pid ->
   U256.Valid.t (now + vetoDelay) ->
   U256.Valid.t vetoPeriod ->
+  U256.Valid.t pastSupply ->
   0 <= vetoThresholdD18 -> 0 <= pastSupply ->
   vetoThresholdD18 * pastSupply < 2^256 ->
   propose_optimistic pid proposer vetoDelay vetoPeriod vetoThresholdD18
@@ -169,7 +170,7 @@ Lemma propose_optimistic_preserves_validity
   = Result.Success p' ->
   Valid.proposal p'.
 Proof.
-  intros Hpid Hvs Hvd Hv Hs Hbound Hok.
+  intros Hpid Hvs Hvd Hps Hv Hs Hbound Hok.
   unfold propose_optimistic in Hok.
   destruct (throttleCharges <? 1); [discriminate|].
   destruct (Nat.eqb (length targets) 0); [discriminate|].

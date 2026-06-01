@@ -363,7 +363,17 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
         rejects via _validateStateBitmap(Active) and
         _countVote(Against only).
       - Governor.cancel skips _validateCancel role + state rules.
-      - Governor.observe misses the pastSupply==0 -> Canceled branch.
+      - [CLOSED, T1.3] Governor.observe now models the pastSupply==0
+        -> Canceled branch (ROG.sol:251-253). The simulation's
+        [Proposal.t] carries a [pastSupply] field set at create time
+        (snapshot-anchored, immutable like the contract's
+        getPastTotalSupply(voteStart) result), and [observe] returns
+        PhaseCanceled on the optimistic arm when pastSupply == 0.
+        Downstream theorems (observe_defeated_iff_threshold_in_window,
+        parent_post_transition_observes_defeated,
+        observe_defeated_sticky_at_threshold, the
+        standard_lifecycle_exists end-to-end) carry an explicit
+        pastSupply <> 0 hypothesis where the Defeated arm is required.
       - StakingVaultExchange.withdraw collapses both unstakingDelay
         branches into one; revert condition uses totalAssets rather
         than maxWithdraw(owner).

@@ -217,21 +217,33 @@ Qed.
 
 (** ----- INV-2: veto-threshold correctness. -----
     Within the active window (now between voteStart and deadline,
-    optimistic, phase still pre-terminal), observe returns
-    PhaseDefeated iff againstVotes >= vetoThresholdTok. *)
+    optimistic, phase still pre-terminal, pastSupply > 0), observe
+    returns PhaseDefeated iff againstVotes >= vetoThresholdTok.
+
+    STATEMENT CHANGED (CRIT-G / T1.3): the [pastSupply > 0]
+    precondition is new. The contract's [state()] short-circuits to
+    [Canceled] when [pastSupply == 0], so the iff direction "veto
+    threshold met -> Defeated" only holds when pastSupply is non-zero.
+    The reverse direction (Defeated -> threshold met) is also true
+    only with the pastSupply guard: a pastSupply=0 proposal would
+    observe as Canceled, not Defeated, regardless of vetoes. *)
 Lemma observe_defeated_iff_threshold_in_window
     (p : Proposal.t) (now : U256.t) :
   p.(Proposal.isOptimistic) = true ->
   p.(Proposal.phase) = PhaseSubmitted \/ p.(Proposal.phase) = PhaseActive ->
   p.(Proposal.voteStart) <= now ->
+  p.(Proposal.pastSupply) <> 0 ->
   observe p now = PhaseDefeated
     <-> p.(Proposal.againstVotes) >= p.(Proposal.vetoThresholdTok).
 Proof.
-  intros Hopt Hph Hvs.
+  intros Hopt Hph Hvs Hps.
   unfold observe.
   assert (Hpre : (now <? p.(Proposal.voteStart)) = false).
   { apply Z.ltb_ge. lia. }
-  destruct Hph as [Hph | Hph]; rewrite Hph; simpl; rewrite Hpre; rewrite Hopt.
+  assert (Hps' : (p.(Proposal.pastSupply) =? 0) = false).
+  { apply Z.eqb_neq. exact Hps. }
+  destruct Hph as [Hph | Hph]; rewrite Hph; simpl; rewrite Hpre; rewrite Hopt;
+    rewrite Hps'.
   - split.
     + intros Heq.
       destruct (p.(Proposal.againstVotes) >=? p.(Proposal.vetoThresholdTok)) eqn:Hge.
@@ -269,6 +281,7 @@ Lemma execute_optimistic_success_iff_succeeded
               Proposal.phase            := PhaseExecuted;
               Proposal.isOptimistic     := p.(Proposal.isOptimistic);
               Proposal.parent           := p.(Proposal.parent);
+              Proposal.pastSupply       := p.(Proposal.pastSupply);
             |}.
 Proof.
   unfold execute_optimistic. split.

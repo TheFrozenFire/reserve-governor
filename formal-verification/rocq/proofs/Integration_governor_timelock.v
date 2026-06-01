@@ -204,6 +204,7 @@ Proof.
     Governor.Proposal.phase            := Governor.PhaseStdQueued;
     Governor.Proposal.isOptimistic     := false;
     Governor.Proposal.parent           := p0.(Governor.Proposal.parent);
+    Governor.Proposal.pastSupply       := p0.(Governor.Proposal.pastSupply);
   |}).
   set (s1 := Timelock.set_state_ts s0 id (nowS + delay)).
   (* Build the post-execute Governor proposal. *)
@@ -217,6 +218,7 @@ Proof.
     Governor.Proposal.phase            := Governor.PhaseStdExecuted;
     Governor.Proposal.isOptimistic     := false;
     Governor.Proposal.parent           := p1.(Governor.Proposal.parent);
+    Governor.Proposal.pastSupply       := p1.(Governor.Proposal.pastSupply);
   |}).
   set (s2 := Timelock.set_state_ts s1 id Timelock.DONE_TIMESTAMP).
   (* Useful timestamp arithmetic. *)
@@ -353,6 +355,7 @@ Definition x_p_succeeded : Governor.Proposal.t :=
      Governor.Proposal.phase            := Governor.PhaseStdSucceeded;
      Governor.Proposal.isOptimistic     := false;
      Governor.Proposal.parent           := 999;
+     Governor.Proposal.pastSupply       := 1;
   |}.
 
 Definition x_s0 : Timelock.State.t := Timelock.empty_state 100.

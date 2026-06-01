@@ -610,12 +610,16 @@ Module ReserveOptimisticGovernorEquivalence.
       p.(Proposal.isOptimistic) = true ->
       p.(Proposal.againstVotes) >= p.(Proposal.vetoThresholdTok) ->
       p.(Proposal.voteStart) <= now ->
+      p.(Proposal.pastSupply) <> 0 ->
       observe p now = PhaseDefeated.
     Proof.
-      intros Hph Hopt Hge Hns. unfold observe. rewrite Hph.
+      intros Hph Hopt Hge Hns Hps. unfold observe. rewrite Hph.
       assert (Hpre : (now <? p.(Proposal.voteStart)) = false)
         by (apply Z.ltb_ge; lia).
       rewrite Hpre. rewrite Hopt.
+      assert (Hpsb : (p.(Proposal.pastSupply) =? 0) = false)
+        by (apply Z.eqb_neq; exact Hps).
+      rewrite Hpsb.
       assert (Hgeb : (p.(Proposal.againstVotes) >=?
                      p.(Proposal.vetoThresholdTok)) = true)
         by (apply Z.geb_le; lia).

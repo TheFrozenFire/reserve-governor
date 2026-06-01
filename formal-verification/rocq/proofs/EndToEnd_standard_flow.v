@@ -169,6 +169,7 @@ Definition advance_to_std_active (p : Governor.Proposal.t)
      Governor.Proposal.phase            := Governor.PhaseStdActive;
      Governor.Proposal.isOptimistic     := p.(Governor.Proposal.isOptimistic);
      Governor.Proposal.parent           := p.(Governor.Proposal.parent);
+     Governor.Proposal.pastSupply       := p.(Governor.Proposal.pastSupply);
   |}.
 
 (** ===== Reachable joint sequences =====
@@ -264,12 +265,16 @@ Definition c_pid_parent    : U256.t := 4242.
 Definition c_pid_child     : U256.t := 4343.
 Definition c_proposer      : U256.t := 7777.
 
+(** pastSupply > 0 so the CRIT-G [pastSupply == 0 -> Canceled]
+    branch does not fire in the calibration. *)
+Definition c_pastSupply    : U256.t := 100.
+
 (** The proposal record produced by [propose_optimistic] under the
     above calibration. Exposed so the headline theorem can use it
     as the [p0] of the lifecycle. *)
 Definition c_p0 : Governor.Proposal.t :=
   Governor.fresh_optimistic c_pid_parent c_proposer
-    (c_t0 + c_vetoDelay) c_vetoPeriod c_vetoThrTok.
+    (c_t0 + c_vetoDelay) c_vetoPeriod c_vetoThrTok c_pastSupply.
 
 (** The empty Timelock with the calibrated minDelay. *)
 Definition c_s0 : Timelock.State.t := Timelock.empty_state c_delay.
@@ -300,15 +305,21 @@ Definition time_monotone (t0 t1 t2 t3 t_exec delay : U256.t) : Prop :=
     [t_exec]." *)
 Theorem standard_lifecycle_exists
     (p0 : Governor.Proposal.t) (s0 : Timelock.State.t)
-    (vetoDelay vetoPeriod vetoThrTok : U256.t)
+    (vetoDelay vetoPeriod vetoThrTok pastSupply : U256.t)
     (votingDelay votingPeriod : U256.t)
     (new_pid : U256.t)
     (t0 t1 t2 t3 t_exec delay : U256.t) :
-  (* propose-time calibration: p0 = fresh_optimistic at t0 *)
+  (* propose-time calibration: p0 = fresh_optimistic at t0.
+     pastSupply is the CRIT-G snapshot field added in T1.3; this
+     theorem's witness builds an escalation path through the
+     Defeated arm, which the contract gates on pastSupply != 0
+     (state() returns Canceled when pastSupply == 0). The
+     hypothesis [pastSupply <> 0] below captures that gate. *)
   p0 = Governor.fresh_optimistic
          p0.(Governor.Proposal.pid)
          p0.(Governor.Proposal.proposer)
-         (t0 + vetoDelay) vetoPeriod vetoThrTok ->
+         (t0 + vetoDelay) vetoPeriod vetoThrTok pastSupply ->
+  pastSupply <> 0 ->
   (* Timelock starts empty at the calibrated id *)
   Timelock.get_ts s0 (IntegrationGovernorTimelock.proposal_to_opid
                         new_pid) = 0 ->
@@ -362,7 +373,7 @@ Theorem standard_lifecycle_exists
       t3 + delay <= t_exec /\
       s5 = s5').
 Proof.
-  intros Hp0 Hunset HdelayGe Hmono HparAct HthrPos Hwin Hdone.
+  intros Hp0 Hps Hunset HdelayGe Hmono HparAct HthrPos Hwin Hdone.
   destruct Hmono as (Hm01 & Hm12 & Hm23 & Hm3d & HmdE).
   (* ----- Step 1 -> 2: add_veto with delta = vetoThrTok. ----- *)
   set (p1 := Governor.add_veto p0 vetoThrTok).
@@ -382,13 +393,18 @@ Proof.
   { unfold p1, Governor.add_veto. simpl. rewrite Hp0. simpl. reflexivity. }
   assert (Hp1pid : p1.(Governor.Proposal.pid) = p0.(Governor.Proposal.pid)).
   { unfold p1, Governor.add_veto. simpl. reflexivity. }
-  (* ----- observe p1 t1 = PhaseDefeated ----- *)
+  assert (Hp1ps : p1.(Governor.Proposal.pastSupply) = pastSupply).
+  { unfold p1, Governor.add_veto. simpl. rewrite Hp0. simpl. reflexivity. }
+  (* ----- observe p1 t1 = PhaseDefeated (CRIT-G: requires pastSupply != 0) ----- *)
   assert (Hobs1 : Governor.observe p1 t1 = Governor.PhaseDefeated).
   { unfold Governor.observe. rewrite Hp1ph. rewrite Hp1vs.
     rewrite Hp1opt.
     assert (Hpre : (t1 <? t0 + vetoDelay) = false)
       by (apply Z.ltb_ge; lia).
     rewrite Hpre.
+    assert (Hps' : (p1.(Governor.Proposal.pastSupply) =? 0) = false).
+    { rewrite Hp1ps. apply Z.eqb_neq. exact Hps. }
+    rewrite Hps'.
     assert (Hge : (p1.(Governor.Proposal.againstVotes) >=?
                    p1.(Governor.Proposal.vetoThresholdTok)) = true).
     { rewrite Hp1av, Hp1vtt. apply Z.geb_le. lia. }
@@ -404,6 +420,7 @@ Proof.
            Governor.Proposal.phase            := Governor.PhaseDefeated;
            Governor.Proposal.isOptimistic     := p1.(Governor.Proposal.isOptimistic);
            Governor.Proposal.parent           := p1.(Governor.Proposal.parent);
+           Governor.Proposal.pastSupply       := p1.(Governor.Proposal.pastSupply);
         |}).
   set (p2 := Governor.fresh_standard_child
                p1.(Governor.Proposal.pid)
@@ -444,6 +461,7 @@ Proof.
            Governor.Proposal.phase            := Governor.PhaseStdSucceeded;
            Governor.Proposal.isOptimistic     := p3.(Governor.Proposal.isOptimistic);
            Governor.Proposal.parent           := p3.(Governor.Proposal.parent);
+           Governor.Proposal.pastSupply       := p3.(Governor.Proposal.pastSupply);
         |}).
   assert (Hp4Eq : Governor.mark_std_succeeded p3 t3
                     = Governor.Result.Success p4).
@@ -519,14 +537,15 @@ Qed.
     of [JointReachable]. *)
 Corollary standard_lifecycle_reachable
     (p0 : Governor.Proposal.t) (s0 : Timelock.State.t)
-    (vetoDelay vetoPeriod vetoThrTok : U256.t)
+    (vetoDelay vetoPeriod vetoThrTok pastSupply : U256.t)
     (votingDelay votingPeriod : U256.t)
     (new_pid : U256.t)
     (t0 t1 t2 t3 t_exec delay : U256.t) :
   p0 = Governor.fresh_optimistic
          p0.(Governor.Proposal.pid)
          p0.(Governor.Proposal.proposer)
-         (t0 + vetoDelay) vetoPeriod vetoThrTok ->
+         (t0 + vetoDelay) vetoPeriod vetoThrTok pastSupply ->
+  pastSupply <> 0 ->
   Timelock.get_ts s0 (IntegrationGovernorTimelock.proposal_to_opid
                         new_pid) = 0 ->
   delay >= s0.(Timelock.State.minDelay) ->
@@ -542,12 +561,12 @@ Corollary standard_lifecycle_reachable
         (IntegrationGovernorTimelock.proposal_to_opid new_pid) t_exec
       = Timelock.OpDone.
 Proof.
-  intros Hp0 Hunset HdelayGe Hmono HparAct HthrPos Hwin Hdone.
+  intros Hp0 Hps Hunset HdelayGe Hmono HparAct HthrPos Hwin Hdone.
   pose proof (standard_lifecycle_exists
-                p0 s0 vetoDelay vetoPeriod vetoThrTok
+                p0 s0 vetoDelay vetoPeriod vetoThrTok pastSupply
                 votingDelay votingPeriod new_pid
                 t0 t1 t2 t3 t_exec delay
-                Hp0 Hunset HdelayGe Hmono HparAct HthrPos Hwin Hdone)
+                Hp0 Hps Hunset HdelayGe Hmono HparAct HthrPos Hwin Hdone)
     as Hex.
   destruct Hex as (p1 & p2 & p3 & p4 & p5 & s4 & s5 & parent' &
                    Hp1eq & Htrans & Hp2ph & Hp2opt &
@@ -785,10 +804,11 @@ Lemma xcheck_concrete_calibration :
 Proof.
   intros Hunset.
   apply (standard_lifecycle_exists
-           c_p0 c_s0 c_vetoDelay c_vetoPeriod c_vetoThrTok
+           c_p0 c_s0 c_vetoDelay c_vetoPeriod c_vetoThrTok c_pastSupply
            c_votingDelay c_votingPeriod c_pid_child
            c_t0 c_t1 c_t2 c_t3 c_t_exec c_delay).
   - vm_compute. reflexivity.
+  - unfold c_pastSupply. discriminate.
   - exact Hunset.
   - unfold c_s0, Timelock.empty_state, c_delay. simpl. vm_compute. discriminate.
   - exact xcheck_time_monotone.

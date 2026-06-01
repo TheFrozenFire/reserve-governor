@@ -176,73 +176,23 @@ Lemma observe_eq_executed_pins_stored
   p.(Proposal.phase) = PhaseExecuted.
 Proof.
   intros Hobs. unfold observe in Hobs.
+  (* For each non-sticky stored phase, walk through the same
+     sub-branches: pre-snapshot, post-snapshot optimistic
+     (pastSupply=0 -> Canceled per CRIT-G/T1.3, then veto-threshold,
+     then deadline), post-snapshot standard (deadline only). None
+     of the branches produce PhaseExecuted. *)
   destruct (p.(Proposal.phase)) eqn:Hph; try reflexivity;
-    try discriminate.
-  - (* phase = PhaseSubmitted: only pre-deadline or active/succeeded/defeated
-       can appear; none equal PhaseExecuted. *)
-    destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
+    try discriminate;
+    (destruct (now <? p.(Proposal.voteStart));
+     [ destruct (p.(Proposal.isOptimistic)); discriminate
+     | destruct (p.(Proposal.isOptimistic));
+       [ destruct (p.(Proposal.pastSupply) =? 0); [discriminate|];
+         destruct (p.(Proposal.againstVotes) >=?
+                     p.(Proposal.vetoThresholdTok)); [discriminate|];
+         destruct (now <? p.(Proposal.voteStart) +
+                            p.(Proposal.voteDuration)); discriminate
+       | destruct (now <? p.(Proposal.voteStart) +
+                            p.(Proposal.voteDuration)); discriminate ] ]).
 Qed.
 
 (** Same reverse direction for [PhaseStdExecuted]. *)
@@ -253,70 +203,17 @@ Lemma observe_eq_std_executed_pins_stored
 Proof.
   intros Hobs. unfold observe in Hobs.
   destruct (p.(Proposal.phase)) eqn:Hph; try reflexivity;
-    try discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-  - destruct (now <? p.(Proposal.voteStart)).
-    + destruct (p.(Proposal.isOptimistic)); discriminate.
-    + destruct (p.(Proposal.isOptimistic)).
-      * destruct (p.(Proposal.againstVotes) >=?
-                    p.(Proposal.vetoThresholdTok)); [discriminate|].
-        destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
-      * destruct (now <? p.(Proposal.voteStart) +
-                           p.(Proposal.voteDuration)); discriminate.
+    try discriminate;
+    (destruct (now <? p.(Proposal.voteStart));
+     [ destruct (p.(Proposal.isOptimistic)); discriminate
+     | destruct (p.(Proposal.isOptimistic));
+       [ destruct (p.(Proposal.pastSupply) =? 0); [discriminate|];
+         destruct (p.(Proposal.againstVotes) >=?
+                     p.(Proposal.vetoThresholdTok)); [discriminate|];
+         destruct (now <? p.(Proposal.voteStart) +
+                            p.(Proposal.voteDuration)); discriminate
+       | destruct (now <? p.(Proposal.voteStart) +
+                            p.(Proposal.voteDuration)); discriminate ] ]).
 Qed.
 
 (** ===== Section 4: headline terminal_phase_exclusivity ===== *)
@@ -364,9 +261,9 @@ Qed.
 *)
 Inductive Reachable : Proposal.t -> Prop :=
 | reach_fresh_opt :
-    forall pid proposer voteStart voteDuration vetoThresholdTok,
+    forall pid proposer voteStart voteDuration vetoThresholdTok pastSupply,
     Reachable (fresh_optimistic pid proposer voteStart voteDuration
-                                vetoThresholdTok)
+                                vetoThresholdTok pastSupply)
 | reach_fresh_std :
     forall parent_pid new_pid proposer voteStart voteDuration,
     Reachable (fresh_standard_child parent_pid new_pid proposer
@@ -433,9 +330,10 @@ Inductive Reachable : Proposal.t -> Prop :=
 *)
 
 Lemma canary_reach_fresh_optimistic :
-  forall pid proposer voteStart voteDuration vetoThresholdTok,
+  forall pid proposer voteStart voteDuration vetoThresholdTok pastSupply,
     Reachable
-      (fresh_optimistic pid proposer voteStart voteDuration vetoThresholdTok).
+      (fresh_optimistic pid proposer voteStart voteDuration vetoThresholdTok
+                        pastSupply).
 Proof. intros. apply reach_fresh_opt. Qed.
 
 Lemma canary_reach_fresh_standard :
@@ -565,7 +463,7 @@ Qed.
     [execute_standard] on the result. The second attempt must revert. *)
 
 Definition xc_initial : Proposal.t :=
-  fresh_optimistic 1101 1001 100 1000 5.
+  fresh_optimistic 1101 1001 100 1000 5 100.
 
 (** Past-deadline observation is [PhaseSucceeded]. *)
 Lemma xcheck_xc_initial_succeeded :
@@ -611,6 +509,7 @@ Definition xc_std_queued : Proposal.t :=
      Proposal.phase := PhaseStdQueued;
      Proposal.isOptimistic := false;
      Proposal.parent := 1101;
+     Proposal.pastSupply := 1;
   |}.
 
 Lemma xcheck_xc_std_executes :

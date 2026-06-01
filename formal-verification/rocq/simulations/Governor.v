@@ -117,7 +117,28 @@ Definition phase_index (p : Phase) : Z :=
     the Math.max(_, 1) snap applied), the running tally of veto
     votes, the current phase, and whether this is an optimistic or a
     standard proposal. [parent] is 0 for fresh proposals and equals
-    the parent proposalId for confirmation children. *)
+    the parent proposalId for confirmation children.
+
+    [pastSupply] is [token().getPastTotalSupply(voteStart)] — the
+    historical token supply at the proposal's snapshot block. The
+    contract re-reads this on every call to [state()] (see
+    ReserveOptimisticGovernor.sol:249), but since [getPastTotalSupply]
+    is a historical query keyed by the immutable [voteStart], the
+    value is constant once the snapshot block is mined. Storing it
+    once in the simulation is observably equivalent to the contract's
+    live read AT THE pastSupply LEVEL. (Separately, the contract also
+    re-reads [vetoThreshold(proposalId)] live — that value IS mutable
+    via the TRANSITIONED_VETO_THRESHOLD sentinel and the sim freezes
+    [vetoThresholdTok] derived from it; this is the live-vs-frozen
+    threshold divergence tracked under CRIT-V / T1.4, NOT addressed
+    here.)
+
+    [pastSupply] is required by [observe] to model the contract's
+    [pastSupply == 0 -> Canceled] short-circuit branch
+    (ReserveOptimisticGovernor.sol:251-253) — the CRIT-G branch
+    closed by adversarial review T1.3. For standard-track children
+    the field is set to 1 (a non-zero placeholder) since the standard
+    track does not consult this branch. *)
 Module Proposal.
   Record t : Set := {
     pid               : U256.t;
@@ -129,12 +150,16 @@ Module Proposal.
     phase             : Phase;
     isOptimistic      : bool;
     parent            : U256.t;   (** 0 = no parent *)
+    pastSupply        : U256.t;   (** {tok}, getPastTotalSupply(voteStart) *)
   }.
 End Proposal.
 
+(** [pastSupply] is the snapshot-time [getPastTotalSupply(voteStart)]
+    used by [observe] to model the contract's [pastSupply == 0 ->
+    Canceled] branch. *)
 Definition fresh_optimistic
     (pid : U256.t) (proposer : Address)
-    (voteStart voteDuration vetoThresholdTok : U256.t)
+    (voteStart voteDuration vetoThresholdTok pastSupply : U256.t)
     : Proposal.t :=
   {|
     Proposal.pid               := pid;
@@ -146,8 +171,14 @@ Definition fresh_optimistic
     Proposal.phase             := PhaseSubmitted;
     Proposal.isOptimistic      := true;
     Proposal.parent            := 0;
+    Proposal.pastSupply        := pastSupply;
   |}.
 
+(** Standard-track children do not consult the [pastSupply == 0]
+    branch (it is exclusive to the optimistic [_isOptimistic] arm of
+    [state()] in the contract); we set the field to [1] to keep the
+    invariant "fresh standard children never appear as Canceled via
+    the pastSupply branch" trivial. *)
 Definition fresh_standard_child
     (parent_pid new_pid : U256.t) (proposer : Address)
     (voteStart voteDuration : U256.t)
@@ -162,6 +193,7 @@ Definition fresh_standard_child
     Proposal.phase             := PhaseStdPending;
     Proposal.isOptimistic      := false;
     Proposal.parent            := parent_pid;
+    Proposal.pastSupply        := 1;
   |}.
 
 (** ===== Result ===== *)
@@ -194,7 +226,26 @@ Definition vetoThresholdTokOf (vetoThresholdD18 pastSupply : U256.t) : U256.t :=
     standard tracks. The pre-deadline cases are derived from the
     stored fields; the post-deadline outcomes (executed, canceled,
     succeeded, queued, std_succeeded) are reflected by the [phase]
-    field after they are written. *)
+    field after they are written.
+
+    The [pastSupply == 0 -> Canceled] branch on the optimistic arm
+    mirrors ReserveOptimisticGovernor.sol:251-253: when the historical
+    token supply at [voteStart] is zero, the contract short-circuits
+    to [Canceled] regardless of veto votes or deadline. This branch
+    was missing in the simulation prior to T1.3 (CRIT-G); see
+    notes/adversarial_review_2026_05_31/sim_vs_source_auditor.md. The
+    branch sits AFTER the [snapshot >= block.timestamp] (pending)
+    test and the [_vetoThreshold == TRANSITIONED] sentinel test of
+    the contract — both of which the sim models elsewhere (pending
+    via the [now <? voteStart] guard; transitioned via the post-
+    transition [phase = PhaseDefeated] pin from
+    [transition_to_pessimistic]).
+
+    Subtle: the contract's pending-test precedes the pastSupply test,
+    so a pre-snapshot proposal with [pastSupply = 0] observes as
+    [Pending], not [Canceled]. The sim mirrors that ordering: the
+    [now <? voteStart] guard above is checked before the pastSupply
+    branch. *)
 Definition observe (p : Proposal.t) (now : U256.t) : Phase :=
   match p.(Proposal.phase) with
   | PhaseExecuted    => PhaseExecuted
@@ -207,9 +258,13 @@ Definition observe (p : Proposal.t) (now : U256.t) : Phase :=
       else
         let deadline := p.(Proposal.voteStart) + p.(Proposal.voteDuration) in
         if p.(Proposal.isOptimistic) then
+          (* CRIT-G: pastSupply == 0 -> Canceled. This precedes the
+             veto-threshold and deadline checks, matching the contract's
+             ordering at ReserveOptimisticGovernor.sol:251-253. *)
+          if p.(Proposal.pastSupply) =? 0 then PhaseCanceled
           (* Optimistic: veto-threshold check has precedence over
              deadline check. *)
-          if p.(Proposal.againstVotes) >=? p.(Proposal.vetoThresholdTok)
+          else if p.(Proposal.againstVotes) >=? p.(Proposal.vetoThresholdTok)
           then PhaseDefeated
           else if now <? deadline then PhaseActive
           else PhaseSucceeded
@@ -272,7 +327,8 @@ Definition propose_optimistic
   else
     let vtt := vetoThresholdTokOf vetoThresholdD18 pastSupply in
     Result.Success
-      (fresh_optimistic pid proposer (now + vetoDelay) vetoPeriod vtt).
+      (fresh_optimistic pid proposer (now + vetoDelay) vetoPeriod vtt
+                        pastSupply).
 
 Definition phase_eq (a b : Phase) : bool :=
   match a, b with
@@ -302,6 +358,7 @@ Definition add_veto (p : Proposal.t) (delta : U256.t) : Proposal.t :=
     Proposal.phase             := p.(Proposal.phase);
     Proposal.isOptimistic      := p.(Proposal.isOptimistic);
     Proposal.parent            := p.(Proposal.parent);
+    Proposal.pastSupply        := p.(Proposal.pastSupply);
   |}.
 
 (** [transition_to_pessimistic] — spawns a fresh standard child
@@ -325,6 +382,7 @@ Definition transition_to_pessimistic
           Proposal.phase             := PhaseDefeated;
           Proposal.isOptimistic      := parent.(Proposal.isOptimistic);
           Proposal.parent            := parent.(Proposal.parent);
+          Proposal.pastSupply        := parent.(Proposal.pastSupply);
         |}
       in
       let child := fresh_standard_child
@@ -367,6 +425,7 @@ Definition mark_std_succeeded (p : Proposal.t) (now : U256.t)
         Proposal.phase            := PhaseStdSucceeded;
         Proposal.isOptimistic     := p.(Proposal.isOptimistic);
         Proposal.parent           := p.(Proposal.parent);
+        Proposal.pastSupply       := p.(Proposal.pastSupply);
       |}.
 
 (** [queue_operations] — gates on (a) not-optimistic and (b)
@@ -386,6 +445,7 @@ Definition queue_operations (p : Proposal.t) : Result.t Proposal.t :=
         Proposal.phase            := PhaseStdQueued;
         Proposal.isOptimistic     := p.(Proposal.isOptimistic);
         Proposal.parent           := p.(Proposal.parent);
+        Proposal.pastSupply       := p.(Proposal.pastSupply);
       |}
   else revert_wrong_phase.
 
@@ -404,6 +464,7 @@ Definition execute_standard (p : Proposal.t) : Result.t Proposal.t :=
         Proposal.phase            := PhaseStdExecuted;
         Proposal.isOptimistic     := p.(Proposal.isOptimistic);
         Proposal.parent           := p.(Proposal.parent);
+        Proposal.pastSupply       := p.(Proposal.pastSupply);
       |}
   else revert_wrong_phase.
 
@@ -426,6 +487,7 @@ Definition execute_optimistic (p : Proposal.t) (now : U256.t) : Result.t Proposa
             Proposal.phase            := PhaseExecuted;
             Proposal.isOptimistic     := p.(Proposal.isOptimistic);
             Proposal.parent           := p.(Proposal.parent);
+            Proposal.pastSupply       := p.(Proposal.pastSupply);
           |}
     | _ => revert_wrong_phase
     end.
@@ -450,6 +512,7 @@ Definition cancel (p : Proposal.t) : Result.t Proposal.t :=
           Proposal.phase            := PhaseCanceled;
           Proposal.isOptimistic     := p.(Proposal.isOptimistic);
           Proposal.parent           := p.(Proposal.parent);
+          Proposal.pastSupply       := p.(Proposal.pastSupply);
         |}
   end.
 
@@ -558,6 +621,7 @@ Module Valid.
     vtt_u256          : U256.Valid.t p.(Proposal.vetoThresholdTok);
     avotes_u256       : U256.Valid.t p.(Proposal.againstVotes);
     parent_u256       : U256.Valid.t p.(Proposal.parent);
+    pastSupply_u256   : U256.Valid.t p.(Proposal.pastSupply);
   }.
 
   (** A "veto delta" coming in from an external caller is, on chain,
