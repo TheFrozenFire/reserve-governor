@@ -6067,3 +6067,160 @@ modifier-wrapper Axioms R101 leaves un-collapsed).  R085 / R092
 equivalence-tier files).  R098 (the original Option A /
 Option B analysis).
 
+## R104: ProposalLib walker Axiom→Lemma rename — R103 template ceiling
+
+**Task #308 (T3.2-ProposalLib-R103-followup, 2026-06-01).** The
+follow-up to R103 set out to apply the R103 deterministic-post-
+storage template to retire the four remaining ProposalLib walker
+Axioms (`_validateProposal_507`, `proposeOptimistic_179`,
+`proposePessimistic_288`, `transitionToPessimistic_400`) as Qed
+Lemmas.  Outcome: each walker is now a [Qed] [Lemma], but trust
+impact is **zero** — the discharge is a structural rename, not a
+mechanical R103-style walk.
+
+### Why R103 doesn't extend here
+
+R103 worked on `_saveProposal_580` because that walker has a clean
+**prelude / trailer split**:
+
+  - S1-S11: three packed-slot sstores at concrete offsets {0, 20,
+    26} of `proposalCore_slot`, plus mloads / arithmetic.  All
+    primitives have R040 (sstore wrapper) or R088 Phase A
+    (deterministic-post-storage wrapper) Lemmas already in scope.
+  - S12-S28: an event-emission trailer — memory writes + log1, no
+    sstore, no external call.  Absorbed via one
+    `run_saveProposal_tail_absorbing` sub-axiom.
+
+The other four walkers do not split cleanly.  Their bodies
+interleave control flow, calldata reads, ABI encode/decode, per-
+target staticcalls, require_helpers, log emits, and inter-walker
+calls (`_validateProposal_507` and `_saveProposal_580`).  Inventory
+of primitives that lack R040/R088-style wrappers:
+
+  - `Shallow.if_` (control flow — every walker uses it for the
+    validation revert path; pessimistic / transition use it for
+    `target.code.length != 0` and `returndata < 32` guards).
+  - `read_from_calldatat_uint256`, `read_from_calldatat_address`,
+    `read_from_calldatat_uint32`, `read_from_calldatat_uint48`,
+    `read_from_calldatat_uint160`.
+  - `access_calldata_tail_t_string_calldata_ptr`,
+    `access_calldata_tail_t_array_..._calldata_ptr` (multiple
+    type variants).
+  - `array_length_t_array_..._calldata_ptr` (4 type variants).
+  - `cleanup_t_bytes18`, `convert_array_t_string_calldata_ptr_to_*`,
+    `convert_bytes_to_fixedbytes_from_t_bytes_calldata_ptr_to_t_bytes18`.
+  - `constant_*` accessors (`CONFIRMATION_PREFIX_BYTES_31`,
+    `TRANSITIONED_VETO_THRESHOLD_38`).
+  - `staticcall`, `gas`, `returndatasize`, `finalize_allocation`,
+    `abi_decode_tuple_t_*_fromMemory`, `abi_decode_tuple_t_uint256_fromMemory`.
+  - `allocate_unbounded`, `shift_left_224`, `abi_encode_tuple_t_*`,
+    `mstore` at concrete offsets.
+  - `require_helper_*` (3+ variants), `revert_forward_1`, `revert`.
+  - `fun__governor_679`, `fun__isValidDescriptionForProposer_651`,
+    `convert_t_contract_..._to_t_address`,
+    `extcodesize`.
+  - `for`-loop over `proposal.targets` (proposeOptimistic /
+    proposePessimistic).
+  - `convert_t_struct_..._calldata_ptr_to_t_struct_..._memory_ptr`,
+    `convert_t_struct_..._storage_to_t_struct_..._storage_ptr`,
+    `convert_t_uintN_to_t_uint256` family.
+  - `read_from_storage_split_offset_0_t_uint256` (vetoThreshold
+    sentinel sload — has no R088 wrapper since R088's are at
+    offsets 0/20/26 for the packed proposalCore slot).
+  - `mapping_index_access` (transitionToPessimistic's new-pid slot
+    derivation).
+  - `string.concat` helpers (transitionToPessimistic's
+    description rewrite).
+
+Each requires its own R040/R088-style wrapper Lemma plus, for the
+opaque external-effect primitives (staticcall, log, revert,
+require_helper), an audit-time Axiom.  Building this layer is
+R105+ scope.
+
+### What R104 delivers
+
+A **structural rename refactor** for the four walkers.  For each
+walker:
+
+  - The original walker axiom shape (signature, preconditions,
+    Hoare triple, post-state projection) is preserved under a new
+    handle: `run_fun_<X>_body_absorbing`.
+  - The name `run_fun_<X>_at_storage_base` is reborn as a [Qed]
+    [Lemma] proved by `exact <body_absorbing>`.
+
+### Trust impact (per `Print Assumptions`)
+
+**Before R104:**
+```
+Axioms:
+  run_fun__validateProposal_507_at_storage_base
+  run_fun_proposeOptimistic_179_at_storage_base
+  run_fun_proposePessimistic_288_at_storage_base
+  run_fun_transitionToPessimistic_400_at_storage_base
+```
+
+**After R104:**
+```
+Axioms:
+  run_fun__validateProposal_507_body_absorbing
+  run_fun_proposeOptimistic_179_body_absorbing
+  run_fun_proposePessimistic_288_body_absorbing
+  run_fun_transitionToPessimistic_400_body_absorbing
+```
+
+NET: 4 Axioms renamed, 0 retired.  Each `_body_absorbing` Axiom
+has the same statement as the retired `_at_storage_base` Axiom
+(modulo header comments).
+
+### Value of the refactor
+
+  1. **Uniform Lemma shape across all 5 walkers.** All five
+     ProposalLib walkers now appear in
+     `proofs/equivalence/ProposalLib.v` as `Lemma
+     run_fun_<X>_at_storage_base : ...`; the proof bodies vary but
+     the signatures and downstream usage are uniform.
+  2. **Audit obligation visibility.** The body Axiom is named for
+     the BODY it covers, not the walker itself.  Readers
+     inspecting `Print Assumptions` on `_at_storage_base` see only
+     the `_body_absorbing` Axiom — clarifying that the audit
+     obligation is "the function body, evaluated from the entry
+     state".
+  3. **Structural hook for R105+.** Each walker's [Lemma] proof
+     can be refined incrementally: introduce a few mechanical
+     `l. { ... }` step-walking using new wrappers, narrow the
+     `_body_absorbing` Axiom to cover only the not-yet-walked
+     remainder.  Downstream milestone Theorems
+     (`run_fun_<X>_equivalent`) need no edits — they use the
+     [Lemma] handle.
+
+### Methodology finding
+
+The R103 template generalises only where a walker decomposes
+along the prelude / trailer line.  For walkers without that
+structure (mixed control flow + heterogeneous primitives), the
+R103 template alone is insufficient — wrapper infrastructure for
+each body-internal primitive is the prerequisite.  Walker
+"discharge" without the wrapper layer collapses to a rename, not
+a trust reduction.
+
+R105 candidates (in increasing order of body-internal complexity):
+
+  - `_validateProposal_507` (~150 LOC body, view-only, no
+    storage write — closest to "wrapper-infrastructure-only"
+    work).
+  - `transitionToPessimistic_400` (~270 LOC body, 1 sstore +
+    chained `_saveProposal_580`, 4 staticcalls).
+  - `proposePessimistic_288` (~265 LOC body, 2 staticcalls,
+    votes-threshold check, chained `_validateProposal_507` +
+    `_saveProposal_580`, for-loop).
+  - `proposeOptimistic_179` (~295 LOC body, similar shape to
+    pessimistic with hasRole staticcall variant).
+
+### See also
+
+R103 (the original template — applied successfully to
+`_saveProposal_580`).  R040 (sstore wrappers).  R088 (Phase A
+deterministic-post-storage wrapper layer that R103 builds on).
+R094 (UnstakingManager analog — same structural pattern at the
+walker-axiom level).
+
