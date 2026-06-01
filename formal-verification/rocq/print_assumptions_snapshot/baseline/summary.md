@@ -11,9 +11,9 @@ Counts:
 |---|---|---|---:|---:|---|
 | AccessControlEnumerable.v | `run_fun_getRoleMemberCount_656_equivalent` | AccessControlEnumerableEquivalence | 22 | 10 | OK |
 | AccessControlEnumerable.v | `run_fun_getRoleMember_641_equivalent` | AccessControlEnumerableEquivalence | 22 | 10 | OK |
-| ERC20.v | `run_fun__mint_3368_equivalent` | ERC20Equivalence | 14 | 2 | OK |
-| ERC20.v | `run_fun__burn_3401_equivalent` | ERC20Equivalence | 14 | 2 | OK |
-| ERC20.v | `run_fun__transfer_3243_equivalent` | ERC20Equivalence | 14 | 2 | OK |
+| ERC20.v | `run_fun__mint_3368_equivalent` | ERC20Equivalence | 28 | 16 | OK |
+| ERC20.v | `run_fun__burn_3401_equivalent` | ERC20Equivalence | 28 | 16 | OK |
+| ERC20.v | `run_fun__transfer_3243_equivalent` | ERC20Equivalence | 25 | 13 | OK |
 | Guardian.v | `run_hasRole_equivalent` | GuardianEquivalence | 22 | 10 | OK |
 | Guardian.v | `run_grantRole_1468_observed_behavior` | GuardianEquivalence | 1 | 1 | OK |
 | Guardian.v | `run_grantRole_1359_equivalent` | GuardianEquivalence | 40 | 28 | OK |
