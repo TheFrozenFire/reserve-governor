@@ -500,29 +500,52 @@ Module ProposalLibEquivalence.
       [convert_t_uint256_to_t_uint48] (identity on values in range).
 
       We prove the happy path: value already in uint48 range, the
-      gt-check is false, the function returns the value unchanged. *)
+      gt-check is false, the function returns the value unchanged.
 
-  (** RESIDUAL — the function uses a [Shallow.if_] gating a revert
-      sequence, then a [convert_t_uint256_to_t_uint48] for the happy
-      path. Closing the equivalence requires:
-        1. unfolding the M.monadic + Stdlib.if_ chain to expose the
-           gt-check on the v argument
-        2. case-splitting [v >? 2^48-1] (false branch)
-        3. routing the false-branch through
-           [run_convert_t_uint256_to_t_uint48].
-      The walker pattern matches R047 in WISDOM but the residual
-      [Shallow.let_state ... default~ ...] tower introduces extra
-      goals that the simple [repeat (lu || cu)] doesn't drain.
+      Proof shape (R047 case-split-before-eexists):
+        1. Walk the zero-init prefix with the standard [lu. l. {c. ...} p.]
+           pattern.
+        2. [s. unfold Shallow.if_, Pure.gt] exposes the gt-check.
+        3. Case-split on [v >? mask]; the [true] branch contradicts
+           [H_v]; the [false] branch falls into the no-revert leg.
+        4. [simpl] reduces the [if 0 =? 0] to the [(Tt, tt)] arm and
+           [l; [p|]; cbv match] threads the [Result.Ok v] through.
+        5. [repeat (lu || cu || p)] then drains the [convert_*] cast
+           into a single [Pure.and v mask]; rewrite by
+           [uint{48,32}_implies_and_mask] under [H_v] closes Pure. *)
 
-      All upstream leaves ([run_convert_t_uint256_to_t_uint48], etc.)
-      are Qed above. *)
+  (** Zero-value initialiser used inside [fun_toUint48]. Same shape
+      as [run_zero_value_for_split_t_contract] above. *)
+  Lemma run_zero_value_for_split_t_uint48 codes env state :
+    {{? codes, env, Some state |
+      zero_value_for_split_t_uint48 ⇓ Result.Ok 0
+    | Some state ?}}.
+  Proof.
+    unfold zero_value_for_split_t_uint48.
+    lu. repeat (lu || cu || p).
+  Qed.
+
   Lemma run_fun_toUint48_7536_within_bound codes env state (v : U256.t)
       (H_v : 0 <= v < 2^48) :
     {{? codes, env, Some state |
       fun_toUint48_7536 v ⇓ Result.Ok v
     | Some state ?}}.
   Proof.
-  Admitted.
+    unfold fun_toUint48_7536.
+    lu. l. { c. { apply run_zero_value_for_split_t_uint48. } p. }
+    repeat (lu || cu || p).
+    s. unfold Shallow.if_, Pure.gt.
+    destruct (v >? 281474976710655) eqn:Hgt.
+    - apply Z.gtb_lt in Hgt. exfalso. lia.
+    - simpl.
+      l; [ p | ].
+      cbv match.
+      repeat (lu || cu || p).
+      unfold Pure.and.
+      rewrite <- uint48_implies_and_mask by exact H_v.
+      cbn.
+      repeat (lu || cu || p).
+  Qed.
 
   Lemma run_fun_toUint32_7592_within_bound codes env state (v : U256.t)
       (H_v : 0 <= v < 2^32) :
