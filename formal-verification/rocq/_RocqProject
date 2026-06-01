@@ -266,6 +266,7 @@ generated/TimelockControllerOptimistic_shallow.v
 generated/StakingVault_shallow.v
 generated/ReserveOptimisticGovernor_shallow.v
 proofs/equivalence/Common.v
+proofs/equivalence/FrameworkExtensions.v
 proofs/equivalence/StaticCallBridge.v
 proofs/equivalence/AbiEncoding.v
 proofs/equivalence/Sandbox.v
