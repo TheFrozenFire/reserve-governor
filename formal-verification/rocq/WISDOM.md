@@ -73,6 +73,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R059: `set_eq_at_role` membership equivalence
 - R051: Composite-axiom shape for milestone Qeds
 - R072: Abstract-base-class equivalence — slot-agnostic helpers + lens
+- R075: OZ TimelockController equivalence methodology — timestamp-as-state-encoding + AccessControl interaction
 - R076: ERC4626 equivalence — share-asset arithmetic + inflation defense
 
 ### The R050 staticcall recipe
@@ -725,6 +726,8 @@ per mutator).
   template + walker documentation
 - `proofs/equivalence/ERC4626.v` — 20+ sim-level lemmas + Section
   template with asset-balance lens (see R076)
+- `proofs/equivalence/TimelockControllerBase.v` — 52 sim-level
+  lemmas + Section template + walker documentation (R075)
 
 ## R076: ERC4626 equivalence (share-asset arithmetic + inflation defense)
 
@@ -861,6 +864,77 @@ already-correct `function_definition_to_rocq` path for returnVariables.
 
 Pushed on `TheFrozenFire/rocq-of-solidity:fix/r073-r074-shallow-embed`
 in the same commit as R073.
+
+---
+
+## R075: OZ TimelockController equivalence methodology
+
+A specific application of R072 to the OZ `TimelockController` abstract
+base (governance/TimelockController.sol, OZ v5.4.0). The base is
+consumed by the Reserve corpus via `TimelockControllerOptimistic` (the
+upgradeable variant); its storage layout lands at the inheritor's
+EIP-7201 namespace anchor for `TimelockControllerStorage`
+(`$._timestamps`, `$._minDelay`).
+
+**Timestamp-as-state-encoding.** OZ packs the 4-state
+`OperationState` enum ({Unset, Waiting, Ready, Done}) into a single
+`mapping(bytes32 => uint256) _timestamps` using sentinel values:
+
+    _timestamps[id] = 0              <=> Unset
+    _timestamps[id] = 1              <=> Done (the magic _DONE_TIMESTAMP)
+    _timestamps[id] > 1, > now       <=> Waiting
+    _timestamps[id] > 1, <= now      <=> Ready
+
+This packing is the single most important methodological pattern for
+the abstract base: every public function reads it via
+`getOperationState(id)`, every mutator writes it via a single sstore.
+The four post-state observation lemmas
+(`schedule_post_state_waiting`, `execute_post_state_done`,
+`cancel_post_state_unset`, plus the `getOperationState_{zero,done,
+waiting,ready}` discriminator lemmas) discharge the state-projection
+walker arms once and are reused by every concrete inheritor.
+
+**`isOperation*` family as iff lemmas.** Because the four boolean
+predicates (`isOperation`, `isOperationPending`, `isOperationReady`,
+`isOperationDone`) are thin projections on `getOperationState`, we
+expose each as an iff-correctness lemma. Walker proofs rewrite in both
+directions: forward to discharge the require-condition arms (e.g.
+`cancel_revert_not_pending`), backward to confirm post-state
+observations.
+
+**Interaction with AccessControl.** The mock layers
+`TimelockController.State` on top of `AccessControl.State` rather than
+duplicating role storage. The role gates (`PROPOSER_ROLE`,
+`EXECUTOR_ROLE`, `CANCELLER_ROLE`) are dispatched through
+`has_role` / `has_role_or_open`, where the latter implements OZ's
+`onlyRoleOrOpenRole` pattern: `hasRole(role, msg.sender) ||
+hasRole(role, address(0))`. The open-role short-circuit is
+load-bearing for the `EXECUTOR_ROLE` gate inside `execute` (it enables
+permissionless execution after the role is granted to address(0)).
+
+**Mock vs. existing concrete sim.** The Reserve corpus already has a
+narrower Timelock sim at `simulations/Timelock.v` used by
+`proofs/equivalence/TimelockControllerOptimistic.v`. That sim has
+exactly the surface the upgradeable variant needs (no
+`schedule`-single, no `updateDelay`, no `OperationState` projection).
+The new mock at `mocks/TimelockController.v` carries the full
+abstract-base surface — including `OperationState`, `updateDelay`,
+single-op `schedule` / `execute`, and the predecessor chain — so
+inheritors that need them have a sim-level Qed surface to lift onto.
+
+The two coexist without conflict: the existing
+`TimelockControllerOptimistic.v` proofs remain valid (they bind walker
+axioms against the narrower sim's transition functions). A future
+revision of those proofs may choose to migrate to the broader mock,
+trading the existing 5 R071 milestone theorems for the slot-agnostic
+layer's reusable lift theorems. This is an opt-in refactor — the
+sim-level surface in the new mock has been chosen to be a strict
+superset of the existing one in terms of public-method coverage.
+
+**Print Assumptions.** Every Qed in
+`proofs/equivalence/TimelockControllerBase.v` closes under the global
+context: no new axioms beyond what the foundation tier already
+imports.
 
 ---
 
