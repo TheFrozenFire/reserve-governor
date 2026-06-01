@@ -1,7 +1,105 @@
-(** Task #256 — StakingVault dual delegation + BySig equivalence.
+(** Task #256 + Task #280 — StakingVault dual delegation + BySig
+    equivalence methodology.
 
-    Mechanizes the four delegation entrypoints of
-    [contracts/staking/StakingVault.sol]:
+    ==================================================================
+    STATUS (post Task #280 / 2026-05-31 audit response):
+        ABSTRACT METHODOLOGY — NOT A CONCRETE INHERITOR
+    ==================================================================
+
+    This file is the R051+R072 composite-walker methodology template
+    for StakingVault's four delegation entrypoints. The milestone
+    theorems in Section 7 (renamed [run_<fn>_equivalent_methodology])
+    close inside [Section StakingVaultDelegationSection], whose
+    [Variable]s abstract over the entire Hoare-triple carrier
+    ([Codes / Env / Walker / State / hoare / make_state]), the
+    projection lens ([project_sim]), the per-fn post-state Skolems
+    ([proj_post_<fn>]), the concrete walker symbols ([walker_<fn>]),
+    and the storage slot indices.
+
+    Because the Section is NEVER instantiated at a concrete
+    StakingVault inheritor in this corpus, every milestone is
+    FORALL-quantified over those Section variables at Section
+    closure. [Print Assumptions run_delegate_equivalent_methodology]
+    reveals only [ECDSA.Domain.deployment_id : Set] (plus the mock
+    primitives pulled in by the BySig variants); the Hoare-triple
+    obligations themselves are universally quantified away. As a
+    result, the milestones constrain nothing about the deployed
+    StakingVault bytecode on their own — they say "FOR ANY walker /
+    lens / post-state Skolem satisfying the Section hypotheses, the
+    composition closes." The Section hypotheses are the real trust
+    budget; the milestone Qeds are content-free until instantiated.
+
+    The 2026-05-31 adversarial review (skolemization-soundness
+    auditor, CCV-2 in [notes/adversarial_review_2026_05_31/
+    SYNTHESIS.md]; trust-axiom auditor CRIT-6) identified this
+    Section-bound vapor as a CRITICAL audit-honesty concern: a
+    reader of [Print Assumptions] would otherwise incorrectly
+    conclude the file is closed against the actual contract.
+
+    What this file IS (genuine value):
+    ----------------------------------
+    A reusable methodology template that:
+
+      - Defines the joined SimState carrier (Section 0).
+      - Provides ~22 sim-level Qed lemmas characterizing the four
+        delegation mutators field-by-field (Sections 1-3). These
+        lemmas are NOT Section-bound — they appear as regular
+        top-level Qeds outside the Section, and are genuine
+        sim-level results consumed elsewhere (e.g. the validity
+        proofs in [proofs/]).
+      - Documents the dual-axis Trace208 push composition (R080,
+        Section 3.3).
+      - Specifies the R051+R072 walker-axiom shape that a future
+        concrete inheritor would discharge once the StakingVault
+        shallow form is added to the default build tier.
+
+    What this file is NOT:
+    ----------------------
+      - It is NOT a concrete equivalence claim against the deployed
+        StakingVault Yul. The Section hypotheses parameterize the
+        walker; no inheritor binds them.
+      - It is NOT a milestone in the audit-corpus sense — the
+        milestone theorems are abstract templates whose conclusions
+        are universally quantified at Section closure.
+      - Audit citations of "delegate / delegateBySig equivalence" for
+        StakingVault should reference the sim-level Qed lemmas in
+        [proofs/StakingVaultDelegation*.v] (which ARE concrete, are
+        consumed by [Audit.v], and bind directly to the simulation),
+        not this file's Section-bound methodology templates.
+
+    Concrete-inheritor work blocker:
+    --------------------------------
+    Instantiating the Section requires:
+      1. Adding [generated/StakingVault_shallow.v] to the default
+         [_RocqProject] tier (currently gated by a build-time flag
+         due to ~3-minute compile cost).
+      2. Providing the concrete [project_sim : SimulatedStorage.t ->
+         SimState.t] lens against StakingVault's storage layout.
+      3. Binding the four [walker_<fn>] symbols to the actual Yul
+         function identifiers ([fun_delegate_15192] etc.) and
+         discharging the four [run_fun_<fn>_at_proj_sim] Hypotheses
+         with concrete walker tactics.
+    See [WISDOM.md] R080 "Handoff notes for inheritor / Wave 2
+    follow-up" for the full instantiation recipe.
+
+    Filename suffix [_methodology] makes the abstract status
+    explicit at the filesystem level (renamed in Task #280 from
+    [StakingVaultDelegation.v]). The four headline theorems carry
+    the [_methodology] suffix on their identifiers so any
+    cross-reference from elsewhere in the corpus surfaces the
+    abstract nature.
+
+    Cross-reference:
+      - [notes/adversarial_review_2026_05_31/SYNTHESIS.md] CCV-2
+      - [notes/adversarial_review_2026_05_31/trust_axiom_auditor.md]
+        CRIT-6
+      - [Audit.v] Caveat-5 (entry: StakingVault delegation
+        methodology, not concrete equivalence)
+      - [WISDOM.md] R080 (dual-axis Trace208; handoff notes)
+
+    ==================================================================
+
+    Source contract entrypoints documented by the methodology:
 
       - [delegate(delegatee)]                       — L10063 fun_delegate_15192
       - [delegateOptimistic(delegatee)]             — L10034 fun_delegateOptimistic_422
@@ -44,11 +142,13 @@
     [optimisticDelegatees], 0x0b for [optimisticDelegateCheckpoints],
     per the shallow form) it manipulates.
 
-    Methodology
-    -----------
+    Methodology (template form — abstract, not instantiated)
+    --------------------------------------------------------
 
-    This file is the R051 + R072 composite-axiom + slot-agnostic
-    instantiation pattern, following [proofs/equivalence/Votes.v]:
+    This file documents the R051 + R072 composite-axiom + slot-
+    agnostic methodology, following [proofs/equivalence/Votes.v].
+    Unlike Votes.v, this file does NOT carry a concrete inheritor
+    binding — the Section remains abstract:
 
       - The [proj_sim] lens projects the StakingVault sim state (with
         both Trace208 histories) into the inheritor's [SimulatedStorage.t].
@@ -129,7 +229,7 @@ Local Open Scope Z_scope.
     [StakingVaultDelegation.State]. *)
 Module SimulatedStorage := RocqOfSolidity.proofs.RocqOfSolidity.SimulatedStorage.
 
-Module StakingVaultDelegationEquivalence.
+Module StakingVaultDelegationMethodology.
 
   (** ==================================================================
       Section 0 — Composite carrier joining all moving parts.
@@ -971,13 +1071,21 @@ Module StakingVaultDelegationEquivalence.
       lens as Section variables; the lens correctness obligations are
       Section hypotheses discharged by [reflexivity] at the inheritor.
 
-      This file is the inheritor (StakingVault concrete), so we
-      structure the Section as an "abstract over slots and lens"
-      template. The composite walker axioms below are stated against
-      these parameters, which makes them robust against future
-      shallow-form regenerations (the slot indices may shift if
-      OpenZeppelin's storage layout evolves; the lens hypotheses
-      protect the milestone Qeds from re-deriving). ================ *)
+      IMPORTANT (post Task #280 — re Caveat-5 audit response):
+      No inheritor file in this corpus instantiates the Section. The
+      Section variables therefore remain abstract, and every theorem
+      closed inside the Section is universally quantified over them.
+      The composite walker axioms below are stated against these
+      parameters; they document the audit-time obligation for a
+      future concrete StakingVault binding but do NOT discharge it.
+
+      This file's purpose is to fix the methodology shape: a future
+      [StakingVaultDelegation_instantiation.v] (gated on landing the
+      StakingVault shallow form in the default build tier) would
+      bind the Section variables and discharge the per-fn Hypotheses
+      with concrete walker tactics. Until that instantiation exists,
+      treat the Section-internal milestone theorems as TEMPLATES,
+      not RESULTS. ================================================ *)
 
   Section StakingVaultDelegationSection.
 
@@ -1293,24 +1401,52 @@ Module StakingVaultDelegationEquivalence.
               (make_state (proj_post_delegateOptimisticBySig sim now delegatee nonce expiry sig)).
 
     (** ==============================================================
-        Section 7 — Milestone Qed theorems.
+        Section 7 — Milestone METHODOLOGY theorems (templates only).
 
-        Each composes the per-fn walker hypothesis with the
+        ============== AUDIT-HONESTY WARNING ==========================
+        These four theorems close at the Section level via [Qed], but
+        every variable in their statement ([Codes], [Env], [Walker],
+        [State], [hoare], [make_state], [project_sim], [walker_<fn>],
+        [proj_post_<fn>]) is a Section parameter — universally
+        quantified at Section closure. The conclusions therefore
+        constrain NO CONCRETE behavior of any deployed contract.
+        [Print Assumptions] shows only [deployment_id : Set] (plus the
+        mock primitives the BySig variants pull in via the sim) — the
+        Hoare-triple obligations are hidden inside the Section
+        hypotheses, NOT in the [Print Assumptions] output.
+
+        The suffix [_methodology] on each theorem name encodes this:
+        these are TEMPLATES describing the composition shape a
+        concrete inheritor would discharge, NOT equivalence claims
+        against StakingVault bytecode. Audit citations of
+        delegation-equivalence for StakingVault must reference the
+        sim-level Qed lemmas in [proofs/StakingVaultDelegation*.v],
+        which are concrete and consumed by [Audit.v].
+
+        See [SYNTHESIS.md] CCV-2, [trust_axiom_auditor.md] CRIT-6,
+        and [Audit.v] Caveat-5 for the formal articulation.
+
+        Each theorem composes the per-fn walker hypothesis with the
         observational bridge hypothesis to deliver the headline
         equivalence statement:
 
-          run_<fn>_equivalent :
+          run_<fn>_equivalent_methodology :
             exists state_post,
               hoare walker_<fn> codes env (make_state storage_pre) state_post
               /\ ... (some characterization of state_post tied to sim_<fn>)
 
         At the Section level the characterization is "state_post is
-        [make_state (proj_post_<fn> sim args)]"; at the inheritor's
+        [make_state (proj_post_<fn> sim args)]"; at an inheritor's
         binding site this refines to the observationally-equal-storage
         form via [proj_post_<fn>_well_formed]. ====================== *)
 
-    (** ---- 7.1  Milestone — delegate ---- *)
-    Theorem run_delegate_equivalent :
+    (** ---- 7.1  Methodology template — delegate ----
+
+        PARAMETRIC — not yet instantiated against StakingVault_shallow.v.
+        Trust budget lives in the Section hypotheses ([project_sim],
+        [walker_delegate], [run_fun_delegate_at_proj_sim], etc.),
+        which are universally quantified at Section closure. *)
+    Theorem run_delegate_equivalent_methodology :
       forall (codes : Codes) (env : Env) (storage_pre : SimulatedStorage.t)
              (account new_d : Address),
         let sim := project_sim storage_pre in
@@ -1332,8 +1468,11 @@ Module StakingVaultDelegationEquivalence.
                  account new_d storage_pre eq_refl).
     Qed.
 
-    (** ---- 7.2  Milestone — delegateOptimistic ---- *)
-    Theorem run_delegateOptimistic_equivalent :
+    (** ---- 7.2  Methodology template — delegateOptimistic ----
+
+        PARAMETRIC — not yet instantiated against StakingVault_shallow.v.
+        Same Section-bound nature as Section 7.1. *)
+    Theorem run_delegateOptimistic_equivalent_methodology :
       forall (codes : Codes) (env : Env) (storage_pre : SimulatedStorage.t)
              (account new_d : Address),
         let sim := project_sim storage_pre in
@@ -1355,8 +1494,11 @@ Module StakingVaultDelegationEquivalence.
                  account new_d storage_pre eq_refl).
     Qed.
 
-    (** ---- 7.3  Milestone — delegateBySig (success branch) ---- *)
-    Theorem run_delegateBySig_equivalent :
+    (** ---- 7.3  Methodology template — delegateBySig (success branch) ----
+
+        PARAMETRIC — not yet instantiated against StakingVault_shallow.v.
+        Same Section-bound nature as Section 7.1. *)
+    Theorem run_delegateBySig_equivalent_methodology :
       forall (codes : Codes) (env : Env) (storage_pre : SimulatedStorage.t)
              (now : U256.t) (delegatee : Address) (nonce expiry : U256.t)
              (sig : ECDSA.Signature) (sim' : SimState.t),
@@ -1383,8 +1525,11 @@ Module StakingVaultDelegationEquivalence.
                  now delegatee nonce expiry sig storage_pre eq_refl Hsuccess).
     Qed.
 
-    (** ---- 7.4  Milestone — delegateOptimisticBySig (success branch) ---- *)
-    Theorem run_delegateOptimisticBySig_equivalent :
+    (** ---- 7.4  Methodology template — delegateOptimisticBySig (success branch) ----
+
+        PARAMETRIC — not yet instantiated against StakingVault_shallow.v.
+        Same Section-bound nature as Section 7.1. *)
+    Theorem run_delegateOptimisticBySig_equivalent_methodology :
       forall (codes : Codes) (env : Env) (storage_pre : SimulatedStorage.t)
              (now : U256.t) (delegatee : Address) (nonce expiry : U256.t)
              (sig : ECDSA.Signature) (sim' : SimState.t),
@@ -1637,35 +1782,59 @@ Module StakingVaultDelegationEquivalence.
             (revert with InvalidAccountNonce) *)
 
   (** ==================================================================
-      Section 10 — Trust budget summary.
+      Section 10 — Trust budget summary (audit-honest framing).
 
-      This file's [Print Assumptions] surface comprises ONLY the
-      following pre-existing trust axioms from the mock layer:
+      ==================== HONEST FRAMING ============================
+      [Print Assumptions] on the four [run_<fn>_equivalent_methodology]
+      theorems reveals only:
 
-        - 5 axioms from mocks/ECDSA.v (recover_of_sign,
-          recover_injective_in_hash, pub_nonzero,
-          typed_data_hash_injective, struct_hash_injective).
+        - [ECDSA.Domain.deployment_id : Set] (declared in [mocks/ECDSA.v]
+          for the deployment-distinguishing tag).
+        - For the two BySig variants: [ECDSA.recover],
+          [ECDSA.typed_data_hash],
+          [ECDSA.optimistic_delegation_struct_hash] (mock primitives
+          pulled in transitively via the [sim_delegateBySig*] result
+          shape).
 
-      There are no NEW axioms in this file. The composite walker
-      bundles are stated as Section [Hypothesis]es; the inheritor
-      file (which will land once the StakingVault shallow is added
-      to the default build tier) discharges them via concrete
-      walker tactics.
+      Crucially, [Print Assumptions] does NOT reveal the Section
+      hypotheses — they are universally quantified at Section closure.
+      The real trust budget for this file's methodology theorems is:
 
-      Composite walker hypothesis count (the future audit-time
-      obligations at the inheritor):
+        - The 5 [Variable] sets ([Codes], [Env], [Walker], [State],
+          [hoare], [make_state]) — abstracted Hoare-triple carrier.
+        - The lens [project_sim : SimulatedStorage.t -> SimState.t]
+          and its [lens_deterministic] hypothesis (trivial under any
+          concrete projection).
+        - 4 [Variable] declarations for per-fn post-state Skolems
+          [proj_post_<fn> : ...] (Skolemized projection).
+        - 4 [Hypothesis] declarations for per-fn post-state
+          well-formedness (each closes as [reflexivity] under any
+          concrete [project_sim] + concrete [proj_post_<fn>]).
+        - 4 [Hypothesis] declarations for per-fn composite walker
+          Hoare triples ([run_fun_<fn>_at_proj_sim]) — these are the
+          audit-time obligations a concrete inheritor must discharge
+          via a walker tactic against the StakingVault shallow form.
+        - 4 [Variable] declarations for the [walker_<fn>] symbols
+          themselves.
+
+      None of these obligations are discharged in this file.
+
+      Composite walker hypothesis count (the audit-time obligations a
+      future inheritor would owe):
 
         - 4 [Hypothesis] declarations for the per-fn post-state
           projection well-formedness (each closes as [reflexivity]
           under the inheritor's concrete [project_sim]).
         - 4 [Hypothesis] declarations for the per-fn composite
-          walker Hoare triples (the audit-time obligations — closed
-          by a concrete walker at the inheritor's binding file).
+          walker Hoare triples (the load-bearing audit obligations).
 
-      The four composite walker hypotheses are the entirety of the
-      per-mutator obligation at instantiation time. They are the
-      same shape as every R051-blocked mutator across the 12 prior
-      precedents (VersionRegistry, RewardTokenRegistry, Guardian,
-      SelectorRegistry, ProposalLib, TimelockControllerOptimistic). *)
+      For comparison: the 12 R051-blocked mutators across precedent
+      files (VersionRegistry, RewardTokenRegistry, Guardian,
+      SelectorRegistry, ProposalLib, TimelockControllerOptimistic)
+      use the SAME methodology shape — but they instantiate the
+      Section against their concrete shallow forms, so their
+      milestone Qeds carry genuine semantic content. This file does
+      not (yet) — see Section 4 IMPORTANT note for the gating
+      blocker. *)
 
-End StakingVaultDelegationEquivalence.
+End StakingVaultDelegationMethodology.
