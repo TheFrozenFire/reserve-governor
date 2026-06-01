@@ -857,7 +857,25 @@ Module UnstakingManagerEquivalence.
       scope — they are dispatched at the outer Lemma layer.  This
       separates the storage-mutation discharge (mechanical, R088 /
       R040 territory) from the per-token audit obligation (T-TOKEN
-      trust, R063 / R093 territory). *)
+      trust, R063 / R093 territory).
+
+      ----- R097 structural blocker on direct discharge -----
+
+      The current shape pins the post-state to [proj_post_<X>
+      (proj_sim sim) <args>] where [proj_post_<X>] is a [Parameter]
+      (abstract Skolem; lines 661-677).  A direct walk via R088's
+      [run_sstore_absorbing_at_make_state] produces a chain of
+      [sstore_post_storage] Skolems whose shape is NOT syntactically
+      equal to [proj_post_<X>], blocking the Qed.
+
+      See WISDOM R097 for the discharge plan: Option A makes
+      [proj_post_<X>] a [Definition] (the absorbing chain); Option B
+      restates the inner Axiom existentially and threads the
+      observation Axioms at the outer composite walker layer.  Both
+      options require the per-Yul-wrapper absorbing primitives (sload,
+      sstore, mapping_index_access, storage_set_to_zero) plus a
+      T-VAULT trust witness for cancelLock's direct StakingVault.deposit
+      call.  Total forward work: 2820-3920 LOC across 3-4 tasks. *)
 
   Axiom run_fun_createLock_144_inner_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
