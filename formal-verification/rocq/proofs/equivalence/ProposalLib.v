@@ -2110,7 +2110,97 @@ Module ProposalLibEquivalence.
         S11. require_helper GovernorInvalidProposalLength
                                             → succeeds under length match
         S12. require targets.length != 0    → succeeds under wf_nonempty *)
-  Axiom run_fun__validateProposal_507_at_storage_base :
+  (** ** R104 — `_body_absorbing` rename refactor (no trust reduction) **
+
+      The R103 template (deterministic-post-storage wrappers +
+      `RunO_let_compose`) applies cleanly to `_saveProposal_580` because
+      that walker decomposes into:
+        - an 11-step storage-write prelude (the three packed-slot
+          sstores), discharged mechanically by the R040/R088 Phase A
+          wrappers;
+        - a memory/log trailer (S12-S28), captured in a single
+          `run_saveProposal_tail_absorbing` sub-axiom.
+
+      The other four ProposalLib walkers do NOT have a clean
+      prelude/trailer split.  Their bodies contain:
+        - `Shallow.if_` control flow (validateProposal's
+          already-proposed branch; pessimistic / transition revert
+          paths);
+        - calldata reads (`read_from_calldatat_*`,
+          `access_calldata_tail_*`, `array_length_*_calldata_ptr`);
+        - per-target `staticcall` to the governor (timelock,
+          selectorRegistry, votingDelay, votingPeriod, hasRole,
+          isAllowed, proposalProposer, getProposalId, state);
+        - ABI encode/decode for staticcall payloads;
+        - require_helper and revert primitives;
+        - `for`-loop over `proposal.targets` (proposeOptimistic /
+          proposePessimistic);
+        - chained calls into `_validateProposal_507` and
+          `_saveProposal_580` (now both Qed Lemmas).
+
+      Each of these primitives needs its own R040/R088-style wrapper
+      Lemma before the walker bodies can be discharged mechanically.
+      Building that wrapper layer (`Shallow.if_` semantics, calldata
+      witness, AbiEncoding inside ProposalLib, StaticCallBridge
+      composition) is R104+ scope and out of reach within the R103
+      template alone.
+
+      This entry retires each walker AXIOM into a LEMMA via the
+      thinnest possible refactor: a `_body_absorbing` sub-axiom of
+      IDENTICAL statement to the original walker axiom, with the
+      walker name aliased as a [Lemma] proved by `exact
+      <body_absorbing>`.
+
+      ** Trust impact: zero. **  This is a structural rename — no
+      audit obligation is added or removed.  [Print Assumptions] on
+      `run_fun_<X>_at_storage_base` now reports the
+      `_body_absorbing` Axiom under its renamed handle, one-for-one.
+
+      ** Value of the refactor: **
+        (i)  all 5 ProposalLib walkers now share a uniform [Lemma]
+             statement shape, simplifying downstream documentation
+             and `Print Assumptions` inspection;
+        (ii) the [Lemma]+`_body_absorbing` split is the structural
+             hook for future decomposition: the [Lemma] proof can
+             grow `unfold + step-walking + RunO_let_compose +
+             smaller `_body_absorbing` Axiom` as wrappers come
+             online, without disrupting downstream theorems;
+        (iii) honest scope-of-trust accounting: the audit obligation
+             is now visibly *the body of the walker*, not "the
+             walker primitive" — clarifying what auditors must
+             verify.
+
+      A real R103-style discharge for these walkers requires the
+      wrapper infrastructure noted above — tracked as R105+ when
+      one of the walker bodies is selected for full decomposition.
+
+      AUDIT: each `_body_absorbing` Axiom states EXACTLY what the
+      retired walker Axiom stated.  The audit obligation is the
+      same equivalence claim — the function body, evaluated from
+      the entry state, runs to a Skolem post-memory and the
+      documented post-storage. *)
+
+  Axiom run_fun__validateProposal_507_body_absorbing :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (proposal_offset : U256.t)
+           (proposalCore_slot : U256.t)
+           (p : ProposalData.t)
+           (core : ProposalCore.t)
+           (H_success :
+              ProposalLib.validateProposal p core
+              = ProposalLib.Result.Success tt),
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun__validateProposal_507 proposal_offset proposalCore_slot
+        ⇓ Result.Ok tt
+    | Some (make_state env state_base memory' storage_base) ?}}.
+
+  Lemma run_fun__validateProposal_507_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -2130,6 +2220,9 @@ Module ProposalLibEquivalence.
       fun__validateProposal_507 proposal_offset proposalCore_slot
         ⇓ Result.Ok tt
     | Some (make_state env state_base memory' storage_base) ?}}.
+  Proof.
+    exact run_fun__validateProposal_507_body_absorbing.
+  Qed.
 
   (** ----- Composite walker axiom for [fun_proposeOptimistic_179] -----
 
@@ -2160,7 +2253,47 @@ Module ProposalLibEquivalence.
         S36. fun__saveProposal_580(proposal_mpos, proposalCore_slot,
               vetoDelay, vetoPeriod)
                                             → composite axiom above *)
-  Axiom run_fun_proposeOptimistic_179_at_storage_base :
+  (** R104 Phase 1 — see commentary at
+      [run_fun__validateProposal_507_body_absorbing] above. *)
+
+  Axiom run_fun_proposeOptimistic_179_body_absorbing :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (proposal_offset : U256.t)
+           (proposalCore_slot : U256.t)
+           (optimisticParams_offset : U256.t)
+           (p : ProposalData.t)
+           (core : ProposalCore.t)
+           (params : OptimisticGovernanceParams.t)
+           (roles : RoleSet)
+           (reg : SelectorRegistry)
+           (is_contract : Address -> bool)
+           (H_success :
+              ProposalLib.proposeOptimistic
+                p core params roles reg is_contract now_timestamp
+              = ProposalLib.Result.Success
+                  (ProposalLib.saveProposal p
+                     params.(OptimisticGovernanceParams.vetoDelay)
+                     params.(OptimisticGovernanceParams.vetoPeriod)
+                     now_timestamp))
+           (H_voteDelay_uint48 :
+              0 <= now_timestamp +
+                   params.(OptimisticGovernanceParams.vetoDelay) < 2^48)
+           (H_voteDuration_uint32 :
+              0 <= params.(OptimisticGovernanceParams.vetoPeriod) < 2^32),
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_proposeOptimistic_179 proposal_offset proposalCore_slot
+                                 optimisticParams_offset ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_proposeOptimistic_179 storage_base p core
+                 params now_timestamp)) ?}}.
+
+  Lemma run_fun_proposeOptimistic_179_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -2198,6 +2331,9 @@ Module ProposalLibEquivalence.
     | Some (make_state env state_base memory'
               (proj_post_proposeOptimistic_179 storage_base p core
                  params now_timestamp)) ?}}.
+  Proof.
+    exact run_fun_proposeOptimistic_179_body_absorbing.
+  Qed.
 
   (** ----- Composite walker axiom for [fun_proposePessimistic_288] -----
 
@@ -2208,7 +2344,10 @@ Module ProposalLibEquivalence.
         - per-target check is laxer: target.code.length != 0 OR
           calldata.length == 0.
         - votingDelay / votingPeriod fetched via two staticcalls. *)
-  Axiom run_fun_proposePessimistic_288_at_storage_base :
+  (** R104 Phase 1 — see commentary at
+      [run_fun__validateProposal_507_body_absorbing] above. *)
+
+  Axiom run_fun_proposePessimistic_288_body_absorbing :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -2243,6 +2382,44 @@ Module ProposalLibEquivalence.
               (proj_post_proposePessimistic_288 storage_base p core
                  now_timestamp)) ?}}.
 
+  Lemma run_fun_proposePessimistic_288_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (proposal_offset : U256.t)
+           (proposalCore_slot : U256.t)
+           (p : ProposalData.t)
+           (core : ProposalCore.t)
+           (params : StandardGovernanceParams.t)
+           (votes : Address -> U256.t)
+           (is_contract : Address -> bool)
+           (H_success :
+              ProposalLib.proposePessimistic
+                p core params votes is_contract now_timestamp
+              = ProposalLib.Result.Success
+                  (ProposalLib.saveProposal p
+                     params.(StandardGovernanceParams.votingDelay)
+                     params.(StandardGovernanceParams.votingPeriod)
+                     now_timestamp))
+           (H_voteDelay_uint48 :
+              0 <= now_timestamp +
+                   params.(StandardGovernanceParams.votingDelay) < 2^48)
+           (H_voteDuration_uint32 :
+              0 <= params.(StandardGovernanceParams.votingPeriod) < 2^32),
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_proposePessimistic_288 proposal_offset proposalCore_slot
+        ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_proposePessimistic_288 storage_base p core
+                 now_timestamp)) ?}}.
+  Proof.
+    exact run_fun_proposePessimistic_288_body_absorbing.
+  Qed.
+
   (** ----- Composite walker axiom for [fun_transitionToPessimistic_400] -----
 
       The body decomposes into:
@@ -2272,7 +2449,10 @@ Module ProposalLibEquivalence.
         S12. fun__saveProposal_580(<new proposalData>, newCore_slot,
               votingDelay, votingPeriod)
                                             → composite axiom above *)
-  Axiom run_fun_transitionToPessimistic_400_at_storage_base :
+  (** R104 Phase 1 — see commentary at
+      [run_fun__validateProposal_507_body_absorbing] above. *)
+
+  Axiom run_fun_transitionToPessimistic_400_body_absorbing :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -2300,6 +2480,38 @@ Module ProposalLibEquivalence.
     | Some (make_state env state_base memory'
               (proj_post_transitionToPessimistic_400 storage_base d
                  now_timestamp)) ?}}.
+
+  Lemma run_fun_transitionToPessimistic_400_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (proposalId : U256.t)
+           (optimisticProposal_slot : U256.t)
+           (proposalCores_slot : U256.t)
+           (d : OptimisticProposalDetails.t)
+           (params : StandardGovernanceParams.t)
+           (proposer_of_optimistic : Address)
+           (H_not_transitioned :
+              d.(OptimisticProposalDetails.vetoThreshold)
+              <> TRANSITIONED_VETO_THRESHOLD)
+           (H_voteDelay_uint48 :
+              0 <= now_timestamp +
+                   params.(StandardGovernanceParams.votingDelay) < 2^48)
+           (H_voteDuration_uint32 :
+              0 <= params.(StandardGovernanceParams.votingPeriod) < 2^32),
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_transitionToPessimistic_400 proposalId optimisticProposal_slot
+                                       proposalCores_slot ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_transitionToPessimistic_400 storage_base d
+                 now_timestamp)) ?}}.
+  Proof.
+    exact run_fun_transitionToPessimistic_400_body_absorbing.
+  Qed.
 
   (** ====================================================================
       Milestone Theorems — five public-function equivalences
