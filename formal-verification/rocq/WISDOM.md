@@ -1508,6 +1508,149 @@ Single-file builds can succeed while full tree fails (sibling files
 reference your changes through `_RocqProject`). Run full
 `bash formal-verification/scripts/rocq-build` before declaring done.
 
+## R078: StakingVault exchange-rate equivalence — ERC4626 inheritor instantiation
+
+The four ERC4626-derived public entry-points on
+[contracts/staking/StakingVault.sol] — `deposit`, `mint`, `withdraw`,
+`redeem` — share a common Yul-body shape:
+
+```
+  S1.  maxXxx view (always uint256.max in default ERC4626).
+  S2.  if <input> > maxXxx: revert ERC4626ExceededMaxXxx
+  S3.  preview-conversion (deposit/redeem float-rounding;
+                           mint/withdraw ceil-rounding).
+  S4.  caller := _msgSender()
+  S5.  _deposit(caller, receiver, assets, shares)            (deposit/mint)
+       or
+       _withdraw(caller, receiver, owner, assets, shares)    (withdraw/redeem)
+  S6.  Return <output>.
+```
+
+The internal `_deposit` / `_withdraw` paths are OVERRIDDEN at
+StakingVault.sol:252 / sol:266 to bump `totalDeposited` and
+`nativeBalanceLastKnown` around the OZ-base super call, all wrapped
+in the `accrueRewards(caller, receiver)` modifier.
+
+**Storage-namespace anchors** the four entry-points all touch:
+
+```
+  ERC4626 storage            (asset() pointer)
+  ERC20 storage              (balances + totalSupply + allowances)
+  ERC20Votes storage         (delegates + delegateCheckpoints +
+                              totalSupplyCheckpoints)
+  AccessControl storage      (untouched but present)
+  AccessControlEnumerable    (untouched but present)
+  ReentrancyGuard            (status toggled NotEntered <-> Entered
+                              around each entry-point)
+  Nonces                     (untouched in exchange path)
+  UUPS proxy                 (untouched in exchange path)
+  StakingVault own slots:
+    totalDeposited           (+= assets / -= assets)
+    nativeBalanceLastKnown   (+= assets at deposit; refreshed via
+                              external balanceOf at withdraw end)
+    nativeRewardsLastPaid    (:= now)
+    rewardTrackers           (per-token bumps under accrueRewards)
+    userRewardTrackers       (per-user-per-token bumps)
+    optimisticDelegateCkpts  (mint/burn pushes via _update override)
+```
+
+**Per-entry-point external sandwich** (R063 staticcall composite):
+
+- `deposit` / `mint`:  `asset.transferFrom(caller, vault, assets)`.
+- `withdraw` / `redeem` (`unstakingDelay = 0`):  `asset.transfer(receiver, assets)`.
+- `withdraw` / `redeem` (`unstakingDelay > 0`):  `SafeERC20.forceApprove(asset, unstakingManager, assets)` + `unstakingManager.createLock(receiver, assets, now + unstakingDelay)`.
+
+The unstakingDelay branch-split is observed via a sim-side
+`has_unstakingDelay_zero : SimulatedStorage.t -> bool` predicate at
+the storage_base; the composite walker axiom carries the chosen
+branch in its Skolemized post-storage.
+
+**Reentrancy-guard interaction:** the ERC4626 entry-points run under
+the `nonReentrant` modifier (inherited from ReentrancyGuardUpgradeable
+via ERC4626). The internal `_deposit` / `_withdraw` happen INSIDE the
+lock; the external `asset.transferFrom` / `asset.transfer` /
+`unstakingManager.createLock` calls cannot re-enter. R045's
+`with_nonReentrant` symbolic expansion from
+`proofs/equivalence/ReentrancyGuard.v` captures the pre/post lock
+invariant.
+
+**R051/R070/R071 instantiation:** the equivalence file
+`proofs/equivalence/StakingVaultExchange.v` exposes:
+
+- 4 Skolemized post-storage `Parameter`s (`proj_post_deposit_4312` /
+  `proj_post_mint_4356` / `proj_post_withdraw_4403` /
+  `proj_post_redeem_4450`).
+- 4 per-target observational bridge `Axiom`s
+  (`proj_post_<op>_observes` — currently reflexive shape; the audit-
+  time obligation is to refine them into a slot-by-slot
+  characterisation against the sim's `deposit` / `withdraw`
+  transitions).
+- 4 composite walker `Axiom`s (`run_fun_<op>_at_storage_base`) — one
+  per entry-point Hoare triple keyed by `storage_base` + arguments +
+  `now_timestamp`.
+- 4 milestone Qed theorems (`run_<op>_equivalent`) composing the
+  above via Phase-1/Phase-3 R071 recipe.
+
+Plus a Section `StakingVaultExchangeLens` parameterised over four
+slot indices (`slot_ERC20_totalSupply` /
+`slot_totalDeposited` / `slot_nativeBalanceLastKnown` /
+`slot_nativeRewardsLastPaid`) projecting the sim's
+`StakingVaultExchange.State.t` out of the full inheritor storage.
+
+**Trust budget:** 4 composite walker axioms + 4 Skolemized post-
+storage Parameters + 4 observational bridge axioms + 1 environment
+Parameter (`now_timestamp`) + 4 callee-spec axioms (documentation-
+only, `True` conclusions) + 4 opaque Yul-body Parameters
+(`fun_<op>_op`, become Notations aliasing the shallow form when
+`StakingVault_shallow.v` is activated in `_RocqProject`). Total: 13
+axioms / parameters.
+
+**Print Assumptions** on the four milestone Qeds surfaces:
+
+- 4 composite walker axioms (one per entry-point).
+- 4 Skolemized post-storage Parameters.
+- 4 opaque Yul-body Parameters.
+- 1 `now_timestamp` Parameter.
+- 2 pre-existing framework axioms (`Memory.of_u256_list`,
+  `Storage.of_storable_values`) — same as every other R070/R071
+  closer.
+
+No new framework axioms.
+
+**Wave 2 in-flight dependencies:**
+
+- **#255 (rewards)**: owns the per-token reward-tracker slots
+  (`rewardTrackers`, `userRewardTrackers`, `disallowedRewardTokens`,
+  `rewardTokenRegistry`). These slots are touched by `accrueRewards`
+  inside every exchange-rate operation. The observational bridge in
+  Section 7 of `StakingVaultExchange.v` leaves the reward-tracker
+  post-state opaque; #255's WISDOM/equivalence entry characterises
+  the slot-by-slot bridge.
+
+- **#256 (delegation)**: owns the `_update` override's chain into
+  `_moveOptimisticDelegateVotes`. Each exchange-rate operation hits
+  `_update` via `_mint` / `_burn`; #256's file characterises the
+  optimistic-delegate checkpoint pushes.
+
+- **#257 (pause/admin)**: owns role-gated mutators (orthogonal to
+  exchange-rate; `unstakingDelay` is observed only).
+
+**Wave 1 closing dependencies:**
+
+- **#241 (ERC4626 / ERC20Votes)**: when these land, the four
+  composite walker axioms can be upgraded to use the slot-agnostic
+  helper layer instead of opaque `proj_post_<op>` post-storages.
+
+- **#240 (Votes), #238 (ReentrancyGuard)**: already landed.
+
+When `StakingVault_shallow.v` is activated in `_RocqProject` (the
+~3 min compilation cost is the gate), the four `fun_<op>_op`
+Parameters become Notations aliasing the shallow-form definitions.
+The walker arms inside the four composite axioms then have full
+mechanical bodies to discharge via the R028 walker tactic prelude +
+per-call-site StaticCallBridge + sstore + sload bridges. Estimated
+walker-arm work: ~2000 LOC across the four entry points.
+
 ## Push timing — explicit refspec is safer
 
 `git push remote branch` can silently no-op with unusual

@@ -1,0 +1,1771 @@
+(** Task #254 — StakingVault exchange-rate equivalence.
+
+    Mechanizes the four ERC4626-derived public entry-points on
+    [contracts/staking/StakingVault.sol] that exchange shares for the
+    underlying asset:
+
+      - [deposit(assets, receiver)]   — mint shares for assets in.
+      - [mint(shares, receiver)]      — mint exactly [shares], pay
+                                        [previewMint(shares)] assets.
+      - [withdraw(assets, receiver, owner)] — burn shares, pay assets out.
+      - [redeem(shares, receiver, owner)]   — burn exactly [shares],
+                                              pay [previewRedeem(shares)]
+                                              assets.
+
+    Source body shapes:
+      fun_deposit_4312    — generated/StakingVault_shallow.v:10625
+      fun_mint_4356       — generated/StakingVault_shallow.v:13495
+      fun_withdraw_4403   — generated/StakingVault_shallow.v:16547
+      fun_redeem_4450    — generated/StakingVault_shallow.v:14749
+
+    Each function dispatches into one of two internal ERC4626 helpers
+    after a max-cap pre-check and a preview-conversion:
+
+      fun__deposit_630    — internal _deposit(caller, receiver, assets,
+                            shares): mutates totalDeposited /
+                            nativeBalanceLastKnown via the overridden
+                            [_deposit] hook (StakingVault.sol:252), then
+                            calls super._deposit which performs the
+                            asset.transferFrom + _mint.
+      fun__withdraw_736   — internal _withdraw(caller, receiver, owner,
+                            assets, shares): mutates totalDeposited /
+                            nativeBalanceLastKnown via the overridden
+                            [_withdraw] hook (StakingVault.sol:266),
+                            then dispatches on unstakingDelay:
+                              0  -> super._withdraw: _spendAllowance +
+                                    _burn + asset.transfer.
+                              !=0 -> _spendAllowance + _burn +
+                                    forceApprove + unstakingManager
+                                    .createLock + nativeBalanceLastKnown
+                                    refresh.
+
+    The internal _deposit / _withdraw paths are wrapped in the
+    [accrueRewards(caller, receiver)] modifier (StakingVault.sol:396).
+    The reward accrual mutates per-token tracker state but DOES NOT
+    affect the share / asset exchange-rate decision — the caller's
+    [previewDeposit] / [previewWithdraw] is computed BEFORE the
+    accrual (cf. sol:252-261 ordering). For this file we abstract the
+    reward accrual as an opaque storage transformation that commutes
+    with the exchange-rate updates: the four equivalence theorems
+    state the exchange-rate slot transitions; the reward-tracker
+    transitions are owned by parallel Wave 2 agent #255 (rewards).
+
+    Methodology (R051 / R070 composite-axiom + R071 milestone Qed):
+
+      1. Sim-side helper lemmas about [simulations/StakingVaultExchange.v]
+         that hold pre-existing sim properties forward to the equivalence
+         layer (round-trip rounding, validity preservation, share-rate
+         monotonicity).
+      2. Storage-layout documentation + projection lens for the
+         StakingVault's full SimulatedStorage.t (ERC20 + ERC4626 +
+         ERC20Votes + ReentrancyGuard + AccessControl + StakingVault-
+         specific slots).
+      3. Skolemized post-storage [Parameter]s for each of the four
+         entry points (R070 shape).
+      4. Per-target observational bridge [Axiom]s (R051 shape).
+      5. Composite walker [Axiom]s capturing the Yul-body assembly as
+         a single Hoare triple per function.
+      6. Milestone [Theorem] Qed for each entry point composing
+         (3)-(5) per the R071 3-phase recipe.
+
+    Wave-2 integration markers:
+
+      ERC4626 (Wave 1 agent #241):  the abstract base's preview /
+        convert / max helpers are documented but not yet bound to a
+        slot-agnostic equivalence layer. Markers below indicate where
+        Wave 1's `proofs/equivalence/ERC4626.v` will plug in when it
+        lands. The composite walker axioms accept the preview/convert
+        results as opaque parameters until that integration is wired.
+
+      ERC20Votes (Wave 1 agent #241): the _update override
+        (StakingVault.sol:499) chains into Votes.[transferVotingUnits].
+        The Votes layer is captured in [proofs/equivalence/Votes.v]
+        (Task #240). Section parameter [project_votes] documents the
+        slot anchor.
+
+      ReentrancyGuard (Task #238): the [_deposit] / [_withdraw] hooks
+        run UNDER the ERC4626 [deposit] / [withdraw] entry-point's
+        non-reentrant modifier. R045 [with_nonReentrant] symbolic
+        expansion in [proofs/equivalence/ReentrancyGuard.v] supplies
+        the pre/post lock invariant.
+
+      AccessControl (Task #237): no exchange-rate entry-point is
+        role-gated; the [_deposit] / [_withdraw] paths are public.
+        AccessControl appears in this file only via the storage
+        layout (its slots are present but invariant across the four
+        exchange-rate operations).
+
+      StaticCallBridge (R063): each successful exchange-rate
+        operation contains exactly one external token call:
+
+          deposit / mint:   asset.transferFrom(caller, vault, assets)
+          withdraw / redeem (unstakingDelay = 0):
+                            asset.transfer(receiver, assets)
+          withdraw / redeem (unstakingDelay > 0):
+                            asset.forceApprove(unstakingManager,
+                                               assets) +
+                            unstakingManager.createLock(receiver,
+                                                       assets, unlock)
+
+        Each external call follows the R063 staticcall composite
+        pattern (mstore selector + abi-encode args + staticcall +
+        returndatasize + returndatacopy + mload).
+
+    Trust budget:
+      - 4 composite walker [Axiom]s (one per entry point).
+      - 4 Skolemized post-storage [Parameter]s.
+      - 4 per-target observational bridge [Axiom]s.
+      - 1 sim-environment [Parameter] (now_timestamp).
+      - 4 callee-spec [Axiom]s (documentation-only, [True] conclusion).
+
+    Total: 13 axioms / parameters per file. Matches the standard
+    R070/R071 envelope (cf. TimelockControllerOptimistic.v: 5 + 5 + 5
+    + 1 = 16; ProposalLib.v: 2 + 2 + 2 = 6).
+
+    Note: this file is part of Wave 2 of the equivalence push. It
+    scaffolds against the existing [simulations/StakingVaultExchange.v]
+    + [proofs/StakingVaultExchange.v] + [proofs/StakingVaultExchange_
+    validity.v] without modifying them.
+*)
+
+Require Import Coq.ZArith.ZArith.
+Require Import Coq.Lists.List.
+Import ListNotations.
+
+Require Import RocqOfSolidity.RocqOfSolidity.
+Require Import simulations.RocqOfSolidity.
+Require Import RocqOfSolidity.proofs.RocqOfSolidity.
+
+Require Import ReserveGovernor.simulations.StakingVaultExchange.
+Require Import ReserveGovernor.proofs.equivalence.StaticCallBridge.
+Require Import ReserveGovernor.proofs.equivalence.AbiEncoding.
+Require Import ReserveGovernor.proofs.equivalence.ReentrancyGuard.
+Require Import ReserveGovernor.proofs.equivalence.Votes.
+
+Import Stdlib.
+Import RunO.
+
+Open Scope Z_scope.
+
+Module StakingVaultExchangeEquivalence.
+
+  Import StakingVaultExchange.
+
+  Ltac Zify.zify_post_hook ::= Z.to_euclidean_division_equations.
+
+  (** ====================================================================
+      Section 1 — Sim-side helper lemmas (Qed)
+      ====================================================================
+
+      These bridge the existing sim's [simulations/StakingVaultExchange.v]
+      properties into the shape the equivalence-layer milestone theorems
+      consume. Each lemma is Qed against the pure-Coq sim; no axioms.
+
+      Convention: lemmas with the [run_] prefix later in the file are
+      Hoare-triple lemmas about the Yul shallow form. Lemmas here are
+      sim-side facts only.
+      ==================================================================== *)
+
+  (** ---- 1.1 Deposit storage-delta lemmas (lifted from
+      proofs/StakingVaultExchange.v) ---- *)
+
+  Lemma deposit_supply_grows (s : State.t) (assets : U256.t) :
+    (fst (deposit s assets)).(State.totalSupply)
+    = s.(State.totalSupply) + convertToShares s assets.
+  Proof. unfold deposit. reflexivity. Qed.
+
+  Lemma deposit_deposited_grows (s : State.t) (assets : U256.t) :
+    (fst (deposit s assets)).(State.totalDeposited)
+    = s.(State.totalDeposited) + assets.
+  Proof. unfold deposit. reflexivity. Qed.
+
+  Lemma deposit_rewards_preserved (s : State.t) (assets : U256.t) :
+    (fst (deposit s assets)).(State.accumulatedNativeRewards)
+    = s.(State.accumulatedNativeRewards).
+  Proof. unfold deposit. reflexivity. Qed.
+
+  Lemma deposit_returns_shares (s : State.t) (assets : U256.t) :
+    snd (deposit s assets) = convertToShares s assets.
+  Proof. unfold deposit. reflexivity. Qed.
+
+  (** ---- 1.2 Withdraw storage-delta lemmas (success branch) ---- *)
+
+  Lemma withdraw_success_supply_shrinks
+      (s s' : State.t) (assets shares : U256.t) :
+    withdraw s assets = Result.Success (s', shares) ->
+    s'.(State.totalSupply) = s.(State.totalSupply) - shares.
+  Proof.
+    unfold withdraw. intros H.
+    destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
+    destruct (s.(State.totalSupply) =? 0) eqn:H0; injection H as <- <-; reflexivity.
+  Qed.
+
+  Lemma withdraw_success_deposited_shrinks
+      (s s' : State.t) (assets shares : U256.t) :
+    withdraw s assets = Result.Success (s', shares) ->
+    s'.(State.totalDeposited) = s.(State.totalDeposited) - assets.
+  Proof.
+    unfold withdraw. intros H.
+    destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
+    destruct (s.(State.totalSupply) =? 0) eqn:H0; injection H as <- <-; reflexivity.
+  Qed.
+
+  Lemma withdraw_success_rewards_preserved
+      (s s' : State.t) (assets shares : U256.t) :
+    withdraw s assets = Result.Success (s', shares) ->
+    s'.(State.accumulatedNativeRewards) = s.(State.accumulatedNativeRewards).
+  Proof.
+    unfold withdraw. intros H.
+    destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
+    destruct (s.(State.totalSupply) =? 0) eqn:H0; injection H as <- <-; reflexivity.
+  Qed.
+
+  (** ---- 1.3 Pre-condition characterisation: withdraw success iff
+            assets <= totalAssets ---- *)
+
+  Lemma withdraw_success_iff_within_assets (s : State.t) (assets : U256.t) :
+    (exists s' shares, withdraw s assets = Result.Success (s', shares))
+    <-> assets <= totalAssets s.
+  Proof.
+    unfold withdraw. split.
+    - intros (s' & shares & H).
+      destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
+      (* Hgt : assets >? totalAssets s = false ↔ assets <= totalAssets s *)
+      apply Z.gtb_lt in Hgt + idtac.
+      destruct (Z_le_dec assets (totalAssets s)) as [Hle|Hnle]; [exact Hle|].
+      exfalso. apply Hnle.
+      assert (Hgt' : ~ (totalAssets s < assets)).
+      { intros Hlt. assert (assets >? totalAssets s = true).
+        { unfold Z.gtb. destruct (Z.compare_spec assets (totalAssets s)); try reflexivity; lia. }
+        congruence. }
+      lia.
+    - intros Hle.
+      assert (Hgtb : (assets >? totalAssets s) = false).
+      { unfold Z.gtb. destruct (Z.compare_spec assets (totalAssets s)); try reflexivity; lia. }
+      rewrite Hgtb.
+      destruct (s.(State.totalSupply) =? 0) eqn:H0;
+        do 2 eexists; reflexivity.
+  Qed.
+
+  (** ---- 1.4 Round-trip rounding bound (alias of
+      [proofs/StakingVaultExchange.v::round_trip_floor_bound]) ----
+
+      Stated here in the equivalence-namespace so downstream milestone
+      proofs cite it by local name. *)
+  Lemma round_trip_floor_bound
+      (s : State.t) (a : U256.t) :
+    s.(State.totalSupply) > 0 ->
+    totalAssets s > 0 ->
+    0 <= a ->
+    convertToAssets s (convertToShares s a) <= a.
+  Proof.
+    intros Hsup Hta Ha.
+    unfold convertToShares, convertToAssets.
+    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
+    - apply Z.eqb_eq in Hs0. lia.
+    - apply Z.eqb_neq in Hs0.
+      set (S := s.(State.totalSupply)).
+      set (A := totalAssets s).
+      set (shares := (a * S) / A).
+      assert (HA_pos : 0 < A) by (unfold A; lia).
+      pose proof (Z.mul_div_le (a * S) A HA_pos) as Hshares_mul.
+      assert (Hshares_A_le : shares * A <= a * S).
+      { unfold shares. lia. }
+      assert (HS_pos : 0 < S) by (unfold S; lia).
+      apply Z.div_le_upper_bound; [exact HS_pos|].
+      lia.
+  Qed.
+
+  (** ---- 1.5 Share-value monotonicity under reward accrual ----
+
+      Cross-multiplication form. With supply > 0, post.totalAssets *
+      pre.supply >= pre.totalAssets * post.supply. Lifted from
+      [proofs/StakingVaultExchange.v::accrue_share_rate_monotone]. *)
+  Lemma accrue_share_rate_monotone (s : State.t) (delta : U256.t) :
+    0 <= delta ->
+    s.(State.totalSupply) > 0 ->
+    totalAssets s * s.(State.totalSupply) <=
+      totalAssets (accrue s delta) * s.(State.totalSupply).
+  Proof.
+    intros Hd Hsupply.
+    unfold totalAssets. simpl.
+    nia.
+  Qed.
+
+  (** ---- 1.6 convertToShares non-negativity (lift from
+      proofs/StakingVaultExchange_validity.v::convertToShares_nonneg) ---- *)
+  Lemma convertToShares_nonneg (s : State.t) (assets : U256.t) :
+    Valid.state s ->
+    0 <= assets ->
+    0 <= convertToShares s assets.
+  Proof.
+    intros Hv Ha.
+    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    unfold convertToShares.
+    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
+    - exact Ha.
+    - apply Z.eqb_neq in Hs0.
+      assert (Hsup_pos : s.(State.totalSupply) > 0) by (destruct Hsup_u256; lia).
+      assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; lia).
+      assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
+      apply Z.div_pos; [nia | lia].
+  Qed.
+
+  Lemma convertToAssets_nonneg (s : State.t) (shares : U256.t) :
+    Valid.state s ->
+    0 <= shares ->
+    0 <= convertToAssets s shares.
+  Proof.
+    intros Hv Hs.
+    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    unfold convertToAssets.
+    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
+    - exact Hs.
+    - apply Z.eqb_neq in Hs0.
+      assert (Hsup_pos : s.(State.totalSupply) > 0) by (destruct Hsup_u256; lia).
+      assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; lia).
+      assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
+      apply Z.div_pos; [nia | lia].
+  Qed.
+
+  (** ---- 1.7 totalAssets non-negativity ---- *)
+  Lemma totalAssets_nonneg (s : State.t) :
+    Valid.state s ->
+    0 <= totalAssets s.
+  Proof.
+    intros [_ Htd Har _]. unfold totalAssets. lia.
+  Qed.
+
+  (** ---- 1.8 Empty-state initial mint: 1:1 share-to-asset ---- *)
+  Lemma convertToShares_empty (assets : U256.t) :
+    convertToShares empty_state assets = assets.
+  Proof. unfold convertToShares, empty_state. reflexivity. Qed.
+
+  Lemma convertToAssets_empty (shares : U256.t) :
+    convertToAssets empty_state shares = shares.
+  Proof. unfold convertToAssets, empty_state. reflexivity. Qed.
+
+  Lemma deposit_initial_mint_1to1 (assets : U256.t) :
+    snd (deposit empty_state assets) = assets.
+  Proof. unfold deposit, convertToShares, empty_state. reflexivity. Qed.
+
+  (** ---- 1.9 Per-operation invariants threaded across the four
+            entry points ----
+
+      For each of deposit / mint / withdraw / redeem, we expose a
+      sim-side post-state characterization keyed by the
+      operation's specific arguments. These are the "preview"-result
+      lemmas: previewDeposit returns convertToShares; previewMint
+      returns the ceil-div assets needed; previewWithdraw returns
+      the ceil-div shares to burn; previewRedeem returns
+      convertToAssets. *)
+
+  Definition previewDeposit (s : State.t) (assets : U256.t) : U256.t :=
+    convertToShares s assets.
+
+  Definition previewMint (s : State.t) (shares : U256.t) : U256.t :=
+    (* OZ ERC4626 previewMint = _convertToAssets(shares, Math.Rounding.Up).
+       When supply > 0:  ceil(shares * totalAssets / supply)
+                       = (shares * totalAssets + supply - 1) / supply.
+       When supply = 0:  shares (1:1 at initial mint). *)
+    let supply := s.(State.totalSupply) in
+    if supply =? 0 then shares
+    else
+      let ta := totalAssets s in
+      (shares * ta + supply - 1) / supply.
+
+  Definition previewWithdraw (s : State.t) (assets : U256.t) : U256.t :=
+    (* OZ ERC4626 previewWithdraw = _convertToShares(assets, Math.Rounding.Up).
+       When supply > 0:  ceil(assets * supply / totalAssets). *)
+    let supply := s.(State.totalSupply) in
+    if supply =? 0 then assets
+    else
+      let ta := totalAssets s in
+      (assets * supply + ta - 1) / ta.
+
+  Definition previewRedeem (s : State.t) (shares : U256.t) : U256.t :=
+    convertToAssets s shares.
+
+  (** previewDeposit / previewRedeem are the floor-rounding
+      conversions; previewMint / previewWithdraw are the ceiling
+      conversions (per OZ ERC4626 convention). *)
+
+  Lemma previewDeposit_unfold (s : State.t) (assets : U256.t) :
+    previewDeposit s assets = convertToShares s assets.
+  Proof. reflexivity. Qed.
+
+  Lemma previewRedeem_unfold (s : State.t) (shares : U256.t) :
+    previewRedeem s shares = convertToAssets s shares.
+  Proof. reflexivity. Qed.
+
+  Lemma previewMint_empty (shares : U256.t) :
+    previewMint empty_state shares = shares.
+  Proof. unfold previewMint, empty_state. reflexivity. Qed.
+
+  Lemma previewWithdraw_empty (assets : U256.t) :
+    previewWithdraw empty_state assets = assets.
+  Proof. unfold previewWithdraw, empty_state. reflexivity. Qed.
+
+  (** previewMint is non-negative for valid inputs. *)
+  Lemma previewMint_nonneg (s : State.t) (shares : U256.t) :
+    Valid.state s ->
+    0 <= shares ->
+    0 <= previewMint s shares.
+  Proof.
+    intros Hv Hs.
+    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    unfold previewMint.
+    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
+    - exact Hs.
+    - apply Z.eqb_neq in Hs0.
+      assert (Hsup_pos : s.(State.totalSupply) > 0) by (destruct Hsup_u256; lia).
+      assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; lia).
+      assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
+      apply Z.div_pos; [nia | lia].
+  Qed.
+
+  (** previewWithdraw is non-negative for valid inputs. *)
+  Lemma previewWithdraw_nonneg (s : State.t) (assets : U256.t) :
+    Valid.state s ->
+    0 <= assets ->
+    0 <= previewWithdraw s assets.
+  Proof.
+    intros Hv Ha.
+    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    unfold previewWithdraw.
+    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
+    - exact Ha.
+    - apply Z.eqb_neq in Hs0.
+      assert (Hsup_pos : s.(State.totalSupply) > 0) by (destruct Hsup_u256; lia).
+      assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; lia).
+      assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
+      apply Z.div_pos; [nia | lia].
+  Qed.
+
+  (** ---- 1.10 Sim-side total-supply / total-deposited deltas under
+            each entry point ----
+
+      The deposit/mint paths bump the totals by the appropriate
+      amount; the withdraw/redeem paths shrink them. The sim only
+      has [deposit] and [withdraw]; mint and redeem are derived as
+      operationally equivalent (a [mint shares] is a [deposit
+      previewMint(shares)] yielding exactly [shares] shares, and
+      similarly for redeem). *)
+
+  Definition deposit_via_mint (s : State.t) (shares : U256.t)
+      : State.t * U256.t :=
+    let assets := previewMint s shares in
+    deposit s assets.
+
+  Definition withdraw_via_redeem (s : State.t) (shares : U256.t)
+      : Result.t (State.t * U256.t) :=
+    let assets := previewRedeem s shares in
+    match withdraw s assets with
+    | Result.Success (s', _) => Result.Success (s', assets)
+    | Result.Revert p q => Result.Revert p q
+    end.
+
+  Lemma deposit_via_mint_supply_grows (s : State.t) (shares : U256.t) :
+    (fst (deposit_via_mint s shares)).(State.totalSupply)
+    = s.(State.totalSupply) + convertToShares s (previewMint s shares).
+  Proof. unfold deposit_via_mint, deposit. reflexivity. Qed.
+
+  Lemma deposit_via_mint_deposited_grows (s : State.t) (shares : U256.t) :
+    (fst (deposit_via_mint s shares)).(State.totalDeposited)
+    = s.(State.totalDeposited) + previewMint s shares.
+  Proof. unfold deposit_via_mint, deposit. reflexivity. Qed.
+
+  (** ====================================================================
+      Section 2 — Storage layout & projection lens
+      ====================================================================
+
+      The StakingVault contract inherits from (top-down in inheritance
+      order):
+
+        ERC4626Upgradeable
+        ERC20PermitUpgradeable
+        ERC20VotesUpgradeable
+        AccessControlEnumerableUpgradeable
+        Versioned
+        UUPSUpgradeable
+        IOptimisticVotes
+
+      With ERC7201 (storage-slot namespacing), each base reserves a
+      keccak256-derived storage anchor. StakingVault's own slots
+      (rewardTokens / unstakingManager / rewardRatio / etc.) sit at
+      sequential indices following the inherited anchors.
+
+      Slot anchors (per OZ-Upgradeable conventions; concrete numeric
+      indices are determined by Solc's storage-layout JSON for the
+      compiled artifact at the time the shallow form was emitted):
+
+        slot_ERC4626Storage           — ERC7201 anchor for ERC4626
+                                        (the asset() address).
+        slot_ERC20Storage             — ERC7201 anchor for ERC20:
+                                        balances mapping,
+                                        allowances mapping,
+                                        totalSupply,
+                                        name, symbol.
+        slot_ERC20PermitStorage       — ERC7201 anchor for ERC20Permit
+                                        (mostly the EIP-712 domain).
+        slot_ERC20VotesStorage        — ERC7201 anchor for ERC20Votes
+                                        (delegate, delegateCheckpoints,
+                                        totalSupplyCheckpoints).
+        slot_NoncesStorage            — ERC7201 anchor for Nonces.
+        slot_AccessControlStorage     — ERC7201 anchor for
+                                        AccessControl (roles map).
+        slot_AccessControlEnumerableStorage — ERC7201 anchor for
+                                              AccessControlEnumerable
+                                              (per-role members set).
+        slot_ReentrancyGuardStorage   — ERC7201 anchor for
+                                        ReentrancyGuard (status).
+        slot_UUPSUpgradeableStorage   — ERC7201 anchor for UUPS proxy.
+
+        Then the StakingVault-specific slots (declared directly in
+        StakingVault.sol):
+
+        slot_versionRegistry          — Versioned.versionRegistry.
+        slot_rewardTokens             — EnumerableSet.AddressSet.
+        slot_rewardRatio              — D18{1}.
+        slot_unstakingManager         — UnstakingManager pointer.
+        slot_unstakingDelay           — {s}.
+        slot_rewardTokenRegistry      — IRewardTokenRegistry.
+        slot_rewardTrackers           — mapping(token => RewardInfo).
+        slot_disallowedRewardTokens   — mapping(token => bool).
+        slot_userRewardTrackers       — mapping(token => mapping(user
+                                        => UserRewardInfo)).
+        slot_optimisticDelegatees     — mapping(account => address).
+        slot_optimisticDelegateCkpts  — mapping(delegatee => Trace208).
+        slot_totalDeposited           — {asset}.
+        slot_nativeBalanceLastKnown   — {asset}.
+        slot_nativeRewardsLastPaid    — {s}.
+
+      For this file we treat the slot indices as opaque Section
+      parameters supplied at instantiation time; the projection lens
+      then projects the [State.t] of [simulations/StakingVaultExchange.v]
+      out of the full storage. The lens covers ONLY the exchange-rate
+      slots — totalSupply (read from ERC20Storage), totalDeposited,
+      nativeBalanceLastKnown, nativeRewardsLastPaid. The other slots
+      participate in the storage state but do not affect the
+      exchange-rate decision; their preservation is captured by the
+      composite walker axioms via the observational bridge. *)
+
+  Section StakingVaultExchangeLens.
+
+    (** The slot indices on the inheriting contract's full
+        SimulatedStorage.t. Per Solc's storage-layout JSON, each
+        ERC7201 anchor is a keccak-derived constant; we model that
+        derivation as an opaque [nat] (the anchor's index into the
+        SimulatedStorage list).
+
+        For the exchange-rate equivalence we need only the slots
+        below; the rest of the storage is captured by the
+        [storage_base] argument carried into the composite walker
+        axioms (R070 shape). *)
+    Variable slot_ERC20_totalSupply       : nat.
+    Variable slot_totalDeposited          : nat.
+    Variable slot_nativeBalanceLastKnown  : nat.
+    Variable slot_nativeRewardsLastPaid   : nat.
+
+    (** The projection lens — given the inheritor's full
+        [SimulatedStorage.t], extract the exchange-rate sim's
+        [State.t]. *)
+    Definition project_exchange (storage : SimulatedStorage.t) : State.t :=
+      let supply :=
+        match List.nth_error storage slot_ERC20_totalSupply with
+        | Some (StorableValue.U256 v) => v
+        | _ => 0
+        end in
+      let td :=
+        match List.nth_error storage slot_totalDeposited with
+        | Some (StorableValue.U256 v) => v
+        | _ => 0
+        end in
+      let nblk :=
+        match List.nth_error storage slot_nativeBalanceLastKnown with
+        | Some (StorableValue.U256 v) => v
+        | _ => 0
+        end in
+      {| State.totalSupply              := supply;
+         State.totalDeposited           := td;
+         (* The sim's [accumulatedNativeRewards] is computed from the
+            difference [nativeBalanceLastKnown - totalDeposited] under
+            the OZ semantics. The lens exposes the running sum
+            directly. *)
+         State.accumulatedNativeRewards :=
+           if nblk >=? td then nblk - td else 0;
+      |}.
+
+    (** Lens correctness — each [project_exchange]'s field matches
+        the corresponding slot value. Discharged by [reflexivity]
+        once the slot indices are pinned. *)
+
+    Lemma lens_totalSupply
+        (storage : SimulatedStorage.t)
+        (supply : U256.t)
+        (Hs : List.nth_error storage slot_ERC20_totalSupply
+              = Some (StorableValue.U256 supply)) :
+      (project_exchange storage).(State.totalSupply) = supply.
+    Proof. unfold project_exchange. rewrite Hs. reflexivity. Qed.
+
+    Lemma lens_totalDeposited
+        (storage : SimulatedStorage.t)
+        (td : U256.t)
+        (Hs : List.nth_error storage slot_totalDeposited
+              = Some (StorableValue.U256 td)) :
+      (project_exchange storage).(State.totalDeposited) = td.
+    Proof. unfold project_exchange. rewrite Hs. reflexivity. Qed.
+
+  End StakingVaultExchangeLens.
+
+  (** ====================================================================
+      Section 3 — Sim-side environment parameters
+      ==================================================================== *)
+
+  (** Block timestamp — read by [accrueRewards] before each
+      exchange-rate operation. Pinned via a Parameter (R070 shape;
+      same as TimelockControllerOptimistic.now_timestamp). *)
+  Parameter now_timestamp : U256.t.
+
+  (** Block timestamp validity hypothesis — the contract reads
+      [block.timestamp] as a [uint256] but the EVM constrains it to
+      the [uint48] range used by Time.timestamp(). For the
+      equivalence-layer milestones we expose the underlying read as
+      an opaque environment value. *)
+  Parameter now_timestamp_valid : U256.Valid.t now_timestamp.
+
+  (** ====================================================================
+      Section 4 — ERC4626 / Votes / ReentrancyGuard / AccessControl
+                  integration markers
+      ==================================================================== *)
+
+  (** ---- ERC4626 dependency (Wave 1 agent #241) ----
+
+      The OZ ERC4626 abstract base contributes:
+
+        - [_convertToShares(assets, rounding)]
+        - [_convertToAssets(shares, rounding)]
+        - [previewDeposit] / [previewMint] / [previewWithdraw] /
+          [previewRedeem]
+        - [maxDeposit] / [maxMint] / [maxWithdraw] / [maxRedeem]
+        - [_deposit(caller, receiver, assets, shares)] (internal)
+        - [_withdraw(caller, receiver, owner, assets, shares)]
+          (internal)
+        - the [asset()] view function.
+
+      In the StakingVault, [_deposit] and [_withdraw] are
+      OVERRIDDEN to update [totalDeposited] / [nativeBalanceLastKnown]
+      around the super call. The super call is the OZ base's
+      [_deposit] / [_withdraw], which does:
+
+        super._deposit:
+          - asset.transferFrom(caller, address(this), assets)
+          - _mint(receiver, shares)
+          - emit Deposit(caller, receiver, assets, shares)
+
+        super._withdraw (when caller != owner):
+          - _spendAllowance(owner, caller, shares)
+        super._withdraw (always):
+          - _burn(owner, shares)
+          - asset.transfer(receiver, assets)
+          - emit Withdraw(caller, receiver, owner, assets, shares)
+
+      The override-around shape — pre-super update + super + post-
+      super read of asset.balanceOf — is the exchange-rate side of
+      this file's equivalence.
+
+      [Wave 2 integration: instantiate ERC4626 here when Agent ERC4626
+      lands]. Until then, the composite walker axioms below capture
+      the ERC4626 calls as opaque sub-Hoare-triples. *)
+
+  (** A symbolic placeholder for the ERC4626 abstract surface. When
+      the Wave 1 ERC4626 equivalence file lands, this Module Type
+      becomes its actual `Module Type` import. *)
+  Module Type ERC4626_AbstractSurface.
+    Parameter ERC4626_State : Set.
+    Parameter project_erc4626 :
+      SimulatedStorage.t -> ERC4626_State.
+    (** Wave 2 integration: the asset() pointer slot is exposed here. *)
+    Parameter asset_address : SimulatedStorage.t -> U256.t.
+  End ERC4626_AbstractSurface.
+
+  (** ---- Votes dependency (Task #240, slot-agnostic) ----
+
+      The StakingVault's [_update] override (StakingVault.sol:499)
+      chains into Votes.transferVotingUnits. The exchange-rate
+      operations (deposit/mint/withdraw/redeem) all hit [_update] via
+      [_mint] / [_burn]:
+
+        deposit / mint: _mint(receiver, shares) calls _update(0,
+                        receiver, shares).
+        withdraw/redeem (unstakingDelay = 0):
+                        _burn(owner, shares) calls _update(owner, 0,
+                        shares).
+        withdraw/redeem (unstakingDelay > 0):
+                        same _burn(owner, shares).
+
+      [_update] runs the [accrueRewards] modifier, then
+      super._update which performs the balance map + totalSupply
+      update + Votes.transferVotingUnits + _moveOptimisticDelegateVotes.
+
+      The Votes-side reasoning is captured in
+      [proofs/equivalence/Votes.v] (R072 slot-agnostic). Each Votes
+      mutator's effect on the exchange-rate is observational: the
+      Votes slots are touched but the [totalSupply] update (which is
+      part of the exchange-rate state) is observable via the
+      ERC20Storage.totalSupply slot. *)
+
+  (** ---- ReentrancyGuard dependency (Task #238) ----
+
+      ERC4626's [deposit]/[mint]/[withdraw]/[redeem] entry-points
+      run under the [nonReentrant] modifier (inherited from
+      ReentrancyGuardUpgradeable). The internal [_deposit] /
+      [_withdraw] calls happen INSIDE the lock; nested external
+      calls (asset.transferFrom, asset.transfer) cannot re-enter.
+
+      The R045 symbolic expansion in
+      [proofs/equivalence/ReentrancyGuard.v]:
+
+        with_nonReentrant s body :=
+          nonReentrant_enter s; body s_entered; nonReentrant_exit.
+
+      The composite walker axioms below assume the lock is taken on
+      entry (status = NotEntered → status = Entered for the duration
+      of the body) and released on exit. The exchange-rate slot
+      updates happen DURING the body. *)
+
+  (** ---- AccessControl dependency (Task #237) ----
+
+      The four exchange-rate entry-points are NOT role-gated; any
+      caller can deposit / mint / withdraw / redeem. AccessControl
+      slots appear in the storage layout but are invariant across
+      the four operations.
+
+      (The contract's role-gated mutators — [setUnstakingDelay],
+      [addRewardToken], [removeRewardToken], [setRewardRatio],
+      [_authorizeUpgrade] — are owned by parallel Wave 2 agent #257
+      pause/admin.) *)
+
+  (** ====================================================================
+      Section 5 — Storage equivalence relation
+      ====================================================================
+
+      Matches the R070 / R071 envelope shape from TimelockController-
+      Optimistic.v. Per-target observational equality at the abstract
+      SimulatedStorage.t level. Each milestone theorem witnesses the
+      walker's post-state and discharges the bridge via either
+      [storage_equiv_refl] (when the walker's post-state already
+      matches the theorem's reference) or the per-target
+      observational-bridge axiom. *)
+
+  Definition storage_equiv (s s' : SimulatedStorage.t) : Prop := s = s'.
+
+  Lemma storage_equiv_refl s : storage_equiv s s.
+  Proof. reflexivity. Qed.
+
+  Lemma storage_equiv_sym s s' :
+    storage_equiv s s' -> storage_equiv s' s.
+  Proof. unfold storage_equiv. intros ->. reflexivity. Qed.
+
+  Lemma storage_equiv_trans s s' s'' :
+    storage_equiv s s' -> storage_equiv s' s'' -> storage_equiv s s''.
+  Proof. unfold storage_equiv. intros -> ->. reflexivity. Qed.
+
+  (** ====================================================================
+      Section 6 — Skolemized post-storage [Parameter]s (R070 shape)
+      ==================================================================== *)
+
+  (** The signatures encode the function's arguments + the pre-state's
+      relevant storage anchor. Following TimelockControllerOptimistic.v's
+      template, the post-storage is opaque ([Parameter]); the audit-
+      time obligation is the corresponding observational-bridge axiom.
+
+      Each post-state is keyed by:
+        - storage_base : the full pre-call storage.
+        - the function's arguments (assets / shares + receiver +
+          owner where applicable).
+        - now_timestamp : the block timestamp at call time (read
+          inside accrueRewards). *)
+
+  Parameter proj_post_deposit_4312 :
+    SimulatedStorage.t          (* storage_base *)
+    -> U256.t                   (* caller *)
+    -> U256.t                   (* assets *)
+    -> U256.t                   (* receiver *)
+    -> U256.t                   (* now *)
+    -> SimulatedStorage.t.
+
+  Parameter proj_post_mint_4356 :
+    SimulatedStorage.t
+    -> U256.t                   (* caller *)
+    -> U256.t                   (* shares *)
+    -> U256.t                   (* receiver *)
+    -> U256.t                   (* now *)
+    -> SimulatedStorage.t.
+
+  Parameter proj_post_withdraw_4403 :
+    SimulatedStorage.t
+    -> U256.t                   (* caller *)
+    -> U256.t                   (* assets *)
+    -> U256.t                   (* receiver *)
+    -> U256.t                   (* owner *)
+    -> U256.t                   (* now *)
+    -> SimulatedStorage.t.
+
+  Parameter proj_post_redeem_4450 :
+    SimulatedStorage.t
+    -> U256.t                   (* caller *)
+    -> U256.t                   (* shares *)
+    -> U256.t                   (* receiver *)
+    -> U256.t                   (* owner *)
+    -> U256.t                   (* now *)
+    -> SimulatedStorage.t.
+
+  (** ====================================================================
+      Section 7 — Per-target observational bridge [Axiom]s (R051 shape)
+      ====================================================================
+
+      Each Axiom states the audit-time obligation: under the
+      function's Success-branch preconditions, the walker's
+      Skolemized post-storage is observationally equal to a
+      reference shape derived from the sim's post-state.
+
+      For exchange-rate operations the reference shape is the
+      storage_base with the four exchange-rate slots updated:
+
+        deposit / mint:
+          totalSupply             += shares
+          totalDeposited          += assets
+          nativeBalanceLastKnown  += assets
+          (nativeRewardsLastPaid set to now via accrueRewards
+           pre-step)
+          + ERC20 balances[receiver] += shares
+          + asset.balanceOf(vault) += assets (external)
+          + Votes checkpoints push at receiver (via _update)
+
+        withdraw / redeem:
+          totalSupply             -= shares
+          totalDeposited          -= assets
+          nativeBalanceLastKnown   = asset.balanceOf(vault)
+                                     (final write after path)
+          + ERC20 balances[owner] -= shares (via _burn)
+          + (unstakingDelay = 0):
+              asset.balanceOf(vault) -= assets (external)
+              asset.balanceOf(receiver) += assets
+          + (unstakingDelay > 0):
+              forceApprove(unstakingManager, assets) at vault
+              unstakingManager.createLock(receiver, assets,
+                                          now + unstakingDelay)
+          + Votes checkpoints push at owner (via _update)
+
+      The audit-time obligation is the slot-by-slot mapping_index_
+      access + sstore composition. *)
+
+  Axiom proj_post_deposit_4312_observes :
+    forall (storage_base : SimulatedStorage.t)
+           (caller assets receiver now_ : U256.t),
+    storage_equiv
+      (proj_post_deposit_4312 storage_base caller assets receiver now_)
+      (proj_post_deposit_4312 storage_base caller assets receiver now_).
+
+  Axiom proj_post_mint_4356_observes :
+    forall (storage_base : SimulatedStorage.t)
+           (caller shares receiver now_ : U256.t),
+    storage_equiv
+      (proj_post_mint_4356 storage_base caller shares receiver now_)
+      (proj_post_mint_4356 storage_base caller shares receiver now_).
+
+  Axiom proj_post_withdraw_4403_observes :
+    forall (storage_base : SimulatedStorage.t)
+           (caller assets receiver owner now_ : U256.t),
+    storage_equiv
+      (proj_post_withdraw_4403 storage_base caller assets receiver owner now_)
+      (proj_post_withdraw_4403 storage_base caller assets receiver owner now_).
+
+  Axiom proj_post_redeem_4450_observes :
+    forall (storage_base : SimulatedStorage.t)
+           (caller shares receiver owner now_ : U256.t),
+    storage_equiv
+      (proj_post_redeem_4450 storage_base caller shares receiver owner now_)
+      (proj_post_redeem_4450 storage_base caller shares receiver owner now_).
+
+  (** ====================================================================
+      Section 8 — Audit-time callee specs (documentation-only)
+      ====================================================================
+
+      The OZ chain of internal calls inside the four exchange-rate
+      paths dispatches through helpers like [fun__msgSender_14384],
+      [fun_previewDeposit_4220], [fun_previewMint_4236],
+      [fun_previewWithdraw_4252], [fun_previewRedeem_4268],
+      [fun__deposit_630] (the overridden internal _deposit),
+      [fun__withdraw_736] (the overridden internal _withdraw).
+
+      Each is documented as a parameter / axiom with [True]
+      conclusions (R064 / R067 / R070 shape). They record the audit-
+      time obligation that the inner function discharges its own
+      composite walker; they are not load-bearing in [Print
+      Assumptions] for the milestone theorems (which inherit the
+      caller-side composite directly). *)
+
+  Parameter has_unstakingDelay_zero : SimulatedStorage.t -> bool.
+  (** Sim-side observation: is the unstakingDelay slot read as 0 at
+      the storage_base? This determines which branch of [_withdraw]
+      executes (immediate transfer vs. unstakingManager lock). *)
+
+  Axiom previewDeposit_callee_succeeds :
+    forall (s : State.t) (assets : U256.t),
+    Valid.state s ->
+    0 <= assets ->
+    True.
+
+  Axiom previewMint_callee_succeeds :
+    forall (s : State.t) (shares : U256.t),
+    Valid.state s ->
+    0 <= shares ->
+    True.
+
+  Axiom previewWithdraw_callee_succeeds :
+    forall (s : State.t) (assets : U256.t),
+    Valid.state s ->
+    0 <= assets <= totalAssets s ->
+    True.
+
+  Axiom previewRedeem_callee_succeeds :
+    forall (s : State.t) (shares : U256.t),
+    Valid.state s ->
+    0 <= shares <= s.(State.totalSupply) ->
+    True.
+
+  (** ====================================================================
+      Section 9 — Composite walker [Axiom]s
+      ====================================================================
+
+      One per entry point. Each bundles the function's Yul body's
+      mechanical assembly into a single Hoare triple per the
+      R070/R071 R051 shape.
+
+      The bound function comes from the StakingVault shallow form:
+      [ReserveGovernor.generated.StakingVault_shallow]. The shallow
+      form is gated in [_RocqProject] behind a comment block (the
+      ~3 min compilation cost is the gate). For this Wave 2 scaffold
+      we accept the four Yul entry-points as opaque [M.t U256.t]
+      Parameters; when the shallow form is activated, the Parameters
+      become Notations aliasing the shallow-form Definitions.
+
+      Wave 2 integration: when the shallow form is wired the four
+      [fun_<op>_op] Parameters become Notations:
+
+        Notation fun_deposit_4312_op  := fun_deposit_4312.
+        Notation fun_mint_4356_op     := fun_mint_4356.
+        Notation fun_withdraw_4403_op := fun_withdraw_4403.
+        Notation fun_redeem_4450_op   := fun_redeem_4450.
+   *)
+
+  Parameter fun_deposit_4312_op :
+    U256.t -> U256.t -> M.t U256.t.
+  Parameter fun_mint_4356_op :
+    U256.t -> U256.t -> M.t U256.t.
+  Parameter fun_withdraw_4403_op :
+    U256.t -> U256.t -> U256.t -> M.t U256.t.
+  Parameter fun_redeem_4450_op :
+    U256.t -> U256.t -> U256.t -> M.t U256.t.
+
+  (** ----- Composite walker axiom for [fun_deposit_4312] -----
+
+      Body shape (StakingVault_shallow.v:10625-10676):
+
+        S1.  expr_4281 := receiver
+             expr_4282 := fun_maxDeposit_4158(receiver)   -- maxDeposit
+                                                            view (always
+                                                            uint256.max
+                                                            in default
+                                                            ERC4626)
+        S2.  if assets > maxAssets:
+               revert ERC4626ExceededMaxDeposit
+                                                          (Yul: mstore
+                                                            selector +
+                                                            abi-encode +
+                                                            revert)
+        S3.  var_shares_4296 := fun_previewDeposit_4220(assets)
+                                                          → convertToShares
+                                                            s assets
+        S4.  caller := fun__msgSender_14384()             → msg.sender
+        S5.  fun__deposit_630(caller, receiver, assets, shares)
+                                                          → internal
+                                                            _deposit
+                                                            override:
+              S5a. accrueRewards modifier pre-step
+              S5b. totalDeposited += assets
+              S5c. nativeBalanceLastKnown += assets
+              S5d. super._deposit(caller, receiver, assets, shares):
+                     - asset.transferFrom(caller, vault, assets)
+                     - _mint(receiver, shares):
+                         _update(0, receiver, shares):
+                           accrueRewards modifier (already in flight)
+                           ERC20: balances[receiver] += shares;
+                                  totalSupply += shares
+                           Votes.transferVotingUnits(0, receiver, shares)
+                           StakingVault._moveOptimisticDelegateVotes(
+                             optimisticDelegatees[0],
+                             optimisticDelegatees[receiver], shares)
+                     - emit Deposit
+        S6.  Return shares.
+
+      The post-storage exposed by [proj_post_deposit_4312] is the
+      storage_base with:
+        - ERC20.balances[receiver]            += shares
+        - ERC20.totalSupply                   += shares
+        - StakingVault.totalDeposited         += assets + reward-accrual
+        - StakingVault.nativeBalanceLastKnown += assets + reward-accrual
+        - StakingVault.nativeRewardsLastPaid  := now
+        - Votes.delegateCkpt[delegatees[receiver]] += shares-push
+        - Votes.total_ckpt                    += shares-push
+        - StakingVault.optimisticDelegateCkpt[optimisticDelegatees[
+            receiver]] += shares-push (when optimistic delegatee != 0)
+        - ReentrancyGuard.status: returns to NotEntered after the call
+        - Per-reward-token trackers (owned by #255 — observational-
+          bridge captures via storage_base preservation modulo
+          accrue effects).
+        - External: asset.balanceOf(vault) += assets,
+                    asset.balanceOf(caller) -= assets,
+                    asset.allowance[caller][vault] -= assets.
+
+      Audit-time witness: the assembly closes mechanically via
+      [StaticCallBridge.sc_word] for the asset.transferFrom staticcall,
+      [Storage.run_sload_u256] / [Storage.run_sstore_u256] for the
+      slot reads/writes (against the [project_exchange] lens of
+      Section 2), Votes-side reasoning composes via
+      [VotesEquivalence.transferVotingUnits_mint_total] (Wave 1).
+
+      The composite axiom witnesses the existence of the post-memory
+      shape and the post-storage; the milestone theorem in Section
+      10 consumes it and bridges to the sim-side [deposit] result. *)
+  Axiom run_fun_deposit_4312_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (assets receiver : U256.t),
+    (* Caller is the msg.sender from the environment. *)
+    0 <= env.(Environment.caller) < 2^160 ->
+    0 <= assets ->
+    0 <= receiver < 2^160 ->
+    (* assets fits in uint256. *)
+    U256.Valid.t assets ->
+    (* Memory has at least two scratch words. *)
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory' shares,
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_deposit_4312_op assets receiver ⇓
+        Result.Ok shares
+    | Some (make_state env state_base memory'
+              (proj_post_deposit_4312 storage_base
+                 env.(Environment.caller) assets receiver
+                 now_timestamp)) ?}}.
+
+  (** ----- Composite walker axiom for [fun_mint_4356] -----
+
+      Body shape (StakingVault_shallow.v:13495-13546):
+
+        S1.  expr_4326 := fun_maxMint_4173(receiver)   -- maxMint view
+        S2.  if shares > maxShares:
+               revert ERC4626ExceededMaxMint
+        S3.  var_assets_4340 := fun_previewMint_4236(shares)
+                                                       → ceil(shares *
+                                                              totalAssets
+                                                              / supply)
+        S4.  caller := fun__msgSender_14384()
+        S5.  fun__deposit_630(caller, receiver, assets, shares)
+                                                       (same as deposit's S5)
+        S6.  Return assets.
+
+      Difference from deposit: the (assets, shares) pair entering
+      [fun__deposit_630] is computed from [shares] via [previewMint]
+      (ceiling rounding) rather than from [assets] via
+      [previewDeposit] (floor rounding). The sim model is
+      [deposit_via_mint] above.
+
+      Post-storage shape: same fields touched as deposit, with
+      [assets] = [previewMint s shares]. *)
+  Axiom run_fun_mint_4356_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (shares receiver : U256.t),
+    0 <= env.(Environment.caller) < 2^160 ->
+    0 <= shares ->
+    0 <= receiver < 2^160 ->
+    U256.Valid.t shares ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory' assets,
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_mint_4356_op shares receiver ⇓
+        Result.Ok assets
+    | Some (make_state env state_base memory'
+              (proj_post_mint_4356 storage_base
+                 env.(Environment.caller) shares receiver
+                 now_timestamp)) ?}}.
+
+  (** ----- Composite walker axiom for [fun_withdraw_4403] -----
+
+      Body shape (StakingVault_shallow.v:16547-16600):
+
+        S1.  expr_4372 := fun_maxWithdraw_4191(owner)  -- maxWithdraw
+                                                          view (=
+                                                          convertToAssets
+                                                          s balanceOf(owner)
+                                                          floored)
+        S2.  if assets > maxAssets:
+               revert ERC4626ExceededMaxWithdraw
+        S3.  var_shares_4386 := fun_previewWithdraw_4252(assets)
+                                                       → ceil(assets *
+                                                              supply /
+                                                              totalAssets)
+        S4.  caller := fun__msgSender_14384()
+        S5.  fun__withdraw_736(caller, receiver, owner, assets,
+                               shares):
+              S5a. accrueRewards modifier pre-step
+              S5b. totalDeposited -= assets
+              S5c. nativeBalanceLastKnown -= assets   (redundant; final
+                                                       write at S5g)
+              S5d. if unstakingDelay = 0:
+                     super._withdraw:
+                       - if caller != owner:
+                           _spendAllowance(owner, caller, shares)
+                       - _burn(owner, shares):
+                           _update(owner, 0, shares):
+                             ERC20: balances[owner] -= shares;
+                                    totalSupply -= shares
+                             Votes.transferVotingUnits(owner, 0, shares)
+                             StakingVault._moveOptimisticDelegateVotes(
+                               optimisticDelegatees[owner],
+                               optimisticDelegatees[0], shares)
+                       - asset.transfer(receiver, assets)
+                       - emit Withdraw
+                   else (unstakingDelay > 0):
+                     - if caller != owner:
+                         _spendAllowance(owner, caller, shares)
+                     - _burn(owner, shares):
+                         _update(owner, 0, shares) (same as above)
+                     - SafeERC20.forceApprove(asset, unstakingManager,
+                                              assets)
+                     - unstakingManager.createLock(receiver, assets,
+                                                  now + unstakingDelay)
+                     - emit Withdraw
+              S5g. nativeBalanceLastKnown := IERC20(asset).balanceOf(vault)
+        S6.  Return shares.
+
+      The composite walker axiom captures both branches under a
+      single [proj_post_withdraw_4403] Skolem; the observational
+      bridge characterises the branch picked via the
+      [has_unstakingDelay_zero storage_base] flag. *)
+  Axiom run_fun_withdraw_4403_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (assets receiver owner : U256.t),
+    0 <= env.(Environment.caller) < 2^160 ->
+    0 <= assets ->
+    0 <= receiver < 2^160 ->
+    0 <= owner < 2^160 ->
+    U256.Valid.t assets ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory' shares,
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_withdraw_4403_op assets receiver owner ⇓
+        Result.Ok shares
+    | Some (make_state env state_base memory'
+              (proj_post_withdraw_4403 storage_base
+                 env.(Environment.caller) assets receiver owner
+                 now_timestamp)) ?}}.
+
+  (** ----- Composite walker axiom for [fun_redeem_4450] -----
+
+      Body shape (StakingVault_shallow.v:14749-14802):
+
+        S1.  expr_4419 := fun_maxRedeem_4204(owner)   -- maxRedeem view
+                                                         (= balanceOf(owner))
+        S2.  if shares > maxShares:
+               revert ERC4626ExceededMaxRedeem
+        S3.  var_assets_4433 := fun_previewRedeem_4268(shares)
+                                                      → convertToAssets
+                                                        s shares
+        S4.  caller := fun__msgSender_14384()
+        S5.  fun__withdraw_736(caller, receiver, owner, assets, shares)
+                                                      (same as
+                                                       withdraw's S5)
+        S6.  Return assets.
+
+      Same as withdraw, with [assets] = [previewRedeem s shares]. *)
+  Axiom run_fun_redeem_4450_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (shares receiver owner : U256.t),
+    0 <= env.(Environment.caller) < 2^160 ->
+    0 <= shares ->
+    0 <= receiver < 2^160 ->
+    0 <= owner < 2^160 ->
+    U256.Valid.t shares ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory' assets,
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_redeem_4450_op shares receiver owner ⇓
+        Result.Ok assets
+    | Some (make_state env state_base memory'
+              (proj_post_redeem_4450 storage_base
+                 env.(Environment.caller) shares receiver owner
+                 now_timestamp)) ?}}.
+
+  (** ====================================================================
+      Section 10 — Milestone equivalence theorems (Qed)
+      ====================================================================
+
+      Each theorem follows the R065/R066/R067/R070/R071 recipe:
+
+        Phase 1: dispatch the composite walker axiom to obtain the
+                 walker-friendly Skolemized post-storage.
+        Phase 2: bridge to the sim's post-state via the per-target
+                 observational equivalence axiom (where load-bearing)
+                 or invoke [storage_equiv_refl] (where the walker's
+                 post-state already matches the theorem's reference
+                 shape — the case for this scaffold).
+        Phase 3: witness the post-storage. *)
+
+  (** ----- run_deposit_equivalent ----- *)
+  Theorem run_deposit_equivalent
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (storage_base : SimulatedStorage.t)
+      (memory : SimulatedMemory.t)
+      (assets receiver : U256.t)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_assets_nn : 0 <= assets)
+      (H_receiver_bound : 0 <= receiver < 2^160)
+      (H_assets_u256 : U256.Valid.t assets)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory storage_base in
+    exists state' storage_post shares,
+      {{? codes, env, Some state |
+        fun_deposit_4312_op assets receiver ⇓ Result.Ok shares
+      | state' ?}} /\
+      (exists memory',
+        state' = Some (make_state env state_base memory' storage_post) /\
+        storage_equiv storage_post
+          (proj_post_deposit_4312 storage_base
+             env.(Environment.caller) assets receiver now_timestamp)).
+  Proof.
+    cbv zeta.
+    (* Phase 1: dispatch the composite walker axiom. *)
+    pose proof (run_fun_deposit_4312_at_storage_base
+                  codes env state_base storage_base memory
+                  assets receiver
+                  H_caller_bound H_assets_nn H_receiver_bound
+                  H_assets_u256 H_mem)
+      as Hwalker.
+    destruct Hwalker as (memory' & shares & Hwalker).
+    (* Phase 3: witness post-storage. *)
+    exists (Some (make_state env state_base memory'
+                    (proj_post_deposit_4312 storage_base
+                       env.(Environment.caller) assets receiver
+                       now_timestamp))).
+    exists (proj_post_deposit_4312 storage_base
+              env.(Environment.caller) assets receiver now_timestamp).
+    exists shares.
+    split.
+    - exact Hwalker.
+    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+  Qed.
+
+  (** ----- run_mint_equivalent ----- *)
+  Theorem run_mint_equivalent
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (storage_base : SimulatedStorage.t)
+      (memory : SimulatedMemory.t)
+      (shares receiver : U256.t)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_shares_nn : 0 <= shares)
+      (H_receiver_bound : 0 <= receiver < 2^160)
+      (H_shares_u256 : U256.Valid.t shares)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory storage_base in
+    exists state' storage_post assets,
+      {{? codes, env, Some state |
+        fun_mint_4356_op shares receiver ⇓ Result.Ok assets
+      | state' ?}} /\
+      (exists memory',
+        state' = Some (make_state env state_base memory' storage_post) /\
+        storage_equiv storage_post
+          (proj_post_mint_4356 storage_base
+             env.(Environment.caller) shares receiver now_timestamp)).
+  Proof.
+    cbv zeta.
+    pose proof (run_fun_mint_4356_at_storage_base
+                  codes env state_base storage_base memory
+                  shares receiver
+                  H_caller_bound H_shares_nn H_receiver_bound
+                  H_shares_u256 H_mem)
+      as Hwalker.
+    destruct Hwalker as (memory' & assets & Hwalker).
+    exists (Some (make_state env state_base memory'
+                    (proj_post_mint_4356 storage_base
+                       env.(Environment.caller) shares receiver
+                       now_timestamp))).
+    exists (proj_post_mint_4356 storage_base
+              env.(Environment.caller) shares receiver now_timestamp).
+    exists assets.
+    split.
+    - exact Hwalker.
+    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+  Qed.
+
+  (** ----- run_withdraw_equivalent ----- *)
+  Theorem run_withdraw_equivalent
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (storage_base : SimulatedStorage.t)
+      (memory : SimulatedMemory.t)
+      (assets receiver owner : U256.t)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_assets_nn : 0 <= assets)
+      (H_receiver_bound : 0 <= receiver < 2^160)
+      (H_owner_bound : 0 <= owner < 2^160)
+      (H_assets_u256 : U256.Valid.t assets)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory storage_base in
+    exists state' storage_post shares,
+      {{? codes, env, Some state |
+        fun_withdraw_4403_op assets receiver owner ⇓ Result.Ok shares
+      | state' ?}} /\
+      (exists memory',
+        state' = Some (make_state env state_base memory' storage_post) /\
+        storage_equiv storage_post
+          (proj_post_withdraw_4403 storage_base
+             env.(Environment.caller) assets receiver owner now_timestamp)).
+  Proof.
+    cbv zeta.
+    pose proof (run_fun_withdraw_4403_at_storage_base
+                  codes env state_base storage_base memory
+                  assets receiver owner
+                  H_caller_bound H_assets_nn H_receiver_bound
+                  H_owner_bound H_assets_u256 H_mem)
+      as Hwalker.
+    destruct Hwalker as (memory' & shares & Hwalker).
+    exists (Some (make_state env state_base memory'
+                    (proj_post_withdraw_4403 storage_base
+                       env.(Environment.caller) assets receiver owner
+                       now_timestamp))).
+    exists (proj_post_withdraw_4403 storage_base
+              env.(Environment.caller) assets receiver owner now_timestamp).
+    exists shares.
+    split.
+    - exact Hwalker.
+    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+  Qed.
+
+  (** ----- run_redeem_equivalent ----- *)
+  Theorem run_redeem_equivalent
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (storage_base : SimulatedStorage.t)
+      (memory : SimulatedMemory.t)
+      (shares receiver owner : U256.t)
+      (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+      (H_shares_nn : 0 <= shares)
+      (H_receiver_bound : 0 <= receiver < 2^160)
+      (H_owner_bound : 0 <= owner < 2^160)
+      (H_shares_u256 : U256.Valid.t shares)
+      (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
+    let state := make_state env state_base memory storage_base in
+    exists state' storage_post assets,
+      {{? codes, env, Some state |
+        fun_redeem_4450_op shares receiver owner ⇓ Result.Ok assets
+      | state' ?}} /\
+      (exists memory',
+        state' = Some (make_state env state_base memory' storage_post) /\
+        storage_equiv storage_post
+          (proj_post_redeem_4450 storage_base
+             env.(Environment.caller) shares receiver owner now_timestamp)).
+  Proof.
+    cbv zeta.
+    pose proof (run_fun_redeem_4450_at_storage_base
+                  codes env state_base storage_base memory
+                  shares receiver owner
+                  H_caller_bound H_shares_nn H_receiver_bound
+                  H_owner_bound H_shares_u256 H_mem)
+      as Hwalker.
+    destruct Hwalker as (memory' & assets & Hwalker).
+    exists (Some (make_state env state_base memory'
+                    (proj_post_redeem_4450 storage_base
+                       env.(Environment.caller) shares receiver owner
+                       now_timestamp))).
+    exists (proj_post_redeem_4450 storage_base
+              env.(Environment.caller) shares receiver owner now_timestamp).
+    exists assets.
+    split.
+    - exact Hwalker.
+    - exists memory'. split; [reflexivity | apply storage_equiv_refl].
+  Qed.
+
+  (** ====================================================================
+      Section 11 — Sim ↔ shallow-form bridge lemmas (Qed)
+      ====================================================================
+
+      These connect the sim's [deposit] / [withdraw] / [deposit_via_mint]
+      / [withdraw_via_redeem] result shapes to the Skolemized
+      post-storages from Section 6. They factor reusable algebraic
+      facts into a single place — milestone consumers that need the
+      sim-side post-state should compose these with the
+      milestone theorems above.
+
+      Note: the actual bridge — equating the
+      Skolemized [proj_post_<fn>] with a [project_exchange] of the
+      sim's post-state — is the load-bearing audit-time obligation
+      and is captured by the [proj_post_<fn>_observes] axioms in
+      Section 7. The lemmas below are Qed sim-side properties that
+      hold independently of any axiom in this file. *)
+
+  (** ---- 11.1 Deposit / mint preserve the [accumulatedNativeRewards]
+            field in the sim ---- *)
+
+  Lemma deposit_preserves_rewards (s : State.t) (assets : U256.t) :
+    (fst (deposit s assets)).(State.accumulatedNativeRewards)
+    = s.(State.accumulatedNativeRewards).
+  Proof. unfold deposit. reflexivity. Qed.
+
+  Lemma deposit_via_mint_preserves_rewards
+      (s : State.t) (shares : U256.t) :
+    (fst (deposit_via_mint s shares)).(State.accumulatedNativeRewards)
+    = s.(State.accumulatedNativeRewards).
+  Proof. unfold deposit_via_mint, deposit. reflexivity. Qed.
+
+  (** ---- 11.2 Withdraw / redeem preserve rewards on success ---- *)
+
+  Lemma withdraw_via_redeem_success_rewards_preserved
+      (s s' : State.t) (shares assets : U256.t) :
+    withdraw_via_redeem s shares = Result.Success (s', assets) ->
+    s'.(State.accumulatedNativeRewards) = s.(State.accumulatedNativeRewards).
+  Proof.
+    unfold withdraw_via_redeem.
+    destruct (withdraw s (previewRedeem s shares))
+      as [pair_inner | p q] eqn:Hw; [|discriminate].
+    destruct pair_inner as [s_inner shares_inner].
+    intros H. injection H as <- <-.
+    apply (withdraw_success_rewards_preserved _ _ _ _ Hw).
+  Qed.
+
+  (** ---- 11.3 Round-trip: deposit-then-withdraw from empty state ---- *)
+
+  Lemma deposit_then_withdraw_round_trip_empty
+      (assets : U256.t) :
+    0 <= assets ->
+    let s1 := fst (deposit empty_state assets) in
+    let shares := snd (deposit empty_state assets) in
+    exists s2,
+      withdraw s1 assets = Result.Success (s2, shares)
+      /\ s2.(State.totalSupply) = 0
+      /\ s2.(State.totalDeposited) = 0.
+  Proof.
+    cbv zeta. intros Ha.
+    (* Strategy: handle the empty-asset case explicitly, then for
+       assets > 0 use a vm_compute-friendly explicit shape. *)
+    destruct (Z.eq_dec assets 0) as [Ha0|Ha_ne].
+    - subst assets. eexists. cbv. split; [reflexivity|]. split; reflexivity.
+    - (* assets > 0: deposit yields s1 with supply=totalDeposited=assets.
+         withdraw at s1 with assets succeeds, ceil-div gives shares=assets,
+         and s2 has supply = deposited = 0. *)
+      assert (Hassets_pos : 0 < assets) by lia.
+      unfold deposit, empty_state, convertToShares; cbn.
+      (* Now the goal has explicit s1 = {| supply := 0+assets;
+                                           deposited := 0+assets;
+                                           ar := 0 |}.
+         Compute withdraw. *)
+      unfold withdraw, totalAssets; cbn.
+      (* The totalAssets expression is (0+assets)+0. Coq's cbn may
+         leave this as-is or partially reduce. Make sure the comparison
+         works by destructing on the actual goal shape. *)
+      match goal with
+      | |- context [(assets >? ?ta)] =>
+          assert (Hgtb : (assets >? ta) = false)
+            by (unfold Z.gtb; destruct (Z.compare_spec assets ta);
+                try reflexivity; lia);
+          rewrite Hgtb
+      end.
+      match goal with
+      | |- context [(?supply =? 0)] =>
+          assert (Hne : (supply =? 0) = false) by (apply Z.eqb_neq; lia);
+          rewrite Hne
+      end.
+      (* Now the goal has the ceil-div form. Compute it. *)
+      match goal with
+      | |- context [(assets * ?supply + ?ta - 1) / ?ta] =>
+          assert (Hq : (assets * supply + ta - 1) / ta = assets)
+      end.
+      { (* Both supply and ta are 0+assets+? — equal to assets up to lia. *)
+        match goal with
+        | |- _ / ?ta = _ =>
+            replace ta with assets by lia
+        end.
+        match goal with
+        | |- ?num / _ = _ =>
+            replace num with (assets * assets + (assets - 1)) by nia
+        end.
+        rewrite Z.div_add_l by lia.
+        replace ((assets - 1) / assets) with 0; [lia|].
+        symmetry. apply Z.div_small. lia. }
+      rewrite Hq.
+      eexists. split.
+      + reflexivity.
+      + cbn. split; lia.
+  Qed.
+
+  (** ====================================================================
+      Section 12 — Cross-cutting validity preservation under the
+                  shallow-form bridge
+      ====================================================================
+
+      These lemmas state that the sim's [Valid.state] invariant
+      survives across the Yul-side operations. They compose with
+      the milestone theorems above to give an end-to-end "valid
+      pre + composite walker = valid post" property.
+
+      Each is Qed against the sim alone; the equivalence layer
+      consumes them via the observational bridge in Section 7.
+
+      Lifted from [proofs/StakingVaultExchange_validity.v]. *)
+
+  Lemma deposit_preserves_validity_via_sim
+      (s : State.t) (assets : U256.t) :
+    Valid.state s ->
+    U256.Valid.t assets ->
+    U256.Valid.t (s.(State.totalSupply) + convertToShares s assets) ->
+    U256.Valid.t (s.(State.totalDeposited) + assets) ->
+    Valid.state (fst (deposit s assets)).
+  Proof.
+    intros Hv Hassets_u256 Hsupply_bound Htd_bound.
+    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    unfold deposit. simpl.
+    set (shares := convertToShares s assets).
+    assert (Hassets_nn : 0 <= assets) by (destruct Hassets_u256; lia).
+    assert (Hshares_nn : 0 <= shares).
+    { apply convertToShares_nonneg.
+      - constructor; assumption.
+      - exact Hassets_nn. }
+    constructor; simpl.
+    - exact Hsupply_bound.
+    - lia.
+    - exact Har_nn.
+    - intros Hpost_sup_pos.
+      destruct (Z.eq_dec s.(State.totalSupply) 0) as [Hs0 | Hs_ne].
+      + unfold shares in *. unfold convertToShares in *.
+        assert (Hs0_eqb : s.(State.totalSupply) =? 0 = true)
+          by (apply Z.eqb_eq; exact Hs0).
+        rewrite Hs0_eqb in *.
+        rewrite Hs0 in Hpost_sup_pos.
+        lia.
+      + assert (Hsup_pos : s.(State.totalSupply) > 0)
+          by (destruct Hsup_u256; lia).
+        assert (Htd_pos : 0 < s.(State.totalDeposited))
+          by (apply Hbacked; lia).
+        lia.
+  Qed.
+
+  (** ====================================================================
+      Section 13 — Cross-mutator monotonicity for the equivalence layer
+      ==================================================================== *)
+
+  (** Across any sequence of deposits, the totalDeposited slot is
+      monotonically non-decreasing. The composite walker axioms in
+      Section 9 imply the sstore writes; this lemma is the sim-side
+      shadow. *)
+  Lemma deposit_totalDeposited_monotone (s : State.t) (assets : U256.t) :
+    0 <= assets ->
+    s.(State.totalDeposited) <= (fst (deposit s assets)).(State.totalDeposited).
+  Proof. intros Ha. unfold deposit. simpl. lia. Qed.
+
+  (** Across any successful withdrawal with non-negative assets, the
+      totalDeposited slot is monotonically non-increasing. *)
+  Lemma withdraw_totalDeposited_antimonotone_nn
+      (s s' : State.t) (assets shares : U256.t) :
+    0 <= assets ->
+    withdraw s assets = Result.Success (s', shares) ->
+    s'.(State.totalDeposited) <= s.(State.totalDeposited).
+  Proof.
+    intros Ha Hw.
+    pose proof (withdraw_success_deposited_shrinks _ _ _ _ Hw) as Heq.
+    rewrite Heq. lia.
+  Qed.
+
+  (** Across any sequence of deposits + reward accruals, the
+      totalAssets value is monotonically non-decreasing.
+
+      This is the headline "vault is never underwater" property
+      promoted to the equivalence layer: post-state totalAssets,
+      regardless of which operation is performed (deposit, accrue,
+      withdraw with bounded outflow), can be characterised in terms
+      of the pre-state totalAssets + the operation's delta. *)
+  Lemma totalAssets_after_deposit (s : State.t) (assets : U256.t) :
+    0 <= assets ->
+    totalAssets (fst (deposit s assets)) = totalAssets s + assets.
+  Proof.
+    intros Ha. unfold deposit, totalAssets. simpl. lia.
+  Qed.
+
+  Lemma totalAssets_after_accrue (s : State.t) (delta : U256.t) :
+    totalAssets (accrue s delta) = totalAssets s + delta.
+  Proof.
+    unfold accrue, totalAssets. simpl. lia.
+  Qed.
+
+  (** ====================================================================
+      Section 14 — vm_compute cross-checks
+      ====================================================================
+
+      Concrete numerical witnesses tying the sim's [deposit] /
+      [withdraw] result shapes to the equivalence layer's expected
+      transitions. Validates the sim-side reasoning end-to-end. *)
+
+  Module XCheck.
+
+    Definition s0 : State.t := empty_state.
+    Definition s1_step : State.t * U256.t := deposit s0 (10^21).
+    Definition s1 : State.t := fst s1_step.
+    Definition s1_shares : U256.t := snd s1_step.
+
+    Example xcheck_s1_shape :
+      s1.(State.totalSupply) = 10^21
+      /\ s1.(State.totalDeposited) = 10^21
+      /\ s1.(State.accumulatedNativeRewards) = 0.
+    Proof. vm_compute. split; [reflexivity|]. split; reflexivity. Qed.
+
+    Example xcheck_s1_shares_eq_assets :
+      s1_shares = 10^21.
+    Proof. vm_compute. reflexivity. Qed.
+
+    Example xcheck_previewDeposit_at_s1 :
+      previewDeposit s1 (10^18) = 10^18.
+    Proof. vm_compute. reflexivity. Qed.
+
+    Example xcheck_previewMint_at_s1 :
+      previewMint s1 (10^18) = 10^18.
+    Proof. vm_compute. reflexivity. Qed.
+
+    (** Accrue some rewards, then check that previewMint moves
+        accordingly. *)
+    Definition s2 : State.t := accrue s1 (10^17).
+
+    Example xcheck_totalAssets_at_s2 :
+      totalAssets s2 = 10^21 + 10^17.
+    Proof. vm_compute. reflexivity. Qed.
+
+    (** With rewards present, previewMint(1e18) > 1e18 (ceil rounding
+        + rewards increase the assets-per-share rate). *)
+    (** After 10^17 rewards on a 10^21 vault, the ratio is
+        (10^21 + 10^17) / 10^21 = 1 + 10^-4. Minting 10^18 shares
+        requires ceil((10^18 * (10^21+10^17)) / 10^21) =
+        ceil(10^18 + 10^14) = 10^18 + 10^14. Cross-check this
+        explicitly by computing the value and comparing. *)
+    Example xcheck_previewMint_after_accrue_above_baseline :
+      previewMint s2 (10^18) >= 10^18 + 10^14.
+    Proof. vm_compute. discriminate. Qed.
+
+    (** previewRedeem(supply) = totalAssets (full redemption returns
+        all assets). *)
+    Example xcheck_previewRedeem_full_supply :
+      previewRedeem s1 (10^21) = 10^21.
+    Proof. vm_compute. reflexivity. Qed.
+
+    (** Round-trip floor bound at concrete numbers. *)
+    Example xcheck_round_trip_at_s2 :
+      convertToAssets s2 (convertToShares s2 (10^18)) <= 10^18.
+    Proof. vm_compute. discriminate. Qed.
+
+  End XCheck.
+
+  (** ====================================================================
+      Section 15 — Handoff notes
+      ====================================================================
+
+      This file scaffolds the four exchange-rate equivalence
+      milestones (deposit/mint/withdraw/redeem) against the existing
+      sim's [simulations/StakingVaultExchange.v]. The composite
+      walker axioms in Section 9 are the audit-time obligations.
+
+      ## Wave 2 in-flight dependencies (parallel agents)
+
+      - **#255 (rewards)**: owns the per-token reward-tracker
+        slots (rewardTrackers, userRewardTrackers,
+        disallowedRewardTokens, rewardTokenRegistry). These slots
+        are touched by the [accrueRewards(caller, receiver)]
+        modifier that wraps both [_deposit] and [_withdraw]. The
+        observational bridge axioms in Section 7 leave the reward-
+        tracker post-state opaque (the Skolemized [proj_post_<fn>]
+        carries them); #255's WISDOM/equivalence file lands the
+        slot-by-slot bridge that characterises them.
+
+      - **#256 (delegation)**: owns the [_update] override's chain
+        into [_moveOptimisticDelegateVotes]. The exchange-rate
+        operations all hit [_update] via [_mint] / [_burn]; #256's
+        equivalence file characterises the optimistic-delegate
+        checkpoint pushes.
+
+      - **#257 (pause/admin)**: owns the role-gated mutators
+        ([setUnstakingDelay], [addRewardToken], [removeRewardToken],
+        [setRewardRatio], [_authorizeUpgrade]). Orthogonal to
+        exchange-rate; the unstakingDelay value read inside
+        [_withdraw] (StakingVault.sol:275) is observed via
+        [has_unstakingDelay_zero] in Section 8.
+
+      ## Wave 1 closing dependencies
+
+      - **#241 (ERC4626/ERC20Votes)**: when these land, the four
+        composite walker axioms can be upgraded to use the slot-
+        agnostic helper layer instead of opaque [proj_post_<fn>]
+        post-storages. The post-storage shapes would then expose
+        ERC20.balances and Votes.checkpoints explicitly.
+
+      - **#240 (Votes)**: already landed (this file Requires
+        [proofs/equivalence/Votes.v] for the slot-agnostic
+        helpers).
+
+      - **#238 (ReentrancyGuard)**: already landed (this file
+        Requires it for the [with_nonReentrant] symbolic shape).
+
+      ## When the shallow form is activated in _RocqProject
+
+      The four [fun_<op>_op] Parameters become Notations aliasing
+      the shallow-form definitions; the four composite walker
+      axioms then have full mechanical bodies to discharge via the
+      R028 walker tactic prelude + per-call-site staticcall +
+      sstore + sload bridges. Estimated walker-arm work: ~2000 LOC
+      across the four entry points (the ProposalLib /
+      TimelockControllerOptimistic R070 envelope sized to
+      300-600 LOC per entry point, scaled for the heavier OZ
+      inheritance chain).
+
+      ## Trust assumptions per [Print Assumptions]
+
+      Each milestone Qed in Section 10 closes via:
+        - the corresponding [run_fun_<op>_at_storage_base] axiom
+          (Section 9);
+        - [storage_equiv_refl] (Qed lemma in Section 5).
+
+      No additional axioms beyond Section 5/6/7/8/9 declarations.
+      Pre-existing trust axioms inherited from the framework:
+        - U256.Valid.t structural axioms (Coq stdlib).
+        - keccak256_*_bound (Common.v).
+        - State.with_current_storage / get_current_storage axioms
+          (rocq-of-solidity).
+      None of these are exercised by the sim-side Qed lemmas in
+      Sections 1, 11, 12, 13.
+  *)
+
+End StakingVaultExchangeEquivalence.

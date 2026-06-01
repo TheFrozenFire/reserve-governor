@@ -290,3 +290,4 @@ proofs/equivalence/SelectorRegistry.v
 proofs/equivalence/TimelockControllerBase.v
 proofs/equivalence/TimelockControllerOptimistic.v
 proofs/equivalence/ReserveOptimisticGovernor.v
+proofs/equivalence/StakingVaultExchange.v
