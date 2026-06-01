@@ -110,6 +110,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R109: OZ ERC20 _update body — Yul-helper leaf infrastructure (25 Qed leaves)
 - R110: OZ ERC20 _update body — Section bridges + Yul-switch absorber + Axiom→Lemma
 - R111: OZ ERC20 _update mint body Qed closure — lens hypotheses + relaxed switch absorbers
+- R112: OZ ERC20 _update burn body Qed closure — second mapping_index_access + Shallow.if_ lt absorber
 
 ### Common pitfalls and resolved issues
 - R020/R021/R035/R041/R042/R046/R073/R074: shallow_embed.py + framework bugs (RESOLVED upstream)
@@ -2067,10 +2068,122 @@ The closed proof's spine:
 
 ### Burn and transfer
 
-Still `Admitted Lemma`.  The infrastructure landed in #318 directly
-extends to them: the same walker pattern + corresponding sibling
-Section hypotheses (analogous to `namespace_binding_after_ts_update_mint`
-but for the burn / transfer first-write slot).
+Burn closed in R112 (task #319).  Transfer still `Admitted Lemma`; same
+walker pattern applies, the bridge hypothesis (`proj_sim_independent_slots`)
+already exists.
+
+## R112: OZ ERC20 `_update` burn body — Qed closure (task #319)
+
+Task #319 closed `run_fun__update_3335_at_proj_sim_burn` from
+`Admitted Lemma` to real `Qed Lemma` (~415 LOC).  The methodology
+is identical to R111 (mint) with three differences forced by burn's
+Yul body shape.
+
+### Burn body shape (vs. mint)
+
+- **Switch 1 / outer switch**: mint takes the `δ ≠ 0` arm (TS-write),
+  burn takes the `δ = 0` arm (balance-debit) — the absorber is
+  `run_let_state_match_pure_zero` (mirror of mint's `_nonzero`).
+- **Balance-debit subblock** writes BEFORE the TS-debit (opposite
+  of mint).  Includes an inner `lt(fromBalance, value)` check
+  guarded by `Shallow.if_ <lt-cond> <revert-block> tt`.  Under
+  `value <= balanceOf sim account`, `lt = 0`, so the revert block
+  is skipped via the R107 `run_shallow_let_state_if_zero` absorber.
+- **Switch 2**: burn takes the `δ ≠ 0` arm (TS-debit) since
+  `to = 0` makes `eq(to, 0) = 1`.
+
+### Three structural pieces specific to burn
+
+1. **Two new Section hypotheses** in `ERC20BaseEquivalence`:
+   - `ts_offset_after_balances_update_burn`: the
+     `IsAnchorOffsetSlot vs_bal slot_totalSupply ANCHOR 2` fact holds
+     for the intermediate post-balances list.  Mirror of mint's
+     `namespace_binding_after_ts_update_mint` for the burn first-
+     write slot.
+   - `nth_ts_after_balances_update_burn`: the `nth_error vs_bal
+     slot_totalSupply = Some (U256 totalSupply)` fact holds after the
+     balances update.  Mirror of `nth_balances_after_ts_update_mint`.
+   Audit obligation at inheritor: distinct list indices —
+   `slot_balances ≠ slot_totalSupply` — preserve both facts under
+   `update_nth`; discharge by `reflexivity` when slot indices are
+   literal nats.
+
+2. **Second `mapping_index_access` in the balance-debit subblock**:
+   burn calls `mapping_index_access(anchor, from)` TWICE — once
+   before the sload (memory grows to `memory_post_kc1`) and once
+   before the sstore (memory grows to `memory_post_kc2`).  Mint had
+   only one call.  The proof Skolemizes both via
+   `mapping_index_access_address_post_memory` chained, and the
+   state_post_bal / state_post_ts witnesses use `memory_post_kc2`.
+
+3. **`Pure.lt` absorber for the revert-block guard**: the inner
+   `Shallow.if_ (Pure.lt fromBalance value) <revert-block> tt`
+   reduces to `Shallow.if_ 0 ...` via `replace (Pure.lt _ _) with 0`
+   (justified by `H_balance_ge` ⇒ not-less-than).  Then R107's
+   `run_shallow_let_state_if_zero` (already used in mint's
+   account-zero check) absorbs the revert-block dispatch.
+
+### Discharge pattern for burn body
+
+The closed proof's spine (mirror of mint with swaps):
+- Upfront: skolemize `vs_bal`, `vs_ts`, `simq` (the burn post-sim)
+  via `proj_sim_pointwise_totalSupply_update` destructuring;
+  derive `H_ts_bound`, `H_balance_diff_bound`, `H_ts_diff_bound`;
+  Skolemize `memory_post_kc1` (first mia post-memory),
+  `memory_post_kc2` (second mia post-memory), `memory_final` (log3
+  mstore post-memory); `exists memory_final, vs_ts`; discharge the
+  `proj_sim_post_burn = Some vs_ts` half via `Hburn` + `Hproj`.
+- Outer RunO.Let around the big body.
+- Prelude (getERC20Storage + 6 binders + eq(from, 0) = 0) → first
+  switch absorber `run_let_state_match_pure_zero` with
+  `state_after_branch := state_post_bal`.
+- Balance-debit subblock: 2 pures + add(anchor, 0) + 4 pures +
+  mapping_index_access (memory → memory_post_kc1) +
+  read_from_storage at keccak2 (yields `map_get_u256 ... =
+  balanceOf sim account` via `map_get_balances_eq_balanceOf`) +
+  6 pures + lt(fromBalance, value) → `Pure.lt` replaced with 0 →
+  `run_shallow_let_state_if_zero` absorber + 4 pures + wrapping_sub
+  + 2 pures + add(anchor, 0) + 4 pures + second mapping_index_access
+  (memory → memory_post_kc2) + sstore at keccak2 (storage → vs_bal)
+  + 1 pure → `M.pure (Tt, tt)`.
+- Body after switch 1: canonize via `CanonizeState.update_storage_eq`;
+  second prelude → eq(0, 0) = 1 → `run_let_state_match_pure_nonzero`
+  with `δ_val := 1`, `state_after_branch := state_post_ts`.
+- TS-decrement subblock: 4 pures + add(anchor, 2) + sload at
+  anchor+2 (yields `totalSupply` via `nth_ts_after_balances_update_burn`
+  + `ts_offset_after_balances_update_burn`) + wrapping_sub + sstore
+  at anchor+2 → `Hupd_ts` reaches `Some vs_ts`.
+- Log3 tail: convert_t_address pieces (account, 0); unfold the
+  log3 let_state; allocate_unbounded body walk (mload_absorbing +
+  pure); abi_encode_tuple body walk (nested calls + abi_encode_t_uint256
+  body with mstore_absorbing); sub; log3 = M.pure tt.
+- Final composition: already discharged by upfront `exists` and
+  `vs_ts = proj_sim simq`.
+
+### Trust footprint after #319
+
+- `Print Assumptions ERC20Equivalence.run_fun__burn_3401_equivalent`
+  no longer lists `run_fun__update_3335_at_proj_sim_burn` (the body
+  Lemma is real).  The wrapper bridge axiom
+  `run_fun__update_1459_wraps_fun__update_3335` (R070 shape) remains;
+  it's the StakingVault-specific wrapper-chain audit obligation,
+  shared with mint and transfer.
+- The two new Section hypotheses
+  (`ts_offset_after_balances_update_burn`,
+  `nth_ts_after_balances_update_burn`) do not appear in
+  `Print Assumptions` because they are universally quantified
+  outside the Section, joining the other Section hypotheses
+  (`map_get_balances_eq_balanceOf`, the `proj_sim_pointwise_*`
+  bridges, etc.) that already gate the headline theorems.
+
+### Transfer
+
+Still `Admitted Lemma`.  Transfer's body has TWO balance writes
+(no totalSupply touched) but is otherwise structurally similar.
+The `proj_sim_independent_slots` Section hypothesis already
+exists; transfer also needs sibling lens hypotheses for the
+intermediate post-from-decrement state (analogous to burn's
+post-balance state).  ~400 LOC expected for the walker.
 
 ---
 
