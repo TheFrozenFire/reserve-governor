@@ -407,6 +407,90 @@ Module TimelockControllerOptimisticEquivalence.
     | Some (make_state env state_base memory'
               (proj_post_cancel_1394 storage_base id now_timestamp)) ?}}.
 
+  (** Sub-axiom: [fun_executeBatchBypass_201_inner] body effect.
+
+      Walks: [fun_hashOperationBatch_1135] (op-id derivation) +
+      [fun__getTimelockControllerStorage_641] (storage anchor read) +
+      [mapping_index_access(timestamps, id)] (slot derivation) +
+      [read_from_storage_split_offset_0_t_uint256] (current timestamp
+      read) + iszero+require [OperationConflict] (Unset gate) +
+      [timestamp] primitive + sstore [timestamps[id] := now] +
+      [fun_executeBatch_1552] dispatch (inner executeBatch composite —
+      this is the load-bearing delegatecall consumer that the R087
+      Blocker-2 discharge plan is gated on; the sub-axiom encapsulates
+      its post-state at [proj_post_executeBatchBypass_201]).
+
+      The audit-time obligation under [H_unset] (timestamps[id] = 0):
+      the body mechanically composes the steps to produce the net
+      timestamps[id] := DONE_TIMESTAMP write (after the inner
+      [fun_executeBatch_1552] discharges the now-timestamp via
+      [fun__afterCall_1656]). The whole inner composite is opaque
+      pending the delegatecall framework primitive — see R087 Blocker 2. *)
+  Axiom run_fun_executeBatchBypass_201_inner_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (targets_offset targets_length : U256.t)
+           (values_offset values_length : U256.t)
+           (payloads_offset payloads_length : U256.t)
+           (predecessor salt : U256.t)
+           (id : OpId)
+           (sim : Timelock.State.t)
+           (H_unset : Timelock.get_ts sim id = 0)
+           (H_success_executor :
+              has_EXECUTOR_ROLE env.(Environment.caller) = true \/
+              has_PROPOSER_ROLE env.(Environment.caller) = true),
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_executeBatchBypass_201_inner
+        targets_offset targets_length
+        values_offset values_length
+        payloads_offset payloads_length
+        predecessor salt ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_executeBatchBypass_201 storage_base id now_timestamp)) ?}}.
+
+  (** Sub-axiom: [fun_scheduleBatch_1295_inner] body effect.
+
+      Walks: array-length triple-check + revert-helper for
+      [TimelockController__LengthMismatch] + [fun_hashOperationBatch_1135]
+      (keccak256 of abi-encoded tuple) + [fun__schedule_1349] (sets the
+      timestamps[id] entry to now + delay; reads minDelay and asserts
+      delay >= minDelay) + a degenerate [Shallow.for_] loop that emits
+      one [CallScheduled] event per target.
+
+      The audit-time obligation: under [H_unset] (timestamps[id] = 0)
+      and [H_delay_ok] (delay >= sim.minDelay), the inner body
+      mechanically composes the four steps to produce the schedule
+      post-state at [proj_post_scheduleBatch_1295]. *)
+  Axiom run_fun_scheduleBatch_1295_inner_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (targets_offset targets_length : U256.t)
+           (values_offset values_length : U256.t)
+           (payloads_offset payloads_length : U256.t)
+           (predecessor salt delay : U256.t)
+           (id : OpId)
+           (sim : Timelock.State.t)
+           (H_unset : Timelock.get_ts sim id = 0)
+           (H_delay_ok : sim.(Timelock.State.minDelay) <= delay),
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_scheduleBatch_1295_inner
+        targets_offset targets_length
+        values_offset values_length
+        payloads_offset payloads_length
+        predecessor salt delay ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_scheduleBatch_1295 storage_base id delay now_timestamp)) ?}}.
+
   (** ====================================================================
       Concrete slot-indexed observational predicates
       ====================================================================
@@ -771,8 +855,17 @@ Module TimelockControllerOptimisticEquivalence.
       Audit-time witness: same as ProposalLib's composite axioms —
       every step maps to an existing primitive or a documented
       sub-call's post-state. The inner executeBatch's storage effects
-      are encapsulated in [proj_post_executeBatch_1552]'s shape. *)
-  Axiom run_fun_executeBatchBypass_201_at_proj_sim :
+      are encapsulated in [proj_post_executeBatch_1552]'s shape.
+
+      R088 closure: same trust-redistribution split as [revoke] /
+      [cancel] / [scheduleBatch]. Dispatches
+      [run_fun__checkRole_2033_under_role] (shared gate, [has_PROPOSER_ROLE]
+      discharge) and [run_fun_executeBatchBypass_201_inner_at_storage_base]
+      (body — the body sub-axiom encapsulates the inner
+      [fun_executeBatch_1552] dispatch, which is the R087-Blocker-2
+      delegatecall consumer; trust there is bounded by the body
+      sub-axiom rather than by the outer composite walker). *)
+  Lemma run_fun_executeBatchBypass_201_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -805,6 +898,54 @@ Module TimelockControllerOptimisticEquivalence.
         predecessor salt ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
               (proj_post_executeBatchBypass_201 storage_base id now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory
+           targets_offset targets_length
+           values_offset values_length
+           payloads_offset payloads_length
+           predecessor salt id sim
+           H_caller_proposer H_caller_executor H_caller_bound H_unset H_success H_mem.
+    (** Phase 1: gate dispatch via the shared [fun__checkRole_2033]
+        sub-axiom under [has_PROPOSER_ROLE]. *)
+    pose proof (run_fun__checkRole_2033_under_role
+                  codes env state_base storage_base memory
+                  0xb09aa5aeb3702cfd50b6b62bc4532604938f21248a27a1d5ca736082b6819cc1
+                  has_PROPOSER_ROLE
+                  H_caller_proposer H_caller_bound H_mem) as Hgate.
+    destruct Hgate as (w0_g & w1_g & rest_g & Hgate).
+    set (memory_gate := w0_g :: w1_g :: rest_g).
+    assert (H_mem_gate : exists w0 w1 rest, memory_gate = w0 :: w1 :: rest)
+      by (exists w0_g, w1_g, rest_g; reflexivity).
+    (** Phase 2: inner-body dispatch (bypass-specific). The inner sub-axiom
+        encapsulates the [fun_executeBatch_1552] dispatch (which contains
+        the R087-Blocker-2 delegatecall) within its opaque post-state. *)
+    pose proof (run_fun_executeBatchBypass_201_inner_at_storage_base
+                  codes env state_base storage_base memory_gate
+                  targets_offset targets_length
+                  values_offset values_length
+                  payloads_offset payloads_length
+                  predecessor salt id sim
+                  H_unset (or_intror H_caller_proposer) H_mem_gate) as Hbody.
+    destruct Hbody as (memory' & Hbody).
+    exists memory'.
+    (** Phase 3: walk the outer body's mechanical assembly. *)
+    unfold fun_executeBatchBypass_201,
+           modifier_onlyRole_154,
+           constant_PROPOSER_ROLE_606.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (fun__checkRole_2033 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hgate | ]
+      | |- {{? _, _, _ | LowM.Call (fun_executeBatchBypass_201_inner _ _ _ _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Call _ _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
 
   (** ----- Composite walker axiom for [fun_scheduleBatch_1295] -----
 
@@ -827,8 +968,13 @@ Module TimelockControllerOptimisticEquivalence.
         S4.  Function returns unit.
 
       The post-storage exposed by [proj_post_scheduleBatch_1295] is
-      the storage_base with timestamps[id] = now + delay. *)
-  Axiom run_fun_scheduleBatch_1295_at_proj_sim :
+      the storage_base with timestamps[id] = now + delay.
+
+      R088 closure: same trust-redistribution split as [revoke]/[cancel].
+      Dispatches [run_fun__checkRole_2033_under_role] (shared gate,
+      [has_PROPOSER_ROLE] discharge) and
+      [run_fun_scheduleBatch_1295_inner_at_storage_base] (body). *)
+  Lemma run_fun_scheduleBatch_1295_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -859,6 +1005,52 @@ Module TimelockControllerOptimisticEquivalence.
         predecessor salt delay ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
               (proj_post_scheduleBatch_1295 storage_base id delay now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory
+           targets_offset targets_length
+           values_offset values_length
+           payloads_offset payloads_length
+           predecessor salt delay id sim
+           H_caller_proposer H_caller_bound H_unset H_delay_ok H_success H_mem.
+    (** Phase 1: gate dispatch via the shared [fun__checkRole_2033]
+        sub-axiom under [has_PROPOSER_ROLE]. *)
+    pose proof (run_fun__checkRole_2033_under_role
+                  codes env state_base storage_base memory
+                  0xb09aa5aeb3702cfd50b6b62bc4532604938f21248a27a1d5ca736082b6819cc1
+                  has_PROPOSER_ROLE
+                  H_caller_proposer H_caller_bound H_mem) as Hgate.
+    destruct Hgate as (w0_g & w1_g & rest_g & Hgate).
+    set (memory_gate := w0_g :: w1_g :: rest_g).
+    assert (H_mem_gate : exists w0 w1 rest, memory_gate = w0 :: w1 :: rest)
+      by (exists w0_g, w1_g, rest_g; reflexivity).
+    (** Phase 2: inner-body dispatch via the schedule-specific sub-axiom. *)
+    pose proof (run_fun_scheduleBatch_1295_inner_at_storage_base
+                  codes env state_base storage_base memory_gate
+                  targets_offset targets_length
+                  values_offset values_length
+                  payloads_offset payloads_length
+                  predecessor salt delay id sim
+                  H_unset H_delay_ok H_mem_gate) as Hbody.
+    destruct Hbody as (memory' & Hbody).
+    exists memory'.
+    (** Phase 3: walk the outer body's mechanical assembly. *)
+    unfold fun_scheduleBatch_1295,
+           modifier_onlyRole_1213,
+           constant_PROPOSER_ROLE_606.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (fun__checkRole_2033 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hgate | ]
+      | |- {{? _, _, _ | LowM.Call (fun_scheduleBatch_1295_inner _ _ _ _ _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Call _ _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
 
   (** ----- Composite walker axiom for [fun_executeBatch_1552] -----
 
