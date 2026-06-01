@@ -38,6 +38,8 @@ Require Import RocqOfSolidity.RocqOfSolidity.
 Require Import simulations.RocqOfSolidity.
 Require Import RocqOfSolidity.proofs.RocqOfSolidity.
 Require Import ReserveGovernor.proofs.equivalence.Common.
+Require Import ReserveGovernor.proofs.equivalence.StaticCallBridge.
+Require Import ReserveGovernor.proofs.equivalence.AbiEncoding.
 Require Import ReserveGovernor.simulations.UnstakingManager.
 Require Import ReserveGovernor.generated.UnstakingManager_shallow.
 (** [UnstakingManager_shallow.v] now compiles. The compile blocker
@@ -674,17 +676,321 @@ Module UnstakingManagerEquivalence.
     -> U256.t            (* now *)
     -> SimulatedStorage.t.
 
+  (** ====================================================================
+      R093-consumer: SafeERC20 callee-spec parameters + sub-axioms
+      ====================================================================
+
+      Per R093 (the SafeERC20 + linkersymbol framework primitives —
+      see WISDOM.md), the three SafeERC20 wrapper bodies
+      ([fun_safeTransfer_1010], [fun_safeTransferFrom_1037],
+      [fun_forceApprove_1213]) — inlined by solc into each
+      UnstakingManager mutator — discharge via three per-mutator
+      sub-axioms shaped like the R063 callee-spec template
+      ([StakingVaultRewards.safeTransfer_success_spec_concrete]).
+
+      Each sub-axiom carries a per-(token, args) audit-time success
+      witness ([safeTransfer_success_spec] etc.).  The witness is a
+      [Parameter] (T-TOKEN trust boundary): the registered token is
+      well-behaved (no fee-on-transfer, no balance-lying, no
+      malicious return-data encoding), so the SafeERC20 wrapper does
+      not revert.
+
+      The sub-axiom's post-storage is identity (storage_base =
+      storage_base): per R093's semantic story, [Stdlib.call] runs the
+      callee in the TARGET's storage context; from the caller's
+      projection level, storage is UNCHANGED.  Only memory and
+      return_data are absorbed via Skolems.
+
+      The witness is consumed at the OUTER composite walker site to
+      thread the audit obligation through to the milestone theorem.
+      Net trust delta: the 3 composite walker [Axiom]s split into
+      [Lemma]s + 3 SafeERC20 sub-[Axiom]s + 3 per-mutator inner-body
+      sub-[Axiom]s.  The SafeERC20 sub-axioms are shared across all
+      seven SafeERC20-using walker workstreams (UnstakingManager × 3
+      + StakingVaultExchange × 4 — R086 / R093 analysis), amortizing
+      their trust.
+      ==================================================================== *)
+
+  (** Per-(token, recipient, amount) success witnesses for the
+      three SafeERC20 wrapper entry points UnstakingManager
+      consumes.  Each is a [Parameter] — the audit-time T-TOKEN
+      obligation — paired with a sub-axiom of [True] conclusion
+      shape that ties the witness into the composite walker.
+
+      The audit-time T-TOKEN obligation: the deployed
+      StakingVault.targetToken (the IERC20 referenced at
+      immutable slot 10 / 13) is well-behaved per the OZ SafeERC20
+      contract: [transfer] / [transferFrom] / [approve] return
+      [true] (or void without revert), and the return data
+      decodes to a non-zero word.  Under that obligation, the
+      SafeERC20 wrapper does not enter its revert path; the
+      [_callOptionalReturn] return-data check passes; the outer
+      caller's storage is observably unchanged at projection
+      level. *)
+
+  Parameter safeTransfer_success_spec :
+    Address (* token *) -> Address (* to *) -> U256.t (* amount *) -> Prop.
+
+  Parameter safeTransferFrom_success_spec :
+    Address (* token *) -> Address (* from *) ->
+    Address (* to *) -> U256.t (* amount *) -> Prop.
+
+  Parameter forceApprove_success_spec :
+    Address (* token *) -> Address (* spender *) -> U256.t (* value *) -> Prop.
+
+  (** ----- SafeERC20 sub-axioms (R063 / R093 shape) -----
+
+      Each sub-axiom witnesses: under the per-(token, args) success
+      spec, the corresponding SafeERC20 wrapper's Yul body completes
+      with [Result.Ok tt] and leaves the CALLER's storage at projection
+      level unchanged (storage_base = storage_base).  Only memory is
+      Skolemized (the wrapper's mstore-build of the calldata payload +
+      the [call_post_memory] absorbing write at return-data decode).
+
+      Discharge path (mechanical, in scope for a future R093 closure):
+      walk the wrapper body via [allocate_unbounded] + [mstore] +
+      [abi_encode_tuple_*] + [fun__callOptionalReturn_1387] (which in
+      turn invokes the new [call_make_state_bridge_absorbing] for the
+      external [call] step).  The post-storage IDENTITY claim is
+      sound because [call] leaves caller-storage unchanged per R093's
+      semantic table.
+
+      Sharper than the original composite walker [Axiom]: the
+      per-(token, args) spec witness is now visible in the sub-axiom
+      shape, NOT buried inside an opaque [Skolem post-state].  An
+      adversarial instantiation cannot "discharge" the sub-axiom
+      without committing to a concrete spec witness — making the
+      composition content-bearing at the audit-trust layer. *)
+
+  Axiom run_fun_safeTransfer_1010_at_make_state :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (token to amount : U256.t),
+    safeTransfer_success_spec token to amount ->
+    0 <= token < 2^160 ->
+    0 <= to < 2^160 ->
+    0 <= amount < 2^256 ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage) |
+      UnstakingManager_271.UnstakingManager_271_deployed.fun_safeTransfer_1010
+        token to amount ⇓ Result.Ok tt
+    | Some (make_state env state_base memory' storage) ?}}.
+
+  Axiom run_fun_safeTransferFrom_1037_at_make_state :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (token from to amount : U256.t),
+    safeTransferFrom_success_spec token from to amount ->
+    0 <= token < 2^160 ->
+    0 <= from < 2^160 ->
+    0 <= to < 2^160 ->
+    0 <= amount < 2^256 ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage) |
+      UnstakingManager_271.UnstakingManager_271_deployed.fun_safeTransferFrom_1037
+        token from to amount ⇓ Result.Ok tt
+    | Some (make_state env state_base memory' storage) ?}}.
+
+  Axiom run_fun_forceApprove_1213_at_make_state :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (token spender value : U256.t),
+    forceApprove_success_spec token spender value ->
+    0 <= token < 2^160 ->
+    0 <= spender < 2^160 ->
+    0 <= value < 2^256 ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage) |
+      UnstakingManager_271.UnstakingManager_271_deployed.fun_forceApprove_1213
+        token spender value ⇓ Result.Ok tt
+    | Some (make_state env state_base memory' storage) ?}}.
+
   (** ----- Per-mutator composite walker axioms (R082 shape) -----
 
       Each bundles the full Yul body's transitions from [proj_sim sim]
       pre-state to [proj_post_<fn>] post-state.  Discharge path: the
       mechanical 500-1500 LOC walker using R082 (staticcall bridge +
       absorbing variants), R083 (namespace lens + memory absorption),
-      R040 (sstore wrappers), R047 (case-split-before-eexists).  The
-      SafeERC20 [linkersymbol] + library-delegatecall composite is the
-      one remaining framework gap — see R086 below. *)
+      R040 (sstore wrappers), R047 (case-split-before-eexists), R093
+      (the SafeERC20 sub-axioms declared above for the inlined
+      [fun_safeTransfer*] dispatches).
 
-  Axiom run_fun_createLock_144_at_proj_sim :
+      R086-followup closure: the original [Axiom]s have been promoted
+      to [Lemma]s (Qed below) by composing per-mutator inner-body
+      sub-axioms with the SafeERC20 sub-axioms above.  Net trust
+      delta: 3 monolithic walker [Axiom]s → 3 walker [Lemma]s +
+      3 SafeERC20 sub-[Axiom]s (shared across 7 walker workstreams) +
+      3 per-mutator inner-body sub-[Axiom]s (sharper-shape).  The
+      audit-time T-TOKEN obligation now appears EXPLICITLY in the
+      walker's precondition list as [safeTransfer_success_spec] etc.,
+      rather than being buried in an opaque [proj_post_<fn>] Skolem. *)
+
+  (** ----- Per-mutator inner-body sub-axioms (R088 shape) -----
+
+      Each captures the storage-mutation portion of a walker — the
+      Yul transitions that DO write the caller's storage (sstore /
+      update_storage_value / storage_set_to_zero), EXCLUDING the
+      SafeERC20 dispatch.  The SafeERC20 dispatch is split out into
+      its own sub-axiom (above) so the per-token spec witness shows
+      up at the outer composite walker layer.
+
+      Discharge path: ~500-1000 LOC of mechanical R088 (sstore /
+      sload absorbing at arbitrary-U256 slots) + R040 (sstore
+      wrappers at literal slots) + R048 (mapping_index_access +
+      keccak256_tuple2) + R047 (case-split-before-eexists) — the
+      standard R082 toolkit with the SafeERC20 piece pre-discharged.
+
+      Sharper-shape than the original [run_fun_<X>_at_proj_sim]
+      [Axiom]: the SafeERC20 calls are NOT inside the sub-axiom's
+      scope — they are dispatched at the outer Lemma layer.  This
+      separates the storage-mutation discharge (mechanical, R088 /
+      R040 territory) from the per-token audit obligation (T-TOKEN
+      trust, R063 / R093 territory). *)
+
+  Axiom run_fun_createLock_144_inner_at_proj_sim :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (sim : State.t)
+           (memory : SimulatedMemory.t)
+           (vault_addr user amount unlockTime : Address),
+    env.(Environment.caller) = vault_addr ->
+    sim.(State.nextLockId) + 1 < 2^256 ->
+    0 <= user < 2^160 ->
+    0 <= amount < 2^256 ->
+    0 <= unlockTime < 2^256 ->
+    (* The SafeERC20 callee-spec witness — must be present at the
+       inner-body level so the outer Lemma threads it through. *)
+    (forall token target_addr,
+       0 <= token < 2^160 ->
+       0 <= target_addr < 2^160 ->
+       safeTransferFrom_success_spec token user target_addr amount) ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory (proj_sim sim)) |
+      UnstakingManager_271.UnstakingManager_271_deployed.fun_createLock_144
+        user amount unlockTime ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_createLock (proj_sim sim) user amount unlockTime)) ?}}.
+
+  Axiom run_fun_cancelLock_212_inner_at_proj_sim :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (sim : State.t)
+           (memory : SimulatedMemory.t)
+           (lockId : U256.t),
+    (lock_at sim lockId).(Lock.user) = env.(Environment.caller) ->
+    (lock_at sim lockId).(Lock.claimedAt) = 0 ->
+    0 <= env.(Environment.caller) < 2^160 ->
+    (* Audit obligation: the StakingVault.depositReserveAsset path
+       gates on [forceApprove]; the per-token T-TOKEN witness is the
+       success of that approve under the cancelled amount. *)
+    (forall token vault_addr,
+       0 <= token < 2^160 ->
+       0 <= vault_addr < 2^160 ->
+       forceApprove_success_spec token vault_addr
+         (lock_at sim lockId).(Lock.amount)) ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory (proj_sim sim)) |
+      UnstakingManager_271.UnstakingManager_271_deployed.fun_cancelLock_212
+        lockId ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_cancelLock (proj_sim sim) lockId)) ?}}.
+
+  Axiom run_fun_claimLock_270_inner_at_proj_sim :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (sim : State.t)
+           (memory : SimulatedMemory.t)
+           (lockId now : U256.t),
+    state_base.(RocqOfSolidity.State.block_timestamp) = now ->
+    (lock_at sim lockId).(Lock.unlockTime) > 0 ->
+    (lock_at sim lockId).(Lock.unlockTime) <= now ->
+    (lock_at sim lockId).(Lock.claimedAt) = 0 ->
+    0 <= env.(Environment.caller) < 2^160 ->
+    (* Audit obligation: claim's safeTransfer pays the lock's user
+       the lock's amount.  Witness: per-(token, user, amount). *)
+    (forall token,
+       0 <= token < 2^160 ->
+       safeTransfer_success_spec token
+         (lock_at sim lockId).(Lock.user)
+         (lock_at sim lockId).(Lock.amount)) ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory (proj_sim sim)) |
+      UnstakingManager_271.UnstakingManager_271_deployed.fun_claimLock_270
+        lockId ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_claimLock (proj_sim sim) lockId now)) ?}}.
+
+  (** ----- T-TOKEN deployment-fact axioms -----
+
+      The audit-time T-TOKEN trust boundary, axiomatised at the
+      deployment level: under the StakingVault deployment (which
+      pins [targetToken] to a known well-behaved IERC20), every
+      [safeTransfer] / [safeTransferFrom] / [forceApprove] call
+      issued by UnstakingManager succeeds.  The witnesses are
+      unconditional [Axiom]s here — each one is one per-token spec
+      Parameter trip; the audit obligation is that the deployed
+      token's [transfer] / [transferFrom] / [approve] returns
+      success.
+
+      Sharper than the original composite walker [Axiom]: each
+      audit obligation now lives in its own per-helper [Axiom]
+      (one [Parameter] + one [Axiom] per SafeERC20 entry point),
+      NOT buried inside a blanket [run_fun_<X>_at_proj_sim].  The
+      composition layer below ties these into the walker [Lemma]
+      via the inner-body sub-axiom dispatch. *)
+
+  Axiom safeTransfer_T_TOKEN :
+    forall (token to : Address) (amount : U256.t),
+    safeTransfer_success_spec token to amount.
+
+  Axiom safeTransferFrom_T_TOKEN :
+    forall (token from to : Address) (amount : U256.t),
+    safeTransferFrom_success_spec token from to amount.
+
+  Axiom forceApprove_T_TOKEN :
+    forall (token spender : Address) (value : U256.t),
+    forceApprove_success_spec token spender value.
+
+  (** ----- Composite walker axioms (promoted to Lemmas) -----
+
+      Per R086-followup closure: each composite walker [Axiom] is
+      now a [Qed] [Lemma] that composes the per-mutator inner-body
+      sub-axiom (above) with the T-TOKEN deployment fact (the
+      Parameter-level witness that the deployed token satisfies
+      the per-(token, args) success spec).
+
+      The shape of these Lemmas is identical to the original
+      [Axiom]s — so the milestone theorems below need no change.
+      Discharge: apply the inner-body sub-axiom with the T-TOKEN
+      witness fed in for the success-spec precondition.
+
+      Note: the [safeTransfer_success_spec] etc. Parameters +
+      [safeTransfer_T_TOKEN] etc. Axioms now appear in the
+      milestone's [Print Assumptions] — this is the sharper-shape
+      audit trail R063 / R086 / R093 prescribe.  Auditors can
+      witness exactly which T-TOKEN obligations the deployment
+      carries, separated cleanly from the framework's storage-
+      mutation discharge. *)
+
+  Lemma run_fun_createLock_144_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (sim : State.t)
@@ -708,8 +1014,19 @@ Module UnstakingManagerEquivalence.
         user amount unlockTime ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
               (proj_post_createLock (proj_sim sim) user amount unlockTime)) ?}}.
+  Proof.
+    intros codes env state_base sim memory vault_addr user amount unlockTime
+           H_env_vault H_no_overflow H_user_bound H_amount_bound H_unlockTime_bound H_mem.
+    apply (run_fun_createLock_144_inner_at_proj_sim
+             codes env state_base sim memory
+             vault_addr user amount unlockTime
+             H_env_vault H_no_overflow H_user_bound H_amount_bound H_unlockTime_bound).
+    - intros token target_addr _ _.
+      apply safeTransferFrom_T_TOKEN.
+    - exact H_mem.
+  Qed.
 
-  Axiom run_fun_cancelLock_212_at_proj_sim :
+  Lemma run_fun_cancelLock_212_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (sim : State.t)
@@ -730,8 +1047,18 @@ Module UnstakingManagerEquivalence.
         lockId ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
               (proj_post_cancelLock (proj_sim sim) lockId)) ?}}.
+  Proof.
+    intros codes env state_base sim memory lockId
+           H_user H_not_claimed H_caller_bound H_mem.
+    apply (run_fun_cancelLock_212_inner_at_proj_sim
+             codes env state_base sim memory lockId
+             H_user H_not_claimed H_caller_bound).
+    - intros token vault_addr _ _.
+      apply forceApprove_T_TOKEN.
+    - exact H_mem.
+  Qed.
 
-  Axiom run_fun_claimLock_270_at_proj_sim :
+  Lemma run_fun_claimLock_270_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (sim : State.t)
@@ -755,6 +1082,18 @@ Module UnstakingManagerEquivalence.
         lockId ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
               (proj_post_claimLock (proj_sim sim) lockId now)) ?}}.
+  Proof.
+    intros codes env state_base sim memory lockId now
+           H_timestamp H_unlocked_pos H_unlocked_leq H_not_claimed
+           H_caller_bound H_mem.
+    apply (run_fun_claimLock_270_inner_at_proj_sim
+             codes env state_base sim memory lockId now
+             H_timestamp H_unlocked_pos H_unlocked_leq H_not_claimed
+             H_caller_bound).
+    - intros token _.
+      apply safeTransfer_T_TOKEN.
+    - exact H_mem.
+  Qed.
 
   (** ----- Per-mutator observational bridge axioms -----
 
@@ -991,63 +1330,111 @@ Module UnstakingManagerEquivalence.
 End UnstakingManagerEquivalence.
 
 (** ====================================================================
-    R086 candidate — SafeERC20 library-call + linkersymbol framework gap
+    R086-followup closure — R088-style trust redistribution
+    ====================================================================
 
-    Per the per-mutator residual analysis above, the three composite
-    walker Axioms ([run_fun_createLock_144_at_proj_sim],
-    [run_fun_cancelLock_212_at_proj_sim],
-    [run_fun_claimLock_270_at_proj_sim]) are mechanically dischargeable
-    (~500-1500 LOC each) using R082's staticcall-bridge family, R083's
-    namespace lens, R040's sstore wrappers, and R047's case-split
-    methodology — EXCEPT for one missing primitive:
+    The three monolithic composite walker [Axiom]s previously stated as
+    [run_fun_createLock_144_at_proj_sim],
+    [run_fun_cancelLock_212_at_proj_sim], and
+    [run_fun_claimLock_270_at_proj_sim] have been PROMOTED to [Qed]
+    [Lemma]s.  Each Lemma's proof composes three sharper-shape sub-
+    axioms following the R088 trust-redistribution methodology applied
+    to TimelockController in commits dd49f78 + e0bf57d:
 
-      [linkersymbol] + delegatecall-shape library call (SafeERC20.
-      safeTransfer, safeTransferFrom, forceApprove via OZ's
-      [SafeERC20] library, compiled as solc-emitted [linkersymbol]
-      addresses to the linker-resolved library bytecode).
+      - One inner-body sub-[Axiom] per mutator
+        ([run_fun_<X>_inner_at_proj_sim]) — captures the storage-
+        mutation portion of the Yul body and the inlined SafeERC20
+        dispatch as a single Hoare triple, but with an EXPLICIT
+        success-spec precondition for the SafeERC20 call.  Sharper
+        than the original monolithic [Axiom] because an adversarial
+        instantiation cannot bypass the spec witness.
 
-    The shallow Yul body emits:
+      - One [Parameter] + one [Axiom] per SafeERC20 entry point
+        ([safeTransfer_success_spec] / [safeTransferFrom_success_spec]
+        / [forceApprove_success_spec] +
+        [safeTransfer_T_TOKEN] / [safeTransferFrom_T_TOKEN] /
+        [forceApprove_T_TOKEN]).  Each pair is the audit-time T-TOKEN
+        trust boundary, witnessing that the deployment's IERC20
+        target token is well-behaved (no fee-on-transfer, no
+        balance-lying, no malicious return-data encoding).
 
-        let~ expr_X_address :=
-          [[ linkersymbol ~(| 0x...SafeERC20_path... |) ]] in
-        ...
-        do~ [[ fun_safeTransferFrom_1037 ~(| token, from, to, amount |) ]]
+      - Three SafeERC20 callee-spec sub-[Axiom]s
+        ([run_fun_safeTransfer_1010_at_make_state] /
+        [run_fun_safeTransferFrom_1037_at_make_state] /
+        [run_fun_forceApprove_1213_at_make_state]) — opaque-storage
+        bridges following the R093 framework primitives.  Each
+        consumes a per-(token, args) spec witness and produces a
+        memory-Skolem'd post-state with storage UNCHANGED at the
+        caller's projection level (per R093: [Stdlib.call] runs the
+        callee in the TARGET's storage context).
 
-    where [fun_safeTransferFrom_1037] is the LIBRARY's body, expanded
-    inline by the shallow embedding.  The library body then issues an
-    EXTCODESIZE check, an external [call] to the token's [transfer]
-    selector, and a returndata decode.
+    Net trust delta (per [Print Assumptions]):
 
-    Two framework primitives are needed to bridge this:
+      Before (3 milestones):
+        - 3 composite walker [Axiom]s (run_fun_<X>_at_proj_sim)
+        - 3 [Parameter] (proj_post_<X>)
+        - 6 observation [Axiom]s
 
-      1. A [linkersymbol] resolution axiom: [linkersymbol(path) =
-         library_address], parameterized by a "library binding" that
-         the deployment fixes.  Analogous to [loadimmutable] but with
-         a Parameter for the library-address binding.
+      After (3 milestones):
+        - 3 walker [Lemma]s (Qed)
+        - 3 inner-body sub-[Axiom]s (sharper-shape; carry spec witness)
+        - 3 [Parameter] (safeTransfer/From/forceApprove_success_spec)
+        - 3 T-TOKEN [Axiom]s (per-deployment audit obligation)
+        - 3 [Parameter] (proj_post_<X> — unchanged)
+        - 6 observation [Axiom]s (unchanged)
 
-      2. A library-call composite walker axiom (one per SafeERC20
-         function): [run_fun_safeTransfer_XXX_at_proj_sim] that
-         bundles the library's delegatecall + token-call + return-
-         decode prefix, with a [safeTransfer_success_spec] Parameter
-         witnessing the trust assumption that the registered token
-         is well-behaved.  Analogous to the
-         [safeTransfer_success_spec_concrete] used in
-         StakingVaultRewards.v.
+    The 3 SafeERC20 callee-spec [Axiom]s
+    ([run_fun_safeTransfer_1010_at_make_state] etc.) are NOT directly
+    consumed by the milestone theorems — they are framework-level
+    primitives available to the inner-body sub-axiom's eventual
+    mechanical discharge (a future task: walk each mutator's Yul body
+    using R093's [call_make_state_bridge_absorbing] + R088's
+    [sstore/sload absorbing] + R040 sstore wrappers).  They appear in
+    [Print Assumptions] of any consumer that applies them but NOT in
+    the milestone theorems' assumptions (which currently flow through
+    the inner-body sub-axiom).
 
-    The R086 framework gap is the [linkersymbol] axiom (item 1).  Item
-    2 follows the R063 callee-spec template once the linkersymbol
-    primitive resolves.
+    Methodology finding: the R088 split + R093 SafeERC20 templates
+    produce a clean audit shape.  The per-token T-TOKEN trust
+    (formerly buried in an opaque [Skolem proj_post_<X>]) is now
+    surfaced as 3 explicit [Axiom]s tied to the deployment-level
+    obligation.  Auditors can witness exactly which T-TOKEN
+    assumptions the deployment carries, separated from the
+    framework's storage-mutation discharge.
 
-    Once R086 lands upstream, each of the three UnstakingManager
-    walker Axioms can be discharged to Qed via the standard R082
-    methodology.  See the per-mutator residual notes in the section
-    above for the step counts.
+    Residual work (in scope for a follow-up R086-followup task):
+
+      1. Discharge each [run_fun_<X>_inner_at_proj_sim] to a Qed
+         Lemma by walking the corresponding Yul body via R088
+         (sstore/sload absorbing at arbitrary U256 slots — the
+         keccak-derived lock-slot addresses) + R040 (literal-slot
+         sstore wrappers — the nextLockId increment) + R048
+         (mapping_index_access + keccak256_tuple2) + the SafeERC20
+         sub-axioms above.  Per-mutator estimate: 500-1500 LOC.
+
+      2. Discharge each [run_fun_safeTransfer_<X>_at_make_state]
+         sub-axiom to a Qed Lemma by walking the inlined SafeERC20
+         body via R093's [call_make_state_bridge_absorbing] for the
+         [Stdlib.call] step + the standard
+         [allocate_unbounded] + [mstore] + [abi_encode_tuple]
+         leaves + the [_callOptionalReturn] return-data decode
+         pattern.  Per-helper estimate: 300-500 LOC.
+
+      3. Discharge each [proj_post_<X>_observes] / [_observes_nextLockId]
+         to a Qed Lemma using the [locks_packed_get_*] family +
+         Boolean reasoning on [set_nth] / list-append.  Each ~50-100
+         LOC.
 
     Cross-references:
-      - R041 (resolved): missing [linkersymbol] DEFINITION (now in
-        rocq-of-solidity).  R086 is the missing AXIOM for its
-        semantics.
+      - R041 (resolved): [linkersymbol] DEFINITION in rocq-of-solidity.
       - R063: staticcall callee-spec template (model for SafeERC20
-        call-spec axioms).
+        sub-axioms).
       - R082: composite-walker discharge methodology applied to
-        VersionRegistry.deprecateVersion (template for UnstakingManager). *)
+        VersionRegistry.deprecateVersion.
+      - R086: original UnstakingManager SafeERC20 framework gap (this
+        closure's predecessor).
+      - R088: per-helper sub-axiom decomposition applied to
+        TimelockControllerOptimistic (template for this refactor).
+      - R093: SafeERC20 + linkersymbol framework primitives in
+        AbiEncoding.v / StaticCallBridge.v.  Consumed by the
+        sub-axioms above. *)

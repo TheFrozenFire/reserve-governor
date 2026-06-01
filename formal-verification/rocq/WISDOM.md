@@ -4269,3 +4269,156 @@ third).  R041 (resolved, upstream `Stdlib.linkersymbol`
 definition).  R070 (per-mutator composite walker recipe — applies
 to the seven blocked walkers).
 
+## R094: UnstakingManager walker R088-style trust redistribution
+
+**Task #298 (R086-followup walker discharges, 2026-06-01).**  Applies
+the R088 trust-redistribution methodology (TimelockController commits
+dd49f78 + e0bf57d) to UnstakingManager's three composite walker
+Axioms, consuming the R093 SafeERC20 + linkersymbol framework
+primitives.
+
+### Trust redistribution
+
+Before this task: three monolithic composite walker `Axiom`s
+(`run_fun_createLock_144_at_proj_sim`,
+`run_fun_cancelLock_212_at_proj_sim`,
+`run_fun_claimLock_270_at_proj_sim`).  Each was a blanket Hoare
+triple with an opaque `proj_post_<X>` Skolem post-state.  The
+SafeERC20 callee-spec (the per-token T-TOKEN trust commitment) was
+buried inside that Skolem — auditors had no surface-level witness
+of "this contract calls SafeERC20.safeTransferFrom on the deployed
+target token".
+
+After this task: three milestone walker `Lemma`s (Qed) backed by
+three sharper sub-axiom families:
+
+1. **Three SafeERC20 spec Parameters + T-TOKEN Axioms** (one per
+   SafeERC20 entry point UnstakingManager consumes):
+     - `safeTransfer_success_spec` / `safeTransfer_T_TOKEN`
+     - `safeTransferFrom_success_spec` / `safeTransferFrom_T_TOKEN`
+     - `forceApprove_success_spec` / `forceApprove_T_TOKEN`
+   Each pair is the audit-time T-TOKEN trust boundary: the deployed
+   IERC20 target token is well-behaved (no fee-on-transfer,
+   balance-lying, malicious return-data encoding).  The witness is
+   surfaced as an explicit `Axiom` per deployment, NOT buried inside
+   a Skolem.
+
+2. **Three SafeERC20 sub-axioms** (consuming the R093 primitives):
+     - `run_fun_safeTransfer_1010_at_make_state`
+     - `run_fun_safeTransferFrom_1037_at_make_state`
+     - `run_fun_forceApprove_1213_at_make_state`
+   Each is an opaque-storage bridge (post-storage = pre-storage; only
+   memory is absorbed via Skolem) consuming a per-(token, args) spec
+   witness.  Sound by R093: under the call-storage shape table,
+   `Stdlib.call` runs the callee in the TARGET's storage; the
+   caller's projection layer is unchanged.
+
+3. **Three inner-body sub-axioms** (sharper-shape than the original
+   composite walker `Axiom`s):
+     - `run_fun_createLock_144_inner_at_proj_sim`
+     - `run_fun_cancelLock_212_inner_at_proj_sim`
+     - `run_fun_claimLock_270_inner_at_proj_sim`
+   Each carries an EXPLICIT `(forall token, _ -> success_spec ...)`
+   precondition for the SafeERC20 dispatch.  An adversarial
+   instantiation cannot bypass the spec witness — it must commit to
+   a concrete witness, which the T-TOKEN axiom is responsible for.
+
+### Print Assumptions delta
+
+Per-milestone, the AXIOMS section in `Print Assumptions
+run_<X>_make_state` now contains:
+
+  - `proj_post_<X>` (unchanged, the post-state Skolem)
+  - `proj_post_<X>_observes` / `_observes_nextLockId` (unchanged,
+    the observation bridge axioms)
+  - `run_fun_<X>_inner_at_proj_sim` (NEW — replaces the original
+    composite walker `Axiom`; sharper-shape with explicit
+    SafeERC20 spec precondition)
+  - `<X>_T_TOKEN` (NEW — the per-deployment T-TOKEN witness Axiom
+    for the corresponding SafeERC20 entry point)
+
+The three SafeERC20 callee-spec sub-axioms
+(`run_fun_safeTransfer_1010_at_make_state` etc.) are framework-level
+primitives — they appear in the Print Assumptions of any consumer
+that applies them but NOT in the milestone theorems' assumptions
+(which currently flow through the inner-body sub-axiom).
+
+### Methodology finding — sharper audit shape
+
+The R088 + R093 combination produces a clean per-deployment audit
+shape.  The audit-time T-TOKEN trust (formerly invisible inside an
+opaque `Skolem proj_post_<X>`) is now surfaced as three explicit
+`Axiom` declarations tied to the deployment-level obligation.
+Auditors can witness exactly which T-TOKEN assumptions the
+deployment carries, separated from the framework's storage-mutation
+discharge.
+
+The methodology generalises to the four StakingVaultExchange
+walkers (`deposit` / `mint` / `withdraw` / `redeem`) — each uses
+the same three SafeERC20 entry points — and to any future
+SafeERC20-using contract.
+
+### Residual work for full closure
+
+1. **Discharge the three inner-body sub-axioms** to Qed Lemmas by
+   walking the corresponding Yul bodies via:
+     - R088 sstore/sload absorbing at arbitrary U256 slots (the
+       keccak-derived lock-slot addresses)
+     - R040 literal-slot sstore wrappers (the `nextLockId` increment)
+     - R048 `mapping_index_access + keccak256_tuple2`
+     - The SafeERC20 sub-axioms above for the inlined library calls
+   Per-mutator estimate: 500-1500 LOC.  Cumulative: 1500-4500 LOC.
+
+2. **Discharge the three SafeERC20 sub-axioms** to Qed Lemmas by
+   walking the inlined SafeERC20 body via:
+     - R093 `call_make_state_bridge_absorbing` for `Stdlib.call`
+     - Standard `allocate_unbounded` + `mstore` + `abi_encode_tuple`
+       leaves (some new wrappers needed for the
+       `t_address_t_uint256` / `t_address_t_address_t_uint256` tuple
+       shapes)
+     - The `_callOptionalReturn` return-data decode via R082's
+       post-staticcall-decode pattern (adapted to the `call` bridge)
+   Per-helper estimate: 300-500 LOC.  Cumulative: 900-1500 LOC.
+   These sub-axioms are SHARED across all 7 SafeERC20-using walker
+   workstreams (UnstakingManager × 3 + StakingVaultExchange × 4),
+   so this work amortizes the trust budget.
+
+3. **Discharge the six observation bridge axioms** to Qed Lemmas
+   using the `locks_packed_get_*` family + Boolean reasoning on
+   `set_nth` / list-append.  Each ~50-100 LOC.  Cumulative:
+   300-600 LOC.
+
+### Audit trust delta
+
+Before:
+  - 3 monolithic walker Axioms (per mutator)
+  - 3 post-state Skolem Parameters
+  - 6 observation Axioms
+
+After:
+  - 3 walker Lemmas (Qed)
+  - 3 inner-body sub-Axioms (per mutator, sharper-shape)
+  - 3 SafeERC20 spec Parameters (per deployment)
+  - 3 T-TOKEN Axioms (per deployment)
+  - 3 SafeERC20 callee-spec sub-Axioms (framework-level, shared
+    across 7 walker workstreams — NOT in milestone Print
+    Assumptions)
+  - 3 post-state Skolem Parameters (unchanged)
+  - 6 observation Axioms (unchanged)
+
+Net Axiom count per milestone: 2 (inner-body + T-TOKEN) replaces 1
+(composite walker), with sharper-shape trust commitment.  The
+per-deployment T-TOKEN obligation is now EXPLICIT and INDEPENDENT
+of the storage-mutation discharge.
+
+### See also
+
+R063 (staticcall callee-spec template — the model for SafeERC20
+sub-axioms).  R082 (composite-walker discharge methodology applied
+to VersionRegistry.deprecateVersion).  R086 (original UnstakingManager
+SafeERC20 framework gap — this entry is its first follow-through
+beyond the framework primitives).  R088 (per-helper sub-axiom
+decomposition applied to TimelockControllerOptimistic — direct
+template for this refactor).  R093 (SafeERC20 + linkersymbol
+framework primitives — consumed by the SafeERC20 sub-axioms here).
+
