@@ -73,6 +73,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R059: `set_eq_at_role` membership equivalence
 - R051: Composite-axiom shape for milestone Qeds
 - R072: Abstract-base-class equivalence — slot-agnostic helpers + lens
+- R080: StakingVault dual delegation + bySig — dual-axis Trace208 push composition
 
 ### The R050 staticcall recipe
 - R063: `staticcall` as composite of existing primitives
@@ -722,6 +723,179 @@ per mutator).
 - `proofs/equivalence/Checkpoints.v` — 7 sanity lemmas (Trace208)
 - `proofs/equivalence/Votes.v` — 17 sim-level lemmas + Section
   template + walker documentation
+
+## R080: StakingVault dual delegation + bySig — dual-axis Trace208 + ECDSA + Nonces composition
+
+`proofs/equivalence/StakingVaultDelegation.v` (1.6k LOC) mechanizes
+the four delegation entrypoints — `delegate`, `delegateOptimistic`,
+`delegateBySig`, `delegateOptimisticBySig` — of StakingVault via
+the R051+R072 composite-axiom + slot-agnostic instantiation pattern.
+
+**The dual-axis insight:** StakingVault carries TWO parallel Votes-
+inheritance bookkeeping layers — the standard ERC20Votes one
+(`_delegatee` map + `_delegateCheckpoints` Trace208 + total-supply
+Trace208) AND a contract-local optimistic one
+(`optimisticDelegatees` map at slot 0x0a + `optimisticDelegateCheckpoints`
+Trace208 at slot 0x0b). Both are touched on EVERY `_update` (transfer/
+mint/burn), but the public `delegate*` entrypoints each touch ONLY
+ONE axis:
+
+- `delegate(delegatee)` → `_delegate(msg.sender, delegatee)` → standard
+  axis only
+- `delegateOptimistic(delegatee)` → `_delegateOptimistic(msg.sender,
+  delegatee)` → optimistic axis only
+- `delegateBySig(...)` → `_delegate(signer, delegatee)` → standard
+  axis only (signer comes from ECDSA.recover)
+- `delegateOptimisticBySig(...)` → `_delegateOptimistic(signer,
+  delegatee)` → optimistic axis only
+
+This is the "dual-axis independence" property — the slot layout
+ensures the two ledgers operate on disjoint storage regions, so
+each entrypoint's walker can decompose along its single axis.
+
+**Joined SimState carrier:**
+
+```coq
+Module SimState.
+  Record t : Set := {
+    base       : StakingVaultDelegation.State.t;  (* dual latest-side *)
+    std_traces : TraceMap;                        (* standard Trace208 *)
+    opt_traces : TraceMap;                        (* optimistic Trace208 *)
+    nonces     : Nonces.Map;                      (* OZ Nonces book *)
+    domain     : ECDSA.Domain.t;                  (* EIP-712 domain *)
+    clock      : U256.t;                          (* block.timestamp *)
+  }.
+End SimState.
+```
+
+**Trace208 push composition at delegation transitions:**
+
+For each `_move*DelegateVotes(from, to, amount)`:
+- Short-circuit if `from = to || amount = 0`.
+- If `from != 0`: push `(clock, latest(from_trace) - amount)` onto
+  `from`'s Trace208 (decrement).
+- If `to != 0`: push `(clock, latest(to_trace) + amount)` onto
+  `to`'s Trace208 (increment).
+
+The mock's `Trace208.latest_after_push` lemma chains directly: after
+the push, querying `latest` at the new key returns the pushed value.
+This is the load-bearing read for the Governor's veto-tally code
+path (`getPastOptimisticVotes(account, snapshot)` →
+`Trace208.upperLookupRecent` against the optimistic trace).
+
+**EIP-712 + ECDSA + Nonces composition (BySig variants):**
+
+```
+fun_delegateBySig_15249(delegatee, nonce, expiry, v, r, s):
+  if timestamp > expiry: revert VotesExpiredSignature(expiry)
+  struct_hash := keccak256(abi.encode(
+                   DELEGATION_TYPEHASH, delegatee, nonce, expiry))
+  typed_hash  := _hashTypedDataV4(struct_hash)
+                 (* folds in domain_separator(chain, contract, dep) *)
+  signer      := ECDSA.recover(typed_hash, v, r, s)
+  _useCheckedNonce(signer, nonce)   (* reverts on mismatch *)
+  _delegate(signer, delegatee)      (* same body as direct delegate *)
+```
+
+Each component composes via its respective foundation-tier
+equivalence proof:
+- `ECDSA.v` for `recover`, `typed_data_hash`, `optimistic_delegation_struct_hash`
+- `Nonces.v` for `useCheckedNonce` (replay protection)
+- `Checkpoints.v` for `Trace208.push` / `Trace208.latest`
+- `Votes.v` for `_delegate` decomposition
+
+The `OPTIMISTIC_DELEGATION_TYPEHASH` (0x... at L48 of StakingVault.sol)
+vs `DELEGATION_TYPEHASH` (OZ inherited) is the only constant that
+distinguishes the two BySig variants — same composition shape,
+different typehash → different signed digest → bound to a different
+axis. The struct-hash injectivity axiom (`struct_hash_injective`
+from mocks/ECDSA.v) is what prevents a `delegateBySig` signature
+from being lifted to a `delegateOptimisticBySig` even with the same
+(delegatee, nonce, expiry) triple — they hash to different digests.
+
+**Sim-vs-Yul slot layout:**
+
+```
+SimState field          | Yul storage slot
+------------------------|---------------------------------
+base.std.delegatee a    | slot_std_delegatee (mapping by `a`)
+base.opt.delegatee a    | 0x0a (mapping by `a`)
+std_traces[a]           | slot_std_delegate_ckpt (mapping by `a`)
+opt_traces[a]           | 0x0b (mapping by `a`)
+nonces a                | slot_nonces (mapping by `a`)
+domain                  | virtual — folded into DOMAIN_SEPARATOR
+                        | via chain_id + verifying contract addr
+```
+
+Per R072, slot indices are Section parameters; the inheritor
+discharges lens-correctness obligations at instantiation by
+`reflexivity` against the concrete shallow form.
+
+**File structure (1.6k LOC, all Qed except 4 Section hypotheses):**
+
+- Section 0: SimState carrier (record, ~30 LOC)
+- Section 1: sim-level Qed helpers — set_*_delegate decompositions,
+  std-side checkpointed-delegate analog of the optimistic-side
+  proof, push lemmas mirroring CHK-1/CHK-3 (~200 LOC, all Qed).
+- Section 2: joined-state mutators — `sim_delegate`,
+  `sim_delegateOptimistic`, `sim_delegateBySig`,
+  `sim_delegateOptimisticBySig` (~200 LOC).
+- Section 3: 14 Qed lemmas characterizing each mutator's
+  field-by-field post-state (3 sim_delegate updates, 7 preservers,
+  3 sim_delegateOptimistic updates, 7 preservers, dual-axis
+  independence, 4 BySig expired/replay/signer/nonce facts) (~500 LOC).
+- Section 4: slot-agnostic Section (Variables + Hypotheses) (~30 LOC).
+- Section 5: per-fn post-state projection Variables + well-formedness
+  Hypotheses (~150 LOC).
+- Section 6: per-fn Hoare-triple closure Hypotheses (~150 LOC).
+- Section 7: milestone Qed theorems (4 theorems, one per entrypoint).
+- Section 8: vm_compute sanity-check examples (8 examples, all Qed).
+- Section 9: walker-template commentary.
+- Section 10: trust budget summary.
+
+**Trust budget per `Print Assumptions`:**
+
+- All Qed lemmas in Sections 1-3: zero new axioms beyond the
+  pre-existing `ECDSA.Domain.deployment_id : Set` parameter.
+- BySig milestones: additionally pull in `ECDSA.recover`,
+  `ECDSA.typed_data_hash`, `ECDSA.optimistic_delegation_struct_hash`
+  as the *mock-side* Parameters (not new axioms — they're the
+  underlying interpretation surface that mocks/ECDSA.v exposes).
+
+**Handoff notes for inheritor / Wave 2 follow-up:**
+
+- Adding `generated/StakingVault_shallow.v` to the default
+  `_RocqProject` tier (uncommenting line 262 of that file) is
+  the prerequisite for closing the per-fn composite walker
+  Hypotheses with concrete walker tactics.
+- The Section is parameterized over `Codes`, `Env`, `Walker`,
+  `State`, `hoare`, `make_state`, and the four `walker_*`
+  function constants. The inheritor binds:
+  - `Walker := M.t unit`
+  - `hoare := fun W codes env state_pre state_post =>
+              {{? codes, env, Some state_pre | W ⇓ Result.Ok BlockUnit.Tt | Some state_post ?}}`
+  - `walker_delegate := fun_delegate_15192 delegatee` (specialized)
+  - `walker_delegateOptimistic := fun_delegateOptimistic_422 delegatee`
+  - `walker_delegateBySig := fun_delegateBySig_15249 d n e v r s`
+  - `walker_delegateOptimisticBySig := fun_delegateOptimisticBySig_480 d n e v r s`
+- The four per-fn well-formedness Hypotheses discharge by composing
+  `set_std_delegate_checkpointed` / `set_opt_delegate_checkpointed`
+  output projection vs the concrete `proj_sim`'s post-storage.
+- The four per-fn Hoare-triple Hypotheses are the R051 audit-time
+  obligations; their walker tactics follow the documented Phase 1-7
+  outline in Section 6 of the file.
+
+**Composition with adjacent contracts:**
+
+- `castVoteBySig` / `castVoteWithReasonAndParamsBySig` on the
+  Governor (#244) reuse the EIP-712 + ECDSA + Nonces composition
+  pattern; the per-fn axiom shape is identical, with
+  `Vote.DELEGATION_TYPEHASH` swapped for `Governor.BALLOT_TYPEHASH`.
+- `transfer` / `_update` on StakingVault (#256 transfer path, not
+  in this file) calls BOTH `_moveDelegateVotes` AND
+  `_moveOptimisticDelegateVotes` per the dual-axis sim's
+  `transfer` mutator; the composition is exactly the conjunction
+  of the two per-axis walker bodies.
 
 ## R073: `shallow_embed.py` emits Rocq keyword `fun` as a Yul ident (RESOLVED)
 
