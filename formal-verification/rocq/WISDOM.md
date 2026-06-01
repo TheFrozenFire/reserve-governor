@@ -1697,6 +1697,106 @@ in `proofs/equivalence/ERC20.v` (task #315 closure).
 
 ---
 
+## R109: OZ ERC20 _update body — Yul-helper leaf infrastructure
+
+Task #316 was charged with discharging the three `run_fun__update_3335_at_proj_sim_<branch>` axioms from R108
+to Qed Lemmas. The body of `fun__update_3335` (≈125 Yul lines per
+branch) consumes a fixed set of Yul-helper functions that each
+expand to a deterministic let-chain over `Stdlib` primitives:
+
+```
+  fun__getERC20Storage_2971              (returns the anchor)
+  cleanup_t_uint256                      (identity on U256.t)
+  cleanup_from_storage_t_uint256         (identity)
+  shift_right_0_unsigned                 (identity: shr 0)
+  extract_from_storage_value_offset_0_t_uint256  (chain of the above)
+  identity                               (identity)
+  convert_t_uint256_to_t_uint256         (cleanup ∘ id ∘ cleanup)
+  prepare_store_t_uint256                (identity)
+  shift_left_0                           (identity for v < 2^256)
+  update_byte_slice_32_shift_0           (identity for new < 2^256)
+  wrapping_add_t_uint256                 (= Pure.add)
+  wrapping_sub_t_uint256                 (= Pure.sub)
+  checked_add_t_uint256                  (= x+y under no-overflow)
+  checked_sub_t_uint256                  (= x-y under no-underflow)
+  cleanup_t_uint160                      (identity on Address.Valid.t)
+  convert_t_uint160_to_t_uint160         (chain of the above)
+  convert_t_uint160_to_t_address         (chain of the above)
+  convert_t_address_to_t_address         (chain of the above)
+  mapping_index_access_t_mapping…address_of_t_address (mstore-mstore-keccak; absorbing-memory variant)
+  read_from_storage_split_offset_0_t_uint256        (sload + identity chain; Map-keyed and U256-at-offset variants)
+  update_storage_value_offset_0_t_uint256_to_t_uint256 (convert + sload + prepare + ubs + sstore; Map-keyed and U256-at-offset variants)
+```
+
+**R109 contribution.** Discharge each of these to a closed (Qed)
+Lemma, declared near the top of `Module ERC20Equivalence` (outside
+the per-inheritor `Section`). The `mapping_index_access_t_address`
+variant is an Axiom (mirror of `AbiEncoding.run_mapping_index_access_absorbing`
+for the bytes32-keyed variant; same R083 Gap 2 pattern). All other
+leaves are Lemmas with no new audit-time obligations.
+
+The four composite storage helpers
+(`run_read_from_storage_split_offset_0_t_uint256_at_*_anchor*`,
+`run_update_storage_value_offset_0_t_uint256_to_t_uint256_at_*_anchor*`)
+combine the R083 framework primitives with the identity-on-U256 chain
+to give direct sload/sstore reasoning at the namespace-anchor lens.
+They are the load-bearing pieces for the body discharge.
+
+**Residual for follow-up.** The three body axioms remain in place;
+they cannot be discharged within the abstract Section without three
+additional `proj_sim` bridging hypotheses:
+
+  1. `proj_sim_pointwise_balance_update` — describes
+     `update_nth (proj_sim sim) slot_balances (Map ...)` as `proj_sim sim'`
+     for `sim'` constructed by the per-slot balance write.
+
+  2. `proj_sim_pointwise_totalSupply_update` — companion for
+     `slot_totalSupply`.
+
+  3. `proj_sim_independent_slots` — distinct list indices commute.
+
+Plus a "switch-non-zero" Shallow absorber: Yul `switch`s lower to
+`let δ := c in if δ =? 0 then else_branch else if_branch` (a raw
+Coq-level `if-then-else`, not `Shallow.if_`), which the R107 `if_zero`
+absorber doesn't pattern-match. The mint branch picks the `else`
+arm (δ = 1 from `eq(0, 0) = 1`), so we need an absorber for that
+shape. (Burn/transfer pick the `if` arm; same family.)
+
+These bridges + the switch absorber are per-inheritor audit
+obligations (discharged by `reflexivity` once `proj_sim` is
+concrete). Adding them touches the `Section ERC20BaseEquivalence`
+signature, which is out-of-scope for the leaf-infrastructure pass.
+
+**Net trust delta vs task #315.**
+
+- Axioms BEFORE (task #315): 3 body axioms + 1 wrapper bridge =
+  4 audit-time obligations per `_update` consumer.
+- Axioms AFTER (task #316): SAME 3 body axioms + 1 wrapper bridge,
+  PLUS 1 new memory-absorbing axiom
+  (`run_mapping_index_access_t_address_at_make_state`) parallel to
+  the existing bytes32 variant in AbiEncoding.
+- Closed Lemmas added: 25 Qed leaves for body helpers.
+- Total trust footprint change: +1 axiom (mirroring an existing
+  family member), -0 axioms. **Net trust reduction is deferred to
+  the follow-up that lands the Section bridges.**
+
+**Why the body discharge is not closed in #316.** The Section's
+abstract `proj_sim : ERC20.State → SimulatedStorage.t` is opaque —
+the inheritor (StakingVault) supplies its concrete shape at
+instantiation. Without per-slot bridging hypotheses, the body
+discharge cannot produce the post-state form
+`make_state ... memory' (proj_sim_post_mint sim account value)`
+required by the axiom signature. The leaves close the
+"every Yul helper has a closed lemma" obligation; the bridges close
+the "the projection composes pointwise with the per-slot updates"
+obligation. Both are required; only the first is delivered in #316.
+
+**First consumers:** `run_fun__update_3335_at_proj_sim_mint` /
+`_burn` / `_transfer` discharges in `proofs/equivalence/ERC20.v`,
+when the Section bridges land.
+
+---
+
 # Section 10: Common pitfalls and resolved issues
 
 ## R020: `Stdlib.timestamp` semantics (RESOLVED in dev clone)
