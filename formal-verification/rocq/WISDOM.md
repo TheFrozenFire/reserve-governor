@@ -4610,4 +4610,156 @@ obligation).  R047 (case-split for `Shallow.if_` — the R094
 residual blocker for [Qed] discharge of the modifier composite).
 R083 (ERC-7201 anchored sloads — the audit foundation for the
 gate prefix's hasRole + checkRole_2054 inner walk).
+## R096: StakingVaultExchange walker R088 helper-sub-axiom scaffolding
+
+**Task #299 (R093-followup, 2026-06-01).**  Applies the R088
+walker-decomposition methodology (from
+`TimelockControllerOptimistic.v`) to `StakingVaultExchange.v`'s
+four composite walker axioms (`fun_deposit_4312`, `fun_mint_4356`,
+`fun_withdraw_4403`, `fun_redeem_4450`).
+
+### What landed
+
+  - **Shallow form integration.**  `StakingVaultExchange.v` now
+    `Require Import`s `ReserveGovernor.generated.StakingVault_shallow`
+    + imports both nested modules.  The four `fun_<op>_op` Parameters
+    have been replaced with Notation aliases pointing at the
+    shallow-form Definitions.  The milestone Theorems
+    (`run_deposit_equivalent` etc.) continue to Qed because the
+    composite walker `Axiom`s have a stable shape (the body of the
+    `?op` Notation is transparent).
+  - **Section 8b helper sub-axioms.**  A new section between
+    `Section 8` and `Section 9` introduces the R088 helper
+    sub-axioms for each walker's outer wrapper:
+      * `run_fun__msgSender_14384` — Qed Lemma (caller leaf;
+        identical shape to `Guardian.run_fun__msgSender_3197`).
+      * `run_fun_maxDeposit_4158_returns` /
+        `run_fun_maxMint_4173_returns` — Axiom, returns the
+        uint256-max constant.
+      * `run_fun_maxWithdraw_4191_returns` /
+        `run_fun_maxRedeem_4204_returns` — Axiom, returns Skolem
+        `max_withdraw_value` / `max_redeem_value`.
+      * `run_fun_previewDeposit_4220_returns` /
+        `run_fun_previewMint_4236_returns` /
+        `run_fun_previewWithdraw_4252_returns` /
+        `run_fun_previewRedeem_4268_returns` — Axiom, returns
+        Skolem `preview_X_value`.
+      * `run_fun__deposit_630_at_storage_base` /
+        `run_fun__withdraw_736_at_storage_base` — Axiom,
+        encapsulates the inner ERC4626 _deposit / _withdraw bodies
+        (where the R093 SafeERC20 + linkersymbol primitives
+        eventually consume).
+  - **Cap-pass preconditions.**  The four composite walker Axioms
+    now carry an `assets <= max_withdraw_value storage_base owner`
+    (or analogous) precondition to gate the `ERC4626ExceededMaxX`
+    revert.  Required for ANY mechanical discharge of the outer
+    wrapper.
+
+### What did NOT land (R094 candidate scope)
+
+The four composite walker `Axiom`s remain Axioms (not Lemmas).
+The proof script that would convert them to Lemmas has the
+shape documented inline in the file at each `Axiom run_fun_X_at_storage_base`
+declaration.  Structural blocker preventing the final Qed:
+
+The outer-wrapper Yul body of each entry point uses a
+`let~ '(_, var__4366) := ...` tuple-pattern binding whose
+`LowM.Let` continuation pattern-matches against a `Result.Ok
+(BlockUnit, U256)` tuple.  The `repeat (lazymatch ...)` pattern
+from `TimelockControllerOptimistic.v` does NOT cleanly walk past
+this tuple-pattern because `cu` (CallUnfold) on the inner
+`cleanup_t_uint256` body leaves a residual `let~ '(_, cleaned)`
+binding that requires further `lu` + explicit tuple destructuring.
+
+The `Shallow.if_ expr_gt revert_path default` for the cap-revert
+branch additionally requires an explicit `destruct (assets >?
+max_X_value) eqn:Hgt; [exfalso; lia | simpl; ...]` after
+`unfold Shallow.if_, Pure.gt` — the lazymatch can't synthesise
+this case split.
+
+Per-walker proof script estimate: 150-300 LOC of carefully-tuned
+Ltac (handling the tuple-pattern binding, the `Shallow.if_`
+case split, the four-helper LowM.Call dispatch chain, the
+post-state threading).  The framework infrastructure is in place;
+the remaining LOC is mechanical proof engineering.
+
+### Trust redistribution accounting
+
+Before (state at commit 5f57e30):
+  - 4 monolithic composite walker `Axiom`s
+    (`run_fun_X_at_storage_base`).
+  - 4 post-state Parameters (`proj_post_X`).
+  - 4 observational bridge `Axiom`s (`proj_post_X_observes`).
+  - 1 `now_timestamp` Parameter + 4 callee-spec `Axiom`s
+    (documentation-only).
+
+After (this task):
+  - 4 cap-pass-precondition-gated composite walker `Axiom`s
+    (unchanged shape, +1 precondition).
+  - 4 post-state Parameters (unchanged).
+  - 4 observational bridge `Axiom`s (unchanged).
+  - 1 Qed `Lemma` `run_fun__msgSender_14384`.
+  - 4 cap-view return `Axiom`s + 4 preview return `Axiom`s
+    + 4 corresponding value Parameters (`max_X_value`,
+    `preview_X_value`).
+  - 4 preview-non-neg `Axiom`s
+    (`preview_X_value_nn`).
+  - 2 inner-helper composite `Axiom`s
+    (`run_fun__deposit_630_at_storage_base`,
+    `run_fun__withdraw_736_at_storage_base`).
+
+Net axiom count: +14 helper sub-axioms; -0 composite walker
+axioms (yet).  The trust redistribution is positioned for the
+follow-up walker-discharge work: each composite walker is now
+provable via the helper sub-axioms, modulo the 150-300 LOC proof
+script per walker described above.
+
+### Where R093 primitives consume
+
+R093's `call_make_state_bridge_absorbing` +
+`StaticCallBridge.run_linkersymbol` consume INSIDE the
+`run_fun__deposit_630_at_storage_base` and
+`run_fun__withdraw_736_at_storage_base` axioms.  Each of these
+covers a Yul body that invokes `fun_safeTransferFrom_4949` /
+`fun_safeTransfer_4922` / `fun_forceApprove_5125` (the SafeERC20
+wrappers from the `using SafeERC20 for IERC20` inline pattern).
+The R093 framework primitives discharge the leaf `Stdlib.call`
++ `Stdlib.linkersymbol` steps inside the inlined SafeERC20
+wrappers.
+
+When the inner-helper composite Axioms are themselves discharged
+to Lemmas in a subsequent task, the R093 primitives become the
+load-bearing framework leaves.  Per-token success obligations
+follow the `safeTransferFrom_success_spec_concrete` /
+`forceApprove_success_spec_concrete` template (per the SafeERC20
+templates in `AbiEncoding.v` Layer 14d and per the
+`StakingVaultRewards.v` Section 6 `safeTransfer_success_spec_concrete`
+pattern).
+
+### Validation status
+
+  - Build: green (`rocq-build` exits 0; all 4 milestone Theorems
+    continue to Qed against the modified walker Axiom shape).
+  - `Print Assumptions` per milestone Theorem: each
+    `run_X_equivalent` now depends on:
+      * `run_fun_X_at_storage_base` (the composite walker Axiom —
+        still an Axiom).
+      * `proj_post_X` (Parameter — unchanged).
+      * `proj_post_X_observes` (Axiom — unchanged).
+      * `now_timestamp` (Parameter — unchanged).
+    PLUS for withdraw/redeem, the cap-pass precondition
+    `max_X_value` Parameter (the new H_within_max).
+    The helper sub-axioms in Section 8b are NOT YET load-bearing
+    on the milestones because the composite walker Axiom shape
+    still bundles them — they become load-bearing once the
+    composite walker is converted to a Lemma.
+
+### See also
+
+R086 (original SafeERC20 / linkersymbol gap diagnosis), R093
+(framework primitives closing R086 — the R094 prerequisite),
+R088 (TimelockControllerOptimistic walker per-helper sub-axiom
+decomposition — direct template for this task), R089 (concurrent
+R088 sub-axiom decomposition for Timelock walkers), R070
+(per-mutator composite walker recipe).
 

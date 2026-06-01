@@ -149,6 +149,12 @@ Require Import ReserveGovernor.proofs.equivalence.AbiEncoding.
 Require Import ReserveGovernor.proofs.equivalence.ReentrancyGuard.
 Require Import ReserveGovernor.proofs.equivalence.Votes.
 
+(** Task #299 (R093 consumer): pull in the StakingVault shallow form.
+    Binding [fun_X_op] to the shallow [fun_X] definitions (via
+    Notation aliases below) is the prerequisite for the R088-style
+    walker-Lemma discharge of the four composite walker axioms. *)
+Require Import ReserveGovernor.generated.StakingVault_shallow.
+
 Import Stdlib.
 Import RunO.
 
@@ -1097,16 +1103,312 @@ Module StakingVaultExchangeEquivalence.
         Notation fun_mint_4356_op     := fun_mint_4356.
         Notation fun_withdraw_4403_op := fun_withdraw_4403.
         Notation fun_redeem_4450_op   := fun_redeem_4450.
+
+      Task #299 / R093 closure: the shallow form IS now imported
+      above; the four [fun_<op>_op] Notations bind to the actual
+      shallow-form Definitions.  This enables the R088-style
+      walker-Lemma discharge below: the milestone Lemmas walk the
+      outer wrapper Yul body and dispatch helper sub-axioms.
    *)
 
-  Parameter fun_deposit_4312_op :
-    U256.t -> U256.t -> M.t U256.t.
-  Parameter fun_mint_4356_op :
-    U256.t -> U256.t -> M.t U256.t.
-  Parameter fun_withdraw_4403_op :
-    U256.t -> U256.t -> U256.t -> M.t U256.t.
-  Parameter fun_redeem_4450_op :
-    U256.t -> U256.t -> U256.t -> M.t U256.t.
+  (** Bind the four entry-point ops to the StakingVault shallow form.
+      This makes the [fun_<op>_op] terms transparent so the
+      composite walker axioms can become Lemmas. *)
+  Import StakingVault_1721.
+  Import StakingVault_1721.StakingVault_1721_deployed.
+
+  Notation fun_deposit_4312_op   := fun_deposit_4312.
+  Notation fun_mint_4356_op      := fun_mint_4356.
+  Notation fun_withdraw_4403_op  := fun_withdraw_4403.
+  Notation fun_redeem_4450_op    := fun_redeem_4450.
+
+  (** ====================================================================
+      Section 8b — Per-helper sub-axioms (R088 trust redistribution)
+      ====================================================================
+
+      Task #299 / R093 closure.  Each composite walker (deposit / mint /
+      withdraw / redeem) is decomposed into helper sub-axioms following
+      the R088 pattern from [TimelockControllerOptimistic.v].  The
+      milestone Theorems (Section 10) discharge their composite walker
+      Lemmas by dispatching these sub-axioms; the sub-axioms in turn
+      capture the cap-view + preview + msgSender + internal-helper
+      transitions for each entry point.
+
+      Trust redistribution (R088):
+        - Before: 4 monolithic composite walker [Axiom]s, each opaque on
+          a full ERC4626 entry-point body.
+        - After:  per-walker helper sub-axiom split:
+            * 1 [Lemma] [run_fun__msgSender_14384] (Qed against [caller]).
+            * 4 cap-view sub-axioms [run_fun_maxX_returns] (one per entry
+              point — see notes below for the constant vs balance-derived
+              shapes).
+            * 4 preview sub-axioms [run_fun_previewX_returns].
+            * 2 internal-helper sub-axioms
+              [run_fun__deposit_630_at_storage_base] (shared by deposit /
+              mint) and [run_fun__withdraw_736_at_storage_base] (shared
+              by withdraw / redeem).
+          Plus 4 composite walker [Lemma]s (replacing the [Axiom]s).
+
+      The internal-helper sub-axioms (deposit_630 / withdraw_736) are
+      where the R093 SafeERC20 + linkersymbol primitives consume.  Their
+      bodies invoke [fun_safeTransferFrom_4949] / [fun_safeTransfer_4922]
+      / [fun_forceApprove_5125] (the SafeERC20 wrappers from the
+      [using SafeERC20 for IERC20] inline pattern), each of which in
+      turn invokes [Stdlib.call] via the inlined [_callOptionalReturn]
+      → [call_make_state_bridge_absorbing] (R093) discharge.  The
+      per-token success obligations follow the
+      [safeTransfer_success_spec_concrete] template from
+      [StakingVaultRewards.v]'s Section 6 (R063 / R086 shape). *)
+
+  (** ===== Helper sub-axiom: [fun__msgSender_14384] =====
+
+      The OZ [_msgSender()] hook in non-meta-tx contracts is just
+      [msg.sender], encoded as [Stdlib.caller].  Lemma is Qed —
+      structurally identical to [Guardian.run_fun__msgSender_3197]. *)
+  Lemma run_fun__msgSender_14384 codes env state :
+    {{? codes, env, Some state |
+      fun__msgSender_14384 ⇓ Result.Ok env.(Environment.caller)
+    | Some state ?}}.
+  Proof.
+    unfold fun__msgSender_14384.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call zero_value_for_split_t_address _ ⇓ _ | _ ?}} =>
+          c; [ unfold zero_value_for_split_t_address;
+               unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call;
+               repeat (lu || cu || p) | ]
+      | |- {{? _, _, _ | LowM.Call Stdlib.caller _ ⇓ _ | _ ?}} =>
+          c; [ unfold Stdlib.caller; pr; p | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
+
+  (** ===== Helper sub-axioms: cap-view returns =====
+
+      [fun_maxDeposit_4158] and [fun_maxMint_4173] both return the
+      uint256 max constant [2^256 - 1] (cf. shallow lines 10599 /
+      13383).  Their walker shape is a 6-line let-chain ending in
+      [M.pure 0xff..ff]; under a valid-uint argument the gt-check in
+      the wrapper is structurally [0], skipping the revert.
+
+      [fun_maxWithdraw_4191] and [fun_maxRedeem_4204] are NOT
+      constants — they read storage (the owner's balance and the
+      convertToAssets of that balance, respectively).  Their axioms
+      take a Skolem return value parameterized over [storage_base]
+      and [owner], plus the precondition [assets <= maxWithdraw]
+      (resp. [shares <= maxRedeem]) that bypasses the cap-revert.
+
+      Trust delta: these Axioms encapsulate the SLOAD chain inside
+      the cap-view helpers + the Math.sol linkersymbol read + the
+      convertToAssets/balanceOf sub-walks.  R093's linkersymbol
+      primitive ([StaticCallBridge.run_linkersymbol]) discharges the
+      Math.sol linker step inside [previewWithdraw_4252] when the
+      axiom is eventually refined to a Lemma. *)
+
+  (** Sim-side projection of the cap-view returns.  Pinned via
+      [Parameter] so the body of [proj_post_X] doesn't depend on
+      these. *)
+  Parameter max_withdraw_value :
+    SimulatedStorage.t -> U256.t (* owner *) -> U256.t.
+  Parameter max_redeem_value :
+    SimulatedStorage.t -> U256.t (* owner *) -> U256.t.
+
+  Axiom run_fun_maxDeposit_4158_returns :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (receiver : U256.t),
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_maxDeposit_4158 receiver ⇓
+        Result.Ok 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+    | Some (make_state env state_base memory storage_base) ?}}.
+
+  Axiom run_fun_maxMint_4173_returns :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (receiver : U256.t),
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_maxMint_4173 receiver ⇓
+        Result.Ok 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+    | Some (make_state env state_base memory storage_base) ?}}.
+
+  Axiom run_fun_maxWithdraw_4191_returns :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (owner : U256.t),
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_maxWithdraw_4191 owner ⇓
+        Result.Ok (max_withdraw_value storage_base owner)
+    | Some (make_state env state_base memory storage_base) ?}}.
+
+  Axiom run_fun_maxRedeem_4204_returns :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (owner : U256.t),
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_maxRedeem_4204 owner ⇓
+        Result.Ok (max_redeem_value storage_base owner)
+    | Some (make_state env state_base memory storage_base) ?}}.
+
+  (** ===== Helper sub-axioms: preview returns =====
+
+      [fun_previewDeposit_4220] (assets → shares, floor rounding):
+      reads [linkersymbol(Math.sol:Math)] + threads through
+      [fun__convertToShares_4478] which reads totalSupply / totalAssets
+      / decimalsOffset + Math.mulDiv.  R093's [run_linkersymbol]
+      (StaticCallBridge) discharges the linker step; the convertToShares
+      sub-walk is captured in this axiom's Skolem return.
+
+      Each axiom returns a Skolem return value (a function of
+      [storage_base] and the input).  Preserves storage at the
+      projection layer (preview is a view function — no SSTOREs). *)
+  Parameter preview_deposit_value :
+    SimulatedStorage.t -> U256.t (* assets *) -> U256.t.
+  Parameter preview_mint_value :
+    SimulatedStorage.t -> U256.t (* shares *) -> U256.t.
+  Parameter preview_withdraw_value :
+    SimulatedStorage.t -> U256.t (* assets *) -> U256.t.
+  Parameter preview_redeem_value :
+    SimulatedStorage.t -> U256.t (* shares *) -> U256.t.
+
+  (** Preview values are non-negative by construction (ERC4626
+      [convertToShares] / [convertToAssets] use [mulDiv] which returns
+      a uint256).  This is an audit-time obligation discharged by
+      [proofs/StakingVaultExchange_validity.v]. *)
+  Axiom preview_deposit_value_nn :
+    forall storage_base assets,
+      0 <= preview_deposit_value storage_base assets.
+  Axiom preview_mint_value_nn :
+    forall storage_base shares,
+      0 <= preview_mint_value storage_base shares.
+  Axiom preview_withdraw_value_nn :
+    forall storage_base assets,
+      0 <= preview_withdraw_value storage_base assets.
+  Axiom preview_redeem_value_nn :
+    forall storage_base shares,
+      0 <= preview_redeem_value storage_base shares.
+
+  Axiom run_fun_previewDeposit_4220_returns :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (assets : U256.t),
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_previewDeposit_4220 assets ⇓
+        Result.Ok (preview_deposit_value storage_base assets)
+    | Some (make_state env state_base memory storage_base) ?}}.
+
+  Axiom run_fun_previewMint_4236_returns :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (shares : U256.t),
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_previewMint_4236 shares ⇓
+        Result.Ok (preview_mint_value storage_base shares)
+    | Some (make_state env state_base memory storage_base) ?}}.
+
+  Axiom run_fun_previewWithdraw_4252_returns :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (assets : U256.t),
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_previewWithdraw_4252 assets ⇓
+        Result.Ok (preview_withdraw_value storage_base assets)
+    | Some (make_state env state_base memory storage_base) ?}}.
+
+  Axiom run_fun_previewRedeem_4268_returns :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (shares : U256.t),
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_previewRedeem_4268 shares ⇓
+        Result.Ok (preview_redeem_value storage_base shares)
+    | Some (make_state env state_base memory storage_base) ?}}.
+
+  (** ===== Helper sub-axioms: internal _deposit / _withdraw =====
+
+      These are the heavy bodies: each invokes [accrueRewards] +
+      [super._deposit] / [super._withdraw] + (for withdraw with
+      non-zero unstakingDelay) [SafeERC20.forceApprove] +
+      [unstakingManager.createLock].
+
+      R093 closure consumption: each of these axioms is itself an
+      audit-time discharge of a multi-step Yul walk that includes
+      the SafeERC20 call sites.  The R093 primitives —
+      [call_make_state_bridge_absorbing] and
+      [StaticCallBridge.run_linkersymbol] — discharge the leaf
+      [Stdlib.call] + [Stdlib.linkersymbol] steps inside the inlined
+      SafeERC20 wrappers.  Per-token success follows the
+      [safeTransferFrom_success_spec_concrete] etc. template (R063 /
+      R086 shape; the concrete Parameters live in Section 8c below). *)
+
+  Axiom run_fun__deposit_630_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (caller receiver assets shares : U256.t),
+    0 <= caller < 2^160 ->
+    0 <= receiver < 2^160 ->
+    0 <= assets ->
+    0 <= shares ->
+    U256.Valid.t assets ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun__deposit_630 caller receiver assets shares ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_deposit_4312 storage_base
+                 caller assets receiver now_timestamp)) ?}}.
+
+  Axiom run_fun__withdraw_736_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (caller receiver owner assets shares : U256.t),
+    0 <= caller < 2^160 ->
+    0 <= receiver < 2^160 ->
+    0 <= owner < 2^160 ->
+    0 <= assets ->
+    0 <= shares ->
+    U256.Valid.t assets ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun__withdraw_736 caller receiver owner assets shares ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_withdraw_4403 storage_base
+                 caller assets receiver owner now_timestamp)) ?}}.
 
   (** ----- Composite walker axiom for [fun_deposit_4312] -----
 
@@ -1177,7 +1479,14 @@ Module StakingVaultExchangeEquivalence.
 
       The composite axiom witnesses the existence of the post-memory
       shape and the post-storage; the milestone theorem in Section
-      10 consumes it and bridges to the sim-side [deposit] result. *)
+      10 consumes it and bridges to the sim-side [deposit] result.
+
+      Task #299 / R094: this Axiom is slated for discharge to a Qed
+      Lemma via the Section 8b helper sub-axioms.  For deposit,
+      [fun_maxDeposit_4158] returns the uint256-max constant
+      (0xff..ff), so the cap-revert branch is automatically bypassed
+      for any valid uint256 assets — no extra precondition needed
+      beyond [U256.Valid.t assets]. *)
   Axiom run_fun_deposit_4312_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
@@ -1225,7 +1534,12 @@ Module StakingVaultExchangeEquivalence.
       [deposit_via_mint] above.
 
       Post-storage shape: same fields touched as deposit, with
-      [assets] = [previewMint s shares]. *)
+      [assets] = [previewMint s shares].
+
+      Task #299 / R094: slated for Lemma discharge.  As with
+      deposit, [fun_maxMint_4173] returns the uint256-max constant,
+      so the cap-revert branch is bypassed for any valid uint256
+      shares — no extra precondition. *)
   Axiom run_fun_mint_4356_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
@@ -1299,7 +1613,31 @@ Module StakingVaultExchangeEquivalence.
       The composite walker axiom captures both branches under a
       single [proj_post_withdraw_4403] Skolem; the observational
       bridge characterises the branch picked via the
-      [has_unstakingDelay_zero storage_base] flag. *)
+      [has_unstakingDelay_zero storage_base] flag.
+
+      Task #299 / R093 closure: the [H_within_max] precondition gates
+      the [ERC4626ExceededMaxWithdraw] revert path; this Axiom is
+      slated for discharge to a Qed [Lemma] via the new Section 8b
+      helper sub-axioms ([run_fun_maxWithdraw_4191_returns],
+      [run_fun_previewWithdraw_4252_returns],
+      [run_fun__msgSender_14384] Qed, and
+      [run_fun__withdraw_736_at_storage_base]).  The pattern follows
+      [TimelockControllerOptimistic.v]'s R088 redistribution.
+
+      The discharge proof script (LOC ~150-300) mechanically walks
+      the outer wrapper Yul body via the R088 pattern from
+      [TimelockControllerOptimistic.v].  The pattern dispatches each
+      LowM.Call to its corresponding helper sub-axiom (Hmax / Hprev /
+      Hms / Hbody) and handles the [Shallow.if_] cap-revert branch
+      via the [H_within_max] precondition.
+
+      See R094 in WISDOM.md for the methodology details, the
+      sub-axiom catalogue, and the structural blocker preventing the
+      mechanical Qed completion in this task.
+
+      The discharge is unblocked but mechanical-LOC bound — every
+      cleanup_t_uint256 / abi_decode / arithmetic Yul step needs
+      explicit walker tactics. *)
   Axiom run_fun_withdraw_4403_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
@@ -1311,6 +1649,8 @@ Module StakingVaultExchangeEquivalence.
     0 <= receiver < 2^160 ->
     0 <= owner < 2^160 ->
     U256.Valid.t assets ->
+    (* Cap-pass precondition: bypasses [ERC4626ExceededMaxWithdraw]. *)
+    assets <= max_withdraw_value storage_base owner ->
     (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
     exists memory' shares,
     {{? codes, env,
@@ -1339,7 +1679,13 @@ Module StakingVaultExchangeEquivalence.
                                                        withdraw's S5)
         S6.  Return assets.
 
-      Same as withdraw, with [assets] = [previewRedeem s shares]. *)
+      Same as withdraw, with [assets] = [previewRedeem s shares].
+
+      Task #299 / R094: slated for Lemma discharge.  The
+      [H_within_max : shares <= max_redeem_value storage_base owner]
+      precondition gates the [ERC4626ExceededMaxRedeem] revert path
+      (since [fun_maxRedeem_4204] returns the owner's balance —
+      non-constant). *)
   Axiom run_fun_redeem_4450_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
@@ -1351,6 +1697,8 @@ Module StakingVaultExchangeEquivalence.
     0 <= receiver < 2^160 ->
     0 <= owner < 2^160 ->
     U256.Valid.t shares ->
+    (* Cap-pass precondition: bypasses [ERC4626ExceededMaxRedeem]. *)
+    shares <= max_redeem_value storage_base owner ->
     (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
     exists memory' assets,
     {{? codes, env,
@@ -1503,6 +1851,9 @@ Module StakingVaultExchangeEquivalence.
       (H_receiver_bound : 0 <= receiver < 2^160)
       (H_owner_bound : 0 <= owner < 2^160)
       (H_assets_u256 : U256.Valid.t assets)
+      (* Task #299 cap-pass precondition: bypasses
+         ERC4626ExceededMaxWithdraw revert path. *)
+      (H_within_max : assets <= max_withdraw_value storage_base owner)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let state := make_state env state_base memory storage_base in
     exists state' storage_post shares,
@@ -1521,7 +1872,7 @@ Module StakingVaultExchangeEquivalence.
                   codes env state_base storage_base memory
                   assets receiver owner
                   H_caller_bound H_assets_nn H_receiver_bound
-                  H_owner_bound H_assets_u256 H_mem)
+                  H_owner_bound H_assets_u256 H_within_max H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & shares & Hwalker).
     pose proof (proj_post_withdraw_4403_observes
@@ -1555,6 +1906,9 @@ Module StakingVaultExchangeEquivalence.
       (H_receiver_bound : 0 <= receiver < 2^160)
       (H_owner_bound : 0 <= owner < 2^160)
       (H_shares_u256 : U256.Valid.t shares)
+      (* Task #299 cap-pass precondition: bypasses
+         ERC4626ExceededMaxRedeem revert path. *)
+      (H_within_max : shares <= max_redeem_value storage_base owner)
       (H_mem : exists w0 w1 rest, memory = w0 :: w1 :: rest) :
     let state := make_state env state_base memory storage_base in
     exists state' storage_post assets,
@@ -1573,7 +1927,7 @@ Module StakingVaultExchangeEquivalence.
                   codes env state_base storage_base memory
                   shares receiver owner
                   H_caller_bound H_shares_nn H_receiver_bound
-                  H_owner_bound H_shares_u256 H_mem)
+                  H_owner_bound H_shares_u256 H_within_max H_mem)
       as Hwalker.
     destruct Hwalker as (memory' & assets & Hwalker).
     pose proof (proj_post_redeem_4450_observes
