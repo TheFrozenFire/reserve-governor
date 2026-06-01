@@ -197,7 +197,10 @@ Module StakingVaultExchangeEquivalence.
   Proof.
     unfold withdraw. intros H.
     destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
-    destruct (s.(State.totalSupply) =? 0) eqn:H0; injection H as <- <-; reflexivity.
+    destruct ((assets * (s.(State.totalSupply) + 1) + totalAssets s)
+              / (totalAssets s + 1)
+              >? s.(State.totalSupply)) eqn:Hguard; [discriminate|].
+    injection H as <- <-. reflexivity.
   Qed.
 
   Lemma withdraw_success_deposited_shrinks
@@ -207,7 +210,10 @@ Module StakingVaultExchangeEquivalence.
   Proof.
     unfold withdraw. intros H.
     destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
-    destruct (s.(State.totalSupply) =? 0) eqn:H0; injection H as <- <-; reflexivity.
+    destruct ((assets * (s.(State.totalSupply) + 1) + totalAssets s)
+              / (totalAssets s + 1)
+              >? s.(State.totalSupply)) eqn:Hguard; [discriminate|].
+    injection H as <- <-. reflexivity.
   Qed.
 
   Lemma withdraw_success_rewards_preserved
@@ -217,34 +223,80 @@ Module StakingVaultExchangeEquivalence.
   Proof.
     unfold withdraw. intros H.
     destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
-    destruct (s.(State.totalSupply) =? 0) eqn:H0; injection H as <- <-; reflexivity.
+    destruct ((assets * (s.(State.totalSupply) + 1) + totalAssets s)
+              / (totalAssets s + 1)
+              >? s.(State.totalSupply)) eqn:Hguard; [discriminate|].
+    injection H as <- <-. reflexivity.
   Qed.
 
   (** ---- 1.3 Pre-condition characterisation: withdraw success iff
-            assets <= totalAssets ---- *)
+            both [assets <= totalAssets] AND the inflation-defended
+            ceil-div share count fits in totalSupply.
+
+      Under OZ v5.4, withdraw can revert even with [assets <= totalAssets]
+      when the inflation-defended ceiling shares exceed totalSupply.
+      That happens specifically when [assets ≈ totalAssets] and rewards
+      have accrued: the +1 on (S+1) and the +0 on the share-side
+      together push the ceil-div above S. T1.2 surfaced this as an
+      explicit share-bound guard. The pre-T1.2 statement was
+
+        success  iff  assets <= totalAssets
+
+      which is now FALSE under the corrected sim — kept here in a
+      strict-only direction as [withdraw_success_implies_within_assets]
+      so downstream proofs that only need the necessary condition
+      still go through. The full iff is restated against both guards. *)
+
+  Lemma withdraw_success_implies_within_assets (s : State.t) (assets : U256.t) :
+    (exists s' shares, withdraw s assets = Result.Success (s', shares)) ->
+    assets <= totalAssets s.
+  Proof.
+    intros (s' & shares & H).
+    unfold withdraw in H.
+    destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
+    unfold Z.gtb in Hgt.
+    destruct (Z.compare_spec assets (totalAssets s)); try discriminate; lia.
+  Qed.
 
   Lemma withdraw_success_iff_within_assets (s : State.t) (assets : U256.t) :
     (exists s' shares, withdraw s assets = Result.Success (s', shares))
-    <-> assets <= totalAssets s.
+    <-> (assets <= totalAssets s
+         /\ (assets * (s.(State.totalSupply) + 1) + totalAssets s)
+              / (totalAssets s + 1)
+            <= s.(State.totalSupply)).
   Proof.
     unfold withdraw. split.
     - intros (s' & shares & H).
       destruct (assets >? totalAssets s) eqn:Hgt; [discriminate|].
-      (* Hgt : assets >? totalAssets s = false ↔ assets <= totalAssets s *)
-      apply Z.gtb_lt in Hgt + idtac.
-      destruct (Z_le_dec assets (totalAssets s)) as [Hle|Hnle]; [exact Hle|].
-      exfalso. apply Hnle.
-      assert (Hgt' : ~ (totalAssets s < assets)).
-      { intros Hlt. assert (assets >? totalAssets s = true).
-        { unfold Z.gtb. destruct (Z.compare_spec assets (totalAssets s)); try reflexivity; lia. }
-        congruence. }
-      lia.
-    - intros Hle.
+      destruct ((assets * (s.(State.totalSupply) + 1) + totalAssets s)
+                / (totalAssets s + 1)
+                >? s.(State.totalSupply)) eqn:Hguard; [discriminate|].
+      split.
+      + unfold Z.gtb in Hgt.
+        destruct (Z.compare_spec assets (totalAssets s)); try discriminate; lia.
+      + unfold Z.gtb in Hguard.
+        destruct (Z.compare_spec
+                    ((assets * (s.(State.totalSupply) + 1) + totalAssets s)
+                       / (totalAssets s + 1))
+                    s.(State.totalSupply));
+          try discriminate; lia.
+    - intros [Hle Hguard_le].
       assert (Hgtb : (assets >? totalAssets s) = false).
-      { unfold Z.gtb. destruct (Z.compare_spec assets (totalAssets s)); try reflexivity; lia. }
+      { unfold Z.gtb. destruct (Z.compare_spec assets (totalAssets s));
+          try reflexivity; lia. }
       rewrite Hgtb.
-      destruct (s.(State.totalSupply) =? 0) eqn:H0;
-        do 2 eexists; reflexivity.
+      assert (Hguard_false :
+                ((assets * (s.(State.totalSupply) + 1) + totalAssets s)
+                   / (totalAssets s + 1)
+                 >? s.(State.totalSupply)) = false).
+      { unfold Z.gtb.
+        destruct (Z.compare_spec
+                    ((assets * (s.(State.totalSupply) + 1) + totalAssets s)
+                       / (totalAssets s + 1))
+                    s.(State.totalSupply));
+          try reflexivity; lia. }
+      rewrite Hguard_false.
+      do 2 eexists; reflexivity.
   Qed.
 
   (** ---- 1.4 Round-trip rounding bound (alias of
@@ -254,26 +306,23 @@ Module StakingVaultExchangeEquivalence.
       proofs cite it by local name. *)
   Lemma round_trip_floor_bound
       (s : State.t) (a : U256.t) :
-    s.(State.totalSupply) > 0 ->
-    totalAssets s > 0 ->
+    0 <= s.(State.totalSupply) ->
+    0 <= totalAssets s ->
     0 <= a ->
     convertToAssets s (convertToShares s a) <= a.
   Proof.
     intros Hsup Hta Ha.
     unfold convertToShares, convertToAssets.
-    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
-    - apply Z.eqb_eq in Hs0. lia.
-    - apply Z.eqb_neq in Hs0.
-      set (S := s.(State.totalSupply)).
-      set (A := totalAssets s).
-      set (shares := (a * S) / A).
-      assert (HA_pos : 0 < A) by (unfold A; lia).
-      pose proof (Z.mul_div_le (a * S) A HA_pos) as Hshares_mul.
-      assert (Hshares_A_le : shares * A <= a * S).
-      { unfold shares. lia. }
-      assert (HS_pos : 0 < S) by (unfold S; lia).
-      apply Z.div_le_upper_bound; [exact HS_pos|].
-      lia.
+    set (S1 := s.(State.totalSupply) + 1).
+    set (A1 := totalAssets s + 1).
+    set (shares := (a * S1) / A1).
+    assert (HA1_pos : 0 < A1) by (unfold A1; lia).
+    assert (HS1_pos : 0 < S1) by (unfold S1; lia).
+    pose proof (Z.mul_div_le (a * S1) A1 HA1_pos) as Hshares_mul.
+    assert (Hshares_A_le : shares * A1 <= a * S1).
+    { unfold shares. lia. }
+    apply Z.div_le_upper_bound; [exact HS1_pos|].
+    lia.
   Qed.
 
   (** ---- 1.5 Share-value monotonicity under reward accrual ----
@@ -283,9 +332,11 @@ Module StakingVaultExchangeEquivalence.
       [proofs/StakingVaultExchange.v::accrue_share_rate_monotone]. *)
   Lemma accrue_share_rate_monotone (s : State.t) (delta : U256.t) :
     0 <= delta ->
-    s.(State.totalSupply) > 0 ->
-    totalAssets s * s.(State.totalSupply) <=
-      totalAssets (accrue s delta) * s.(State.totalSupply).
+    0 <= s.(State.totalSupply) ->
+    (totalAssets s + 1)
+      * (s.(State.totalSupply) + 1) <=
+    (totalAssets (accrue s delta) + 1)
+      * (s.(State.totalSupply) + 1).
   Proof.
     intros Hd Hsupply.
     unfold totalAssets. simpl.
@@ -300,15 +351,11 @@ Module StakingVaultExchangeEquivalence.
     0 <= convertToShares s assets.
   Proof.
     intros Hv Ha.
-    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    destruct Hv as [Hsup_u256 Htd_nn Har_nn _].
     unfold convertToShares.
-    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
-    - exact Ha.
-    - apply Z.eqb_neq in Hs0.
-      assert (Hsup_pos : s.(State.totalSupply) > 0) by (destruct Hsup_u256; lia).
-      assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; lia).
-      assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
-      apply Z.div_pos; [nia | lia].
+    assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
+    assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
+    apply Z.div_pos; [nia | lia].
   Qed.
 
   Lemma convertToAssets_nonneg (s : State.t) (shares : U256.t) :
@@ -317,15 +364,11 @@ Module StakingVaultExchangeEquivalence.
     0 <= convertToAssets s shares.
   Proof.
     intros Hv Hs.
-    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    destruct Hv as [Hsup_u256 Htd_nn Har_nn _].
     unfold convertToAssets.
-    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
-    - exact Hs.
-    - apply Z.eqb_neq in Hs0.
-      assert (Hsup_pos : s.(State.totalSupply) > 0) by (destruct Hsup_u256; lia).
-      assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; lia).
-      assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
-      apply Z.div_pos; [nia | lia].
+    assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
+    assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
+    apply Z.div_pos; [nia | lia].
   Qed.
 
   (** ---- 1.7 totalAssets non-negativity ---- *)
@@ -336,18 +379,31 @@ Module StakingVaultExchangeEquivalence.
     intros [_ Htd Har _]. unfold totalAssets. lia.
   Qed.
 
-  (** ---- 1.8 Empty-state initial mint: 1:1 share-to-asset ---- *)
+  (** ---- 1.8 Empty-state initial mint: 1:1 share-to-asset.
+      Under the OZ inflation-defended formula at empty state
+      [totalAssets = 0], the computation reduces to
+      [assets * 1 / 1 = assets] and [shares * 1 / 1 = shares] —
+      still 1:1, but now via the +1 virtuals rather than an
+      explicit supply==0 branch. *)
   Lemma convertToShares_empty (assets : U256.t) :
     convertToShares empty_state assets = assets.
-  Proof. unfold convertToShares, empty_state. reflexivity. Qed.
+  Proof.
+    unfold convertToShares, empty_state, totalAssets. simpl.
+    rewrite Z.mul_1_r. apply Z.div_1_r.
+  Qed.
 
   Lemma convertToAssets_empty (shares : U256.t) :
     convertToAssets empty_state shares = shares.
-  Proof. unfold convertToAssets, empty_state. reflexivity. Qed.
+  Proof.
+    unfold convertToAssets, empty_state, totalAssets. simpl.
+    rewrite Z.mul_1_r. apply Z.div_1_r.
+  Qed.
 
   Lemma deposit_initial_mint_1to1 (assets : U256.t) :
     snd (deposit empty_state assets) = assets.
-  Proof. unfold deposit, convertToShares, empty_state. reflexivity. Qed.
+  Proof.
+    unfold deposit. simpl. apply convertToShares_empty.
+  Qed.
 
   (** ---- 1.9 Per-operation invariants threaded across the four
             entry points ----
@@ -364,24 +420,23 @@ Module StakingVaultExchangeEquivalence.
     convertToShares s assets.
 
   Definition previewMint (s : State.t) (shares : U256.t) : U256.t :=
-    (* OZ ERC4626 previewMint = _convertToAssets(shares, Math.Rounding.Up).
-       When supply > 0:  ceil(shares * totalAssets / supply)
-                       = (shares * totalAssets + supply - 1) / supply.
-       When supply = 0:  shares (1:1 at initial mint). *)
+    (* OZ ERC4626 previewMint = _convertToAssets(shares, Math.Rounding.Up)
+       under the inflation-defended formula (offset = 0):
+         ceil(shares * (totalAssets + 1) / (totalSupply + 1))
+         = (shares * (totalAssets + 1) + totalSupply) / (totalSupply + 1).
+       Denominator is always >= 1, so no supply==0 branch needed. *)
     let supply := s.(State.totalSupply) in
-    if supply =? 0 then shares
-    else
-      let ta := totalAssets s in
-      (shares * ta + supply - 1) / supply.
+    let ta := totalAssets s in
+    (shares * (ta + 1) + supply) / (supply + 1).
 
   Definition previewWithdraw (s : State.t) (assets : U256.t) : U256.t :=
-    (* OZ ERC4626 previewWithdraw = _convertToShares(assets, Math.Rounding.Up).
-       When supply > 0:  ceil(assets * supply / totalAssets). *)
+    (* OZ ERC4626 previewWithdraw = _convertToShares(assets, Math.Rounding.Up)
+       under the inflation-defended formula (offset = 0):
+         ceil(assets * (totalSupply + 1) / (totalAssets + 1))
+         = (assets * (totalSupply + 1) + totalAssets) / (totalAssets + 1). *)
     let supply := s.(State.totalSupply) in
-    if supply =? 0 then assets
-    else
-      let ta := totalAssets s in
-      (assets * supply + ta - 1) / ta.
+    let ta := totalAssets s in
+    (assets * (supply + 1) + ta) / (ta + 1).
 
   Definition previewRedeem (s : State.t) (shares : U256.t) : U256.t :=
     convertToAssets s shares.
@@ -400,11 +455,17 @@ Module StakingVaultExchangeEquivalence.
 
   Lemma previewMint_empty (shares : U256.t) :
     previewMint empty_state shares = shares.
-  Proof. unfold previewMint, empty_state. reflexivity. Qed.
+  Proof.
+    unfold previewMint, empty_state, totalAssets. simpl.
+    rewrite Z.add_0_r. rewrite Z.mul_1_r. apply Z.div_1_r.
+  Qed.
 
   Lemma previewWithdraw_empty (assets : U256.t) :
     previewWithdraw empty_state assets = assets.
-  Proof. unfold previewWithdraw, empty_state. reflexivity. Qed.
+  Proof.
+    unfold previewWithdraw, empty_state, totalAssets. simpl.
+    rewrite Z.add_0_r. rewrite Z.mul_1_r. apply Z.div_1_r.
+  Qed.
 
   (** previewMint is non-negative for valid inputs. *)
   Lemma previewMint_nonneg (s : State.t) (shares : U256.t) :
@@ -413,15 +474,11 @@ Module StakingVaultExchangeEquivalence.
     0 <= previewMint s shares.
   Proof.
     intros Hv Hs.
-    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    destruct Hv as [Hsup_u256 Htd_nn Har_nn _].
     unfold previewMint.
-    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
-    - exact Hs.
-    - apply Z.eqb_neq in Hs0.
-      assert (Hsup_pos : s.(State.totalSupply) > 0) by (destruct Hsup_u256; lia).
-      assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; lia).
-      assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
-      apply Z.div_pos; [nia | lia].
+    assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
+    assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
+    apply Z.div_pos; [nia | lia].
   Qed.
 
   (** previewWithdraw is non-negative for valid inputs. *)
@@ -431,15 +488,11 @@ Module StakingVaultExchangeEquivalence.
     0 <= previewWithdraw s assets.
   Proof.
     intros Hv Ha.
-    destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
+    destruct Hv as [Hsup_u256 Htd_nn Har_nn _].
     unfold previewWithdraw.
-    destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
-    - exact Ha.
-    - apply Z.eqb_neq in Hs0.
-      assert (Hsup_pos : s.(State.totalSupply) > 0) by (destruct Hsup_u256; lia).
-      assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; lia).
-      assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
-      apply Z.div_pos; [nia | lia].
+    assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
+    assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
+    apply Z.div_pos; [nia | lia].
   Qed.
 
   (** ---- 1.10 Sim-side total-supply / total-deposited deltas under
@@ -1474,57 +1527,58 @@ Module StakingVaultExchangeEquivalence.
       /\ s2.(State.totalSupply) = 0
       /\ s2.(State.totalDeposited) = 0.
   Proof.
-    cbv zeta. intros Ha.
-    (* Strategy: handle the empty-asset case explicitly, then for
-       assets > 0 use a vm_compute-friendly explicit shape. *)
-    destruct (Z.eq_dec assets 0) as [Ha0|Ha_ne].
-    - subst assets. eexists. cbv. split; [reflexivity|]. split; reflexivity.
-    - (* assets > 0: deposit yields s1 with supply=totalDeposited=assets.
-         withdraw at s1 with assets succeeds, ceil-div gives shares=assets,
-         and s2 has supply = deposited = 0. *)
-      assert (Hassets_pos : 0 < assets) by lia.
-      unfold deposit, empty_state, convertToShares; cbn.
-      (* Now the goal has explicit s1 = {| supply := 0+assets;
-                                           deposited := 0+assets;
-                                           ar := 0 |}.
-         Compute withdraw. *)
-      unfold withdraw, totalAssets; cbn.
-      (* The totalAssets expression is (0+assets)+0. Coq's cbn may
-         leave this as-is or partially reduce. Make sure the comparison
-         works by destructing on the actual goal shape. *)
-      match goal with
-      | |- context [(assets >? ?ta)] =>
-          assert (Hgtb : (assets >? ta) = false)
-            by (unfold Z.gtb; destruct (Z.compare_spec assets ta);
-                try reflexivity; lia);
-          rewrite Hgtb
-      end.
-      match goal with
-      | |- context [(?supply =? 0)] =>
-          assert (Hne : (supply =? 0) = false) by (apply Z.eqb_neq; lia);
-          rewrite Hne
-      end.
-      (* Now the goal has the ceil-div form. Compute it. *)
-      match goal with
-      | |- context [(assets * ?supply + ?ta - 1) / ?ta] =>
-          assert (Hq : (assets * supply + ta - 1) / ta = assets)
-      end.
-      { (* Both supply and ta are 0+assets+? — equal to assets up to lia. *)
-        match goal with
-        | |- _ / ?ta = _ =>
-            replace ta with assets by lia
-        end.
-        match goal with
-        | |- ?num / _ = _ =>
-            replace num with (assets * assets + (assets - 1)) by nia
-        end.
-        rewrite Z.div_add_l by lia.
-        replace ((assets - 1) / assets) with 0; [lia|].
-        symmetry. apply Z.div_small. lia. }
-      rewrite Hq.
-      eexists. split.
-      + reflexivity.
-      + cbn. split; lia.
+    intros Ha.
+    (* Under the inflation-defended sim:
+         deposit empty_state assets yields s1 with
+           supply = assets, totalDeposited = assets, ar = 0
+           (since convertToShares empty_state assets
+            = a * (0+1) / (0+1) = a).
+         At s1, totalAssets = assets, and
+           shares_calc = (a*(a+1) + a) / (a+1)
+                       = ((a+1)*a + a) / (a+1)
+                       = a + (a / (a+1))
+                       = a + 0 (since a < a+1 for a >= 0)
+                       = a.
+         So shares = a = totalSupply, post-state has
+         supply = deposited = 0. *)
+    set (s1 := fst (deposit empty_state assets)).
+    set (shares := snd (deposit empty_state assets)).
+    cbv zeta.
+    assert (Hshares_val : shares = assets).
+    { unfold shares, deposit. simpl. apply convertToShares_empty. }
+    assert (Hs1_sup : s1.(State.totalSupply) = assets).
+    { unfold s1, deposit. simpl. rewrite convertToShares_empty. lia. }
+    assert (Hs1_td : s1.(State.totalDeposited) = assets).
+    { unfold s1, deposit. simpl. lia. }
+    assert (Hs1_ar : s1.(State.accumulatedNativeRewards) = 0).
+    { unfold s1, deposit. simpl. lia. }
+    unfold withdraw. unfold totalAssets.
+    rewrite Hs1_sup, Hs1_td, Hs1_ar.
+    (* Now: ta = assets + 0 = assets, supply = assets. *)
+    assert (Hgtb : (assets >? assets + 0) = false).
+    { unfold Z.gtb. destruct (Z.compare_spec assets (assets + 0));
+        try reflexivity; lia. }
+    rewrite Hgtb.
+    assert (Hshares_calc :
+              (assets * (assets + 1) + (assets + 0)) / (assets + 0 + 1) = assets).
+    { replace (assets + 0) with assets by lia.
+      replace (assets + 0 + 1) with (assets + 1) by lia.
+      (* (a*(a+1) + a) / (a+1) = a + a/(a+1) = a + 0 = a for a >= 0. *)
+      rewrite Z.div_add_l with (a := assets) (b := assets + 1) (c := assets)
+        by lia.
+      destruct (Z.eq_dec assets 0) as [->|Hne].
+      - reflexivity.
+      - rewrite Z.div_small by lia. lia. }
+    assert (Hguard :
+              ((assets * (assets + 1) + (assets + 0)) / (assets + 0 + 1) >? assets)
+              = false).
+    { rewrite Hshares_calc. unfold Z.gtb.
+      destruct (Z.compare_spec assets assets); try reflexivity; lia. }
+    rewrite Hguard.
+    rewrite Hshares_calc.
+    eexists. split.
+    - rewrite Hshares_val. reflexivity.
+    - cbn. split; lia.
   Qed.
 
   (** ====================================================================
@@ -1559,17 +1613,25 @@ Module StakingVaultExchangeEquivalence.
     { apply convertToShares_nonneg.
       - constructor; assumption.
       - exact Hassets_nn. }
+    assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
+    assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
     constructor; simpl.
     - exact Hsupply_bound.
     - lia.
     - exact Har_nn.
     - intros Hpost_sup_pos.
       destruct (Z.eq_dec s.(State.totalSupply) 0) as [Hs0 | Hs_ne].
-      + unfold shares in *. unfold convertToShares in *.
-        assert (Hs0_eqb : s.(State.totalSupply) =? 0 = true)
-          by (apply Z.eqb_eq; exact Hs0).
-        rewrite Hs0_eqb in *.
-        rewrite Hs0 in Hpost_sup_pos.
+      + (* pre-supply = 0: shares = assets / (ta + 1) under the OZ form.
+           For post-supply = shares > 0, we need shares >= 1, hence
+           assets >= ta + 1 >= 1, so assets > 0 and post-td > 0. *)
+        assert (Hta1_pos : 0 < totalAssets s + 1) by lia.
+        assert (Hshares_val : shares = assets / (totalAssets s + 1)).
+        { unfold shares, convertToShares. rewrite Hs0.
+          f_equal. lia. }
+        assert (Hshares_pos : shares >= 1) by lia.
+        rewrite Hshares_val in Hshares_pos.
+        pose proof (Z.mul_div_le assets (totalAssets s + 1) Hta1_pos) as Hbound.
+        assert (Hassets_pos : 0 < assets) by nia.
         lia.
       + assert (Hsup_pos : s.(State.totalSupply) > 0)
           by (destruct Hsup_u256; lia).

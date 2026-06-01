@@ -421,6 +421,13 @@ Proof.
   unfold StakingVaultExchange.withdraw in Hwd.
   destruct (assets >? StakingVaultExchange.totalAssets (exchange_state w))
     eqn:Hgt; [discriminate|].
+  (* New share-bound guard from the OZ inflation-defended form. *)
+  destruct ((assets
+             * ((exchange_state w).(StakingVaultExchange.State.totalSupply) + 1)
+             + StakingVaultExchange.totalAssets (exchange_state w))
+            / (StakingVaultExchange.totalAssets (exchange_state w) + 1)
+            >? (exchange_state w).(StakingVaultExchange.State.totalSupply))
+    eqn:Hguard; [discriminate|].
   injection Hwd as Hs_ex'_eq Hshares_eq. subst s_ex'.
   (* Unpack createLock: s_mg'.locks = (manager_state w).locks ++ [new_lock]. *)
   unfold UnstakingManager.createLock in Hcl.

@@ -44,13 +44,22 @@
     Plus a [vm_compute] cross-check that walks a deposit/accrue/
     withdraw cycle and asserts [Valid.state] at every step.
 
-    Modeling note: the existing [withdraw] simulation guards
-    [assets > totalAssets] (the OZ default), but does NOT guard
-    [assets > totalDeposited]. With native rewards accrued
+    Modeling note: the [withdraw] simulation guards
+    [assets > totalAssets] (the OZ default) and also
+    [shares > totalSupply] (the implicit ERC20 [_burn] guard). It does
+    NOT guard [assets > totalDeposited]. With native rewards accrued
     ([accumulatedNativeRewards > 0]), it is therefore possible to
     submit [totalDeposited < assets <= totalAssets] and underflow
     [totalDeposited]. We surface that gap here by requiring
-    [assets <= totalDeposited] as an explicit precondition. *)
+    [assets <= totalDeposited] as an explicit precondition.
+
+    Under the OZ v5.4 inflation-defended formula, [previewWithdraw]
+    rounds shares up; even for [assets = totalDeposited] the ceil-div
+    can demand strictly more than [totalSupply] when rewards have
+    accrued. Such an attempt now reverts via the new share-bound
+    guard. The [Result.Success (s', shares)] hypothesis below
+    therefore implies [shares <= totalSupply] automatically — no
+    helper bound is needed. *)
 
 Require Import RocqOfSolidity.RocqOfSolidity.
 Require Import simulations.RocqOfSolidity.
@@ -73,13 +82,9 @@ Proof.
   intros Hv Ha.
   destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
   unfold convertToShares.
-  destruct (s.(State.totalSupply) =? 0) eqn:Hs0.
-  - exact Ha.
-  - apply Z.eqb_neq in Hs0.
-    assert (Hsup_pos : s.(State.totalSupply) > 0) by (destruct Hsup_u256; lia).
-    assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; lia).
-    assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
-    apply Z.div_pos; [nia | lia].
+  assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
+  assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
+  apply Z.div_pos; [nia | lia].
 Qed.
 
 (** ----- empty_state is valid. ----- *)
@@ -123,6 +128,8 @@ Proof.
   { apply convertToShares_nonneg.
     - constructor; assumption.
     - exact Hassets_nn. }
+  assert (Hsup_nn : 0 <= s.(State.totalSupply)) by (destruct Hsup_u256; lia).
+  assert (Hta_nn : 0 <= totalAssets s) by (unfold totalAssets; lia).
   constructor; simpl.
   - exact Hsupply_bound.
   - lia.
@@ -131,16 +138,21 @@ Proof.
        Two cases on pre-supply. *)
     intros Hpost_sup_pos.
     destruct (Z.eq_dec s.(State.totalSupply) 0) as [Hs0 | Hs_ne].
-    + (* pre-supply = 0: shares = assets (1:1 initial mint).
-         Post-supply > 0 implies assets > 0, hence post-deposited > 0. *)
-      unfold shares in *.
-      unfold convertToShares in *.
-      assert (Hs0_eqb : s.(State.totalSupply) =? 0 = true)
-        by (apply Z.eqb_eq; exact Hs0).
-      rewrite Hs0_eqb in *.
-      (* totalSupply' = 0 + assets = assets > 0 *)
-      rewrite Hs0 in Hpost_sup_pos.
-      (* totalDeposited' = totalDeposited + assets, and assets > 0 *)
+    + (* pre-supply = 0: shares = assets * 1 / (ta + 1).
+         For post-supply = shares > 0, we need shares >= 1, hence
+         assets >= ta + 1 >= 1, so assets > 0 and post-td > 0. *)
+      assert (Hta1_pos : 0 < totalAssets s + 1) by lia.
+      assert (Hshares_val : shares = assets / (totalAssets s + 1)).
+      { unfold shares, convertToShares. rewrite Hs0.
+        f_equal. lia. }
+      (* post-supply = 0 + shares > 0 means shares >= 1. *)
+      assert (Hshares_pos : shares >= 1) by lia.
+      rewrite Hshares_val in Hshares_pos.
+      pose proof (Z.mul_div_le assets (totalAssets s + 1) Hta1_pos)
+        as Hbound.
+      (* (ta+1) * (a / (ta+1)) <= a. Since (a / (ta+1)) >= 1,
+         we get (ta+1) * 1 <= a, i.e. a >= ta+1 > 0. *)
+      assert (Hassets_pos : 0 < assets) by nia.
       lia.
     + (* pre-supply > 0: by [backed], pre-deposited > 0.
          post-deposited = pre-deposited + assets >= pre-deposited > 0. *)
@@ -151,52 +163,24 @@ Proof.
       lia.
 Qed.
 
-(** ----- Helper: in the supply>0 case, the ceil-div shares burn
-    does not exceed totalSupply when [assets <= totalDeposited]. ----- *)
-Lemma withdraw_shares_le_supply
-    (s : State.t) (assets : U256.t) :
-  Valid.state s ->
-  s.(State.totalSupply) > 0 ->
-  0 <= assets <= s.(State.totalDeposited) ->
-  let ta := totalAssets s in
-  let S  := s.(State.totalSupply) in
-  (assets * S + ta - 1) / ta <= S.
-Proof.
-  intros Hv Hsup_pos Hassets.
-  destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
-  assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; exact Hsup_pos).
-  assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
-  simpl.
-  set (ta := totalAssets s) in *.
-  set (S := s.(State.totalSupply)) in *.
-  (* assets <= td <= ta, so assets * S <= ta * S.
-     ceil(assets * S / ta) <= ceil(ta * S / ta) = S. *)
-  assert (Hassets_ta : assets <= ta) by (unfold ta, totalAssets; lia).
-  (* ceil(a*S/ta) = floor((a*S + ta - 1)/ta). With a <= ta we have
-       a*S + ta - 1 < ta*S + ta = ta*(S+1)
-     so floor( ... / ta) < S+1, i.e. <= S. Apply
-     [Z.div_lt_upper_bound] and step down by 1. *)
-  assert (Hlt : (assets * S + ta - 1) / ta < S + 1).
-  { apply Z.div_lt_upper_bound; [lia|]. nia. }
-  lia.
-Qed.
-
 (** ----- withdraw preserves Valid.state. -----
 
     Preconditions:
       - [Valid.state s].
-      - [s.(totalSupply) > 0]: withdraw on an empty vault is a no-op
-        in practice; the simulation's supply=0 branch sets
-        [shares = assets], which would under-flow totalSupply on any
-        positive assets. So we require positive supply.
+      - [s.(totalSupply) > 0]: withdraw on an empty vault has no
+        backing shares to burn. We require positive supply.
       - [0 <= assets <= s.(totalDeposited)]: assets must fit in the
         non-rewards portion of totalAssets to avoid underflowing
-        [totalDeposited].
+        [totalDeposited]. (Note: with the inflation-defended formula,
+        even [assets = totalDeposited] does not always succeed —
+        the ceil-div may demand more shares than [totalSupply] when
+        rewards have accrued. The [withdraw] sim now surfaces that
+        as a guarded revert; the [Result.Success] hypothesis below
+        gives us [shares <= totalSupply] for free.)
       - [shares = totalSupply \/ assets < totalDeposited]: the
         success either drains all shares (so [backed] becomes
         vacuous) OR strictly leaves some deposited (so [backed]
-        survives). The caller chooses; both are implementable from
-        a Solidity entry point. *)
+        survives). *)
 Lemma withdraw_preserves_validity
     (s s' : State.t) (assets shares : U256.t) :
   Valid.state s ->
@@ -211,25 +195,38 @@ Proof.
   destruct Hv as [Hsup_u256 Htd_nn Har_nn Hbacked].
   assert (Htd_pos : 0 < s.(State.totalDeposited)) by (apply Hbacked; exact Hsup_pos).
   unfold withdraw in Hok.
-  set (ta := totalAssets s) in *.
-  assert (Hta_pos : ta > 0) by (unfold ta, totalAssets; lia).
-  assert (Hta_assets : assets <= ta).
-  { unfold ta, totalAssets. lia. }
-  assert (Hgt_false : (assets >? ta) = false).
-  { unfold Z.gtb. destruct (Z.compare_spec assets ta); try reflexivity; lia. }
+  cbv zeta in Hok.
+  (* Hok form:
+       (if assets >? totalAssets s then Revert
+        else if (assets * (s.(totalSupply) + 1) + totalAssets s)
+               / (totalAssets s + 1)
+              >? s.(totalSupply)
+             then Revert
+             else Success(post-state, shares_calc))
+       = Success(s', shares). *)
+  assert (Hta_pos : totalAssets s > 0) by (unfold totalAssets; lia).
+  assert (Hta_assets : assets <= totalAssets s).
+  { unfold totalAssets. lia. }
+  assert (Hgt_false : (assets >? totalAssets s) = false).
+  { unfold Z.gtb. destruct (Z.compare_spec assets (totalAssets s));
+      try reflexivity; lia. }
   rewrite Hgt_false in Hok.
+  destruct ((assets * (s.(State.totalSupply) + 1) + totalAssets s)
+            / (totalAssets s + 1)
+            >? s.(State.totalSupply)) eqn:Hguard.
+  { (* Inner guard fired but caller claims [Result.Success] — impossible.
+       After the outer rewrite [if false then _ else inner], the inner
+       [if true then Revert] collapses. *)
+    exfalso. simpl in Hok. discriminate Hok. }
+  set (ta := totalAssets s) in *.
   set (Sv := s.(State.totalSupply)) in *.
-  assert (Hsup_eqb : (Sv =? 0) = false)
-    by (apply Z.eqb_neq; lia).
-  fold ta Sv in Hok.
-  (* The branch in withdraw computes shares based on supply=0; with
-     Sv > 0 we take the else branch. *)
-  rewrite Hsup_eqb in Hok.
-  injection Hok as Hs'_eq Hshares_eq.
-  set (shares_calc := (assets * Sv + ta - 1) / ta) in *.
-  (* From the injection: s' is the post-record; shares is shares_calc. *)
+  set (shares_calc := (assets * (Sv + 1) + ta) / (ta + 1)) in *.
+  fold shares_calc in Hok.
+  fold ta Sv shares_calc in Hguard.
   assert (Hshares_le : shares_calc <= Sv).
-  { apply (withdraw_shares_le_supply s assets); auto. }
+  { unfold Z.gtb in Hguard.
+    destruct (Z.compare_spec shares_calc Sv); try discriminate; lia. }
+  injection Hok as Hs'_eq Hshares_eq.
   assert (Hshares_nn : 0 <= shares_calc).
   { apply Z.div_pos; [nia | lia]. }
   rewrite <- Hs'_eq.

@@ -1,7 +1,13 @@
 (** StakingVaultExchange × CAS witness cross-check.
 
     Evaluates the [StakingVaultExchange] simulation on the same OZ
-    conversion arithmetic the CAS witness corpus probes.
+    conversion arithmetic the CAS witness corpus probes. Under the
+    OZ v5.4 inflation-defended form the round-trip is no longer
+    exact even at clean rates — the virtual +1 on both sides means
+    each conversion loses a small constant offset, surfacing as the
+    inflation-attack defense. The probe values below reflect the
+    actual vm_compute output of the inflation-defended formula.
+
     The discrete-time exponential decay underpinning native rewards
     is validated separately in the CAS script (cas/staking_vault/
     exchange_rate.gp INV-1..INV-6); here we tie the round-trip
@@ -32,15 +38,29 @@ Lemma xcheck_convertToShares_half :
   convertToShares cal_state (4 * 10^18) = 5 * 10^17.
 Proof. vm_compute. reflexivity. Qed.
 
-(** convertToAssets(0.5e18) = 0.5e18 * 8e18 / 1e18 = 4e18.
-    So round-trip is exact at this calibration (rate divides cleanly). *)
-Lemma xcheck_round_trip_exact :
+(** convertToAssets(0.5e18) under the inflation-defended form is
+    [0.5e18 * (8e18 + 1) / (1e18 + 1) = 3999999999999999996], not
+    the naive 4e18. The +1 virtuals shave 4 wei off the round-trip
+    even at a rate that divides cleanly under the naive formula —
+    this is the OZ inflation defense surfacing in concrete numbers.
+    Critically: the round-trip is still floor-bounded (<= the
+    original 4e18), as proved generally by [round_trip_floor_bound]. *)
+Lemma xcheck_round_trip_inflation_defended :
   convertToAssets cal_state (convertToShares cal_state (4 * 10^18))
-  = 4 * 10^18.
+  = 3999999999999999996.
 Proof. vm_compute. reflexivity. Qed.
 
-(** A round-trip that loses to floor: ask for 5 wei with the rate above.
-    convertToShares(5) = 5 * 1e18 / 8e18 = 0 (floors to zero).
+(** Round-trip strictly loses 4 wei to the inflation defense at this
+    calibration — concretely demonstrates that [round_trip_floor_bound]
+    is a < (not =) bound under the OZ formula. *)
+Lemma xcheck_round_trip_strictly_loses :
+  convertToAssets cal_state (convertToShares cal_state (4 * 10^18))
+  < 4 * 10^18.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A round-trip that loses to floor on the share-side first:
+    convertToShares(5) under the inflation-defended form is
+    [5 * (1e18 + 1) / (8e18 + 1) = 0] (floors to zero, same as naive).
     convertToAssets(0) = 0. So round-trip yields 0, strictly < 5. *)
 Lemma xcheck_round_trip_lossy_dust :
   convertToAssets cal_state (convertToShares cal_state 5) = 0.

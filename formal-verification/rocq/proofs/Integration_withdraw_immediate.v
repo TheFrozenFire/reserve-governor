@@ -117,6 +117,12 @@ Proof.
   unfold StakingVaultExchange.withdraw in Hwd.
   destruct (assets >? StakingVaultExchange.totalAssets s_ex) eqn:Hgt;
     [discriminate|].
+  (* New share-bound guard from the OZ inflation-defended form. *)
+  destruct ((assets * (s_ex.(StakingVaultExchange.State.totalSupply) + 1)
+             + StakingVaultExchange.totalAssets s_ex)
+            / (StakingVaultExchange.totalAssets s_ex + 1)
+            >? s_ex.(StakingVaultExchange.State.totalSupply)) eqn:Hguard;
+    [discriminate|].
   injection Hwd as Hex_inner_eq Hshares_eq.
   subst s_ex_inner.
   (* Learn balance delta from the inner ERC20.transfer.

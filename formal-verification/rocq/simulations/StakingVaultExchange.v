@@ -63,24 +63,37 @@ End Result.
 Definition totalAssets (s : State.t) : U256.t :=
   s.(State.totalDeposited) + s.(State.accumulatedNativeRewards).
 
-(** OZ ERC4626 conversion — floor everywhere. When supply is zero, the
-    OZ shape uses a "virtual offset" via _decimalsOffset; for our
-    purposes the supply==0 case is the initial-deposit edge and the
-    result is exactly [assets] (1:1 share-to-asset exchange before any
-    rewards have accrued). *)
+(** OZ ERC4626 conversion — inflation-defended form (floor rounding).
+
+    OpenZeppelin v5.4 IERC4626 uses the "virtual shares / virtual
+    assets" trick (ERC4626.sol L225-234):
+
+      shares = mulDiv(assets,
+                      totalSupply + 10^offset,
+                      totalAssets + 1,
+                      Floor)
+      assets = mulDiv(shares,
+                      totalAssets + 1,
+                      totalSupply + 10^offset,
+                      Floor)
+
+    [StakingVault.sol] does NOT override [_decimalsOffset()], so the
+    offset is 0 and [10^offset = 1]. Both denominators are therefore
+    always >= 1 — no supply==0 special case is needed. The +1 on the
+    asset side and +1 on the share side together defend against the
+    classic "donate to inflate" first-depositor attack: the attacker
+    cannot get an unbounded share-per-asset rate even by donating
+    assets to a freshly initialized vault.
+
+    Source: openzeppelin-contracts/contracts/token/ERC20/extensions/
+    ERC4626.sol#L225-L234 (v5.4). *)
 Definition convertToShares (s : State.t) (assets : U256.t) : U256.t :=
-  if s.(State.totalSupply) =? 0
-  then assets
-  else
-    let ta := totalAssets s in
-    (assets * s.(State.totalSupply)) / ta.
+  let ta := totalAssets s in
+  (assets * (s.(State.totalSupply) + 1)) / (ta + 1).
 
 Definition convertToAssets (s : State.t) (shares : U256.t) : U256.t :=
-  if s.(State.totalSupply) =? 0
-  then shares
-  else
-    let ta := totalAssets s in
-    (shares * ta) / s.(State.totalSupply).
+  let ta := totalAssets s in
+  (shares * (ta + 1)) / (s.(State.totalSupply) + 1).
 
 (** [deposit(assets, _)] — increases [totalDeposited] and mints
     [convertToShares] shares. The actual ERC20 transfer is modeled
@@ -95,26 +108,38 @@ Definition deposit (s : State.t) (assets : U256.t) : State.t * U256.t :=
 
 (** [withdraw(assets, _)] — decreases [totalDeposited] by [assets]
     and burns the equivalent shares. Reverts if [assets > totalAssets]
-    (the OZ default) — modeled here as a guard. *)
+    (the OZ default) or if the share burn would exceed [totalSupply]
+    (which would revert via ERC20 [_burn] in the contract).
+
+    OZ [previewWithdraw] uses ceiling division of the inflation-defended
+    form:
+
+      shares = ceil(assets * (totalSupply + 1) / (totalAssets + 1))
+             = (assets * (totalSupply + 1) + totalAssets) / (totalAssets + 1)
+
+    With the +1 in the denominator, division is always well-defined —
+    no supply==0 branch needed. The virtual-share offset is asymmetric
+    under ceil rounding: trying to withdraw the *entire* totalAssets
+    requires burning more than totalSupply, so even a single-holder
+    fully-funded vault cannot drain to zero in one withdraw. This is
+    the OZ inflation-attack defense surfacing as a guard, not a
+    departure from spec. *)
 Definition withdraw (s : State.t) (assets : U256.t) : Result.t (State.t * U256.t) :=
   let ta := totalAssets s in
   if assets >? ta then
     Result.Revert 0 32
   else
     let supply := s.(State.totalSupply) in
-    (* OZ ERC4626 previewWithdraw uses ceiling division. Modeled as
-       (a*S + ta - 1) / ta when ta > 0. When ta = 0, supply = 0 by the
-       no-rewards-before-deposit invariant — handled by the supply=0
-       branch in convertToShares. *)
-    let shares :=
-      if supply =? 0 then assets
-      else (assets * supply + ta - 1) / ta in
-    Result.Success
-      ({|
-        State.totalSupply              := s.(State.totalSupply) - shares;
-        State.totalDeposited           := s.(State.totalDeposited) - assets;
-        State.accumulatedNativeRewards := s.(State.accumulatedNativeRewards);
-      |}, shares).
+    let shares := (assets * (supply + 1) + ta) / (ta + 1) in
+    if shares >? supply then
+      Result.Revert 0 32
+    else
+      Result.Success
+        ({|
+          State.totalSupply              := s.(State.totalSupply) - shares;
+          State.totalDeposited           := s.(State.totalDeposited) - assets;
+          State.accumulatedNativeRewards := s.(State.accumulatedNativeRewards);
+        |}, shares).
 
 (** Reward accrual — an abstract non-negative delta added to the
     running [accumulatedNativeRewards]. The actual delta is computed

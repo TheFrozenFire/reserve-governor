@@ -698,13 +698,33 @@ Notation audit_selector_removeSelector_preserves_validity :=
     while leaving [totalSupply] alone (so the share rate is
     non-decreasing).
 
-    Headlines (round-2 originals):
+    The sim follows the OZ v5.4 inflation-defended formula
+    (ERC4626.sol L225-234): conversions use
+       shares = mulDiv(assets, totalSupply + 10^offset,
+                       totalAssets + 1, Floor)
+       assets = mulDiv(shares, totalAssets + 1,
+                       totalSupply + 10^offset, Floor)
+    with [10^offset = 1] for the StakingVault (no
+    [_decimalsOffset()] override). The "+1" virtuals on both
+    denominators are the inflation-attack defense; they make all
+    headline theorems precondition-free on supply / totalAssets.
+
+    Headlines (round-2 originals, refreshed at T1.2 against the
+    OZ v5.4 inflation-defended formula):
       - [audit_vault_round_trip_floor_bound] : converting assets to
         shares and back never returns more than the original input —
         the round-trip is monotonically lossy (in the user's favor
-        from the vault's solvency perspective).
+        from the vault's solvency perspective). Under the +1 virtuals,
+        the round-trip can lose up to a small constant offset even at
+        rates that divide cleanly under the naive formula; this is
+        the inflation defense surfacing in concrete numbers (see
+        [xcheck_round_trip_inflation_defended] /
+        [xcheck_round_trip_strictly_loses]).
       - [audit_vault_share_rate_monotone_under_accrue] : the share
-        price never falls when rewards accrue.
+        price never falls when rewards accrue. Stated as a cross-
+        multiplication on the [(ta+1)/(S+1)] rate; both denominators
+        are positive without any precondition on [totalSupply], so the
+        bound holds even at empty / single-holder states.
       - [audit_vault_deposit_storage_delta] : the assets/shares
         bookkeeping after a deposit is exactly [totalDeposited +=
         assets, totalSupply += shares].
