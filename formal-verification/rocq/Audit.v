@@ -232,6 +232,45 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
       StakingVault                   Parked (phase 4: requires ERC4626
                                      + ERC20Votes + ReentrancyGuard
                                      stacks).
+                                     Subnote: the file
+                                     [proofs/equivalence/
+                                     StakingVaultDelegation_methodology.v]
+                                     carries an R051+R072 METHODOLOGY
+                                     template for the four delegation
+                                     entrypoints — its milestone
+                                     theorems are
+                                     [run_<fn>_equivalent_methodology]
+                                     and close inside a Section whose
+                                     Variables abstract over the
+                                     entire Hoare-triple carrier
+                                     ([Codes/Env/Walker/State/hoare/
+                                     make_state]), the projection lens,
+                                     the per-fn post-state Skolems,
+                                     and the walker symbols. NO
+                                     inheritor in this corpus
+                                     instantiates the Section, so the
+                                     methodology theorems are
+                                     universally quantified at Section
+                                     closure and constrain nothing
+                                     about the deployed bytecode on
+                                     their own. The trust budget lives
+                                     in the Section hypotheses (4
+                                     per-fn walker Hoare-triple
+                                     declarations + 4 well-formedness
+                                     declarations), NOT in any
+                                     [Print Assumptions] of the
+                                     methodology theorems. The file's
+                                     ~22 sim-level Qed lemmas (outside
+                                     the Section) are genuine and
+                                     consumed by sim-side validators.
+                                     Per [notes/adversarial_review_
+                                     2026_05_31/SYNTHESIS.md] CCV-2
+                                     and Task #280, this file was
+                                     renamed from
+                                     StakingVaultDelegation.v to make
+                                     its methodology-only status
+                                     explicit at the filename + module
+                                     + theorem-name layers.
       UnstakingManager               Shallow form compiles; proof
                                      bodies Admitted with closure
                                      documentation. Closure pending

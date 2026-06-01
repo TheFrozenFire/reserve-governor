@@ -909,7 +909,23 @@ lens lemmas, same shape as Votes.
 
 ## R080: StakingVault dual delegation + bySig — dual-axis Trace208 + ECDSA + Nonces composition
 
-`proofs/equivalence/StakingVaultDelegation.v` (1.6k LOC) mechanizes
+**Status (post Task #280, 2026-05-31 audit response):** the file
+documenting this methodology was renamed from
+`proofs/equivalence/StakingVaultDelegation.v` to
+`proofs/equivalence/StakingVaultDelegation_methodology.v` to make
+its abstract Section-bound status explicit at the filesystem +
+module + theorem-name layers. The four headline theorems are now
+`run_<fn>_equivalent_methodology` (suffix `_methodology` on each)
+and close inside a Section whose Variables abstract the entire
+Hoare-triple carrier — no concrete inheritor instantiates it.
+The methodology theorems are universally quantified at Section
+closure and carry no semantic content against the deployed
+contract until instantiated; see Audit.v Caveat-5 + the file's
+header banner for the audit-honest framing. The ~22 sim-level Qed
+lemmas in the file (outside the Section) remain genuine and
+consumed by sim-side validators.
+
+`proofs/equivalence/StakingVaultDelegation_methodology.v` (1.7k LOC) mechanizes
 the four delegation entrypoints — `delegate`, `delegateOptimistic`,
 `delegateBySig`, `delegateOptimisticBySig` — of StakingVault via
 the R051+R072 composite-axiom + slot-agnostic instantiation pattern.

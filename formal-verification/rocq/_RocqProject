@@ -292,5 +292,5 @@ proofs/equivalence/TimelockControllerOptimistic.v
 proofs/equivalence/ReserveOptimisticGovernor.v
 proofs/equivalence/StakingVaultExchange.v
 proofs/equivalence/StakingVaultRewards.v
-proofs/equivalence/StakingVaultDelegation.v
+proofs/equivalence/StakingVaultDelegation_methodology.v
 proofs/equivalence/StakingVaultAdmin.v
