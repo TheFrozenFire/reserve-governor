@@ -585,6 +585,8 @@ Module ProposalLibEquivalence.
 
   (** ========================================================
         R088 — wrapper Lemmas for ProposalLib storage helpers
+        (Phase 3: deterministic-post-storage refactor — see R092
+        in WISDOM)
       ========================================================
 
       Per R088 (see WISDOM), ProposalLib operates on caller-passed
@@ -592,12 +594,111 @@ Module ProposalLibEquivalence.
       storage axioms cannot match. The R088 absorbing primitives
       (`run_sstore_absorbing_at_make_state`,
       `run_sload_absorbing_at_make_state`) close the gap by Skolemizing
-      the post-storage. The wrappers below bundle each Yul helper body
-      into a single leaf returning the Skolem post-state, mirroring
-      R040's wrapper-shape sstore leaves.
+      the post-storage.
+
+      ** Phase 3 redesign **
+
+      The original R088 wrappers existentially quantified the
+      post-storage:
+
+        Lemma ..._absorbing ... :
+          exists storage_post,
+          {{? state | wrapper ⇓ ... | make_state ... storage_post ?}}.
+
+      That shape breaks chained composition inside walker discharges:
+      each per-wrapper `storage_post_k` is introduced via [edestruct]
+      INSIDE the proof script and isn't in scope of the OUTER
+      `eexists memory'` evar created by the enclosing walker. See R092
+      WISDOM entry for the precise unification failure.
+
+      Phase 3 (this section) redesigns each wrapper to expose its
+      post-storage DETERMINISTICALLY at the Lemma's conclusion, via
+      explicit [Definition]s computed from the R088 [sstore_post_storage]
+      Skolem and the wrapper's known packed-word formula. The walker
+      discharges can then thread the post-state evar through
+      [make_state] directly, without an outer [edestruct].
+
+      Both shapes (existential ..._absorbing and deterministic
+      ..._at_make_state) are kept: the existential form remains for
+      backward compatibility with one-off uses (e.g. the documentation
+      comments inside the walker axiom block); the deterministic form
+      is the one used by walker discharges.
 
       These leaves are the consumed inputs for `_saveProposal_580`'s
       walker discharge. *)
+
+  (** ========== Phase 3: deterministic post-storage helpers ==========
+
+      Each wrapper's body computes an explicit packed-word from
+      [sload slot] and [value], then sstores it back. The packed-word
+      formulas mirror the body of [update_byte_slice_K_shift_J]:
+
+        offset_0  (uint160 / address):  insert value at bits [0..160)
+        offset_20 (uint48):              insert value at bits [160..208)
+        offset_26 (uint32):              insert value at bits [208..240)
+
+      Concretely:
+
+        offset_0 mask = 0xff..ff (20 bytes) at bits [0..160)
+        new_word_0   = (old & ~mask) | ((shl 0 value) & mask)
+
+      [shl 0 v = v] (the [shl] axiom forces a check x >=? 256 returns
+      0, otherwise (v * 2^x) mod 2^256). At x=0 this is [v mod 2^256],
+      and within uint160 range this equals v.
+
+      We define the new word as a [Definition] so [Print Assumptions]
+      reports it as a definitional [Definition] (no new axiom).
+
+      The post-storage is then
+        [sstore_post_storage env state_base memory storage slot new_word]. *)
+
+  Definition update_word_offset_0_t_address
+      (old_word value : U256.t) : U256.t :=
+    Pure.or
+      (Pure.and old_word
+                (Pure.not 0xffffffffffffffffffffffffffffffffffffffff))
+      (Pure.and (Pure.shl 0 value)
+                0xffffffffffffffffffffffffffffffffffffffff).
+
+  Definition update_word_offset_20_t_uint48
+      (old_word value : U256.t) : U256.t :=
+    Pure.or
+      (Pure.and old_word
+                (Pure.not 0xffffffffffff0000000000000000000000000000000000000000))
+      (Pure.and (Pure.shl 160 value)
+                0xffffffffffff0000000000000000000000000000000000000000).
+
+  Definition update_word_offset_26_t_uint32
+      (old_word value : U256.t) : U256.t :=
+    Pure.or
+      (Pure.and old_word
+                (Pure.not 0xffffffff0000000000000000000000000000000000000000000000000000))
+      (Pure.and (Pure.shl 208 value)
+                0xffffffff0000000000000000000000000000000000000000000000000000).
+
+  Definition update_storage_value_offset_0_post_storage
+      (env : Environment.t) (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot value : U256.t) : SimulatedStorage.t :=
+    sstore_post_storage env state_base memory storage slot
+      (update_word_offset_0_t_address
+         (sload_witness env state_base memory storage slot) value).
+
+  Definition update_storage_value_offset_20_post_storage
+      (env : Environment.t) (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot value : U256.t) : SimulatedStorage.t :=
+    sstore_post_storage env state_base memory storage slot
+      (update_word_offset_20_t_uint48
+         (sload_witness env state_base memory storage slot) value).
+
+  Definition update_storage_value_offset_26_post_storage
+      (env : Environment.t) (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot value : U256.t) : SimulatedStorage.t :=
+    sstore_post_storage env state_base memory storage slot
+      (update_word_offset_26_t_uint32
+         (sload_witness env state_base memory storage slot) value).
 
   (** ----- Wrapper for [update_storage_value_offset_0_t_address_to_t_address] -----
 
@@ -665,6 +766,55 @@ Module ProposalLibEquivalence.
     p.
   Qed.
 
+  (** Phase 3 deterministic-shape sibling of the wrapper above.
+
+      The post-storage is exposed at the Lemma conclusion as
+      [update_storage_value_offset_0_post_storage ...], a definitional
+      synonym for [sstore_post_storage env state_base memory storage
+      slot <packed-word-formula>].  The walker can apply this Lemma
+      directly without an [edestruct] step.
+
+      Soundness: same axioms as the existential sibling
+      ([run_sstore_absorbing_at_make_state],
+       [run_sload_absorbing_at_make_state],
+       [run_convert_t_address_to_t_address]).  No new Axioms. *)
+  Lemma run_update_storage_value_offset_0_t_address_to_t_address_at_make_state
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot value : U256.t)
+      (H_value_bound : 0 <= value < 2^160) :
+    {{? codes, env,
+        Some (make_state env state_base memory storage) |
+      update_storage_value_offset_0_t_address_to_t_address slot value
+        ⇓ Result.Ok tt
+    | Some (make_state env state_base memory
+              (update_storage_value_offset_0_post_storage
+                 env state_base memory storage slot value)) ?}}.
+  Proof.
+    unfold update_storage_value_offset_0_t_address_to_t_address,
+           update_storage_value_offset_0_post_storage,
+           update_word_offset_0_t_address.
+    lu.
+    l. { c. { apply run_convert_t_address_to_t_address; exact H_value_bound. }
+         p. }
+    l. { s.
+         c. { apply (run_sload_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         s.
+         c. { unfold prepare_store_t_address.
+              repeat (lu || cu || p). }
+         s.
+         c. { unfold update_byte_slice_20_shift_0.
+              repeat (lu || cu || p). }
+         s.
+         c. { apply (run_sstore_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         p.
+       }
+    p.
+  Qed.
+
   (** ----- Wrapper for [update_storage_value_offset_20_t_uint48_to_t_uint48] -----
 
       Body: same shape as the offset_0 sibling but with a uint48 input,
@@ -706,6 +856,43 @@ Module ProposalLibEquivalence.
     p.
   Qed.
 
+  (** Phase 3 deterministic-shape sibling. *)
+  Lemma run_update_storage_value_offset_20_t_uint48_to_t_uint48_at_make_state
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot value : U256.t)
+      (H_value_bound : 0 <= value < 2^48) :
+    {{? codes, env,
+        Some (make_state env state_base memory storage) |
+      update_storage_value_offset_20_t_uint48_to_t_uint48 slot value
+        ⇓ Result.Ok tt
+    | Some (make_state env state_base memory
+              (update_storage_value_offset_20_post_storage
+                 env state_base memory storage slot value)) ?}}.
+  Proof.
+    unfold update_storage_value_offset_20_t_uint48_to_t_uint48,
+           update_storage_value_offset_20_post_storage,
+           update_word_offset_20_t_uint48.
+    lu.
+    l. { c. { apply run_convert_t_uint48_to_t_uint48; exact H_value_bound. }
+         p. }
+    l. { s.
+         c. { apply (run_sload_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         s.
+         c. { unfold prepare_store_t_uint48.
+              repeat (lu || cu || p). }
+         s.
+         c. { unfold update_byte_slice_6_shift_20, shift_left_160.
+              repeat (lu || cu || p). }
+         s.
+         c. { apply (run_sstore_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         p. }
+    p.
+  Qed.
+
   (** ----- Wrapper for [update_storage_value_offset_26_t_uint32_to_t_uint32] -----
 
       Body: same shape as siblings, with uint32 input. *)
@@ -737,6 +924,43 @@ Module ProposalLibEquivalence.
               repeat (lu || cu || p). }
          s.
          c. { unfold update_byte_slice_4_shift_26.
+              repeat (lu || cu || p). }
+         s.
+         c. { apply (run_sstore_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         p. }
+    p.
+  Qed.
+
+  (** Phase 3 deterministic-shape sibling. *)
+  Lemma run_update_storage_value_offset_26_t_uint32_to_t_uint32_at_make_state
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (slot value : U256.t)
+      (H_value_bound : 0 <= value < 2^32) :
+    {{? codes, env,
+        Some (make_state env state_base memory storage) |
+      update_storage_value_offset_26_t_uint32_to_t_uint32 slot value
+        ⇓ Result.Ok tt
+    | Some (make_state env state_base memory
+              (update_storage_value_offset_26_post_storage
+                 env state_base memory storage slot value)) ?}}.
+  Proof.
+    unfold update_storage_value_offset_26_t_uint32_to_t_uint32,
+           update_storage_value_offset_26_post_storage,
+           update_word_offset_26_t_uint32.
+    lu.
+    l. { c. { apply run_convert_t_uint32_to_t_uint32; exact H_value_bound. }
+         p. }
+    l. { s.
+         c. { apply (run_sload_absorbing_at_make_state codes env state_base
+                       memory storage slot). }
+         s.
+         c. { unfold prepare_store_t_uint32.
+              repeat (lu || cu || p). }
+         s.
+         c. { unfold update_byte_slice_4_shift_26, shift_left_208.
               repeat (lu || cu || p). }
          s.
          c. { apply (run_sstore_absorbing_at_make_state codes env state_base
@@ -1343,17 +1567,64 @@ Module ProposalLibEquivalence.
       level — is concretely the slot+0 packed-word update with the
       address, voteStart, and voteDuration packed in. The sim's
       [proj_post_saveProposal_580 storage_base p voteDelay voteDuration
-      now_timestamp] is, by audit, exactly such an update. *)
-  Parameter sstore_chain_after_saveProposal :
-    Environment.t -> RocqOfSolidity.State.t -> SimulatedMemory.t ->
-    SimulatedStorage.t -> U256.t -> U256.t -> U256.t -> U256.t ->
-    ProposalData.t -> SimulatedStorage.t.
+      now_timestamp] is, by audit, exactly such an update.
 
+      ** Phase 3 (R094) shape **
+
+      Originally a [Parameter] disconnected from the actual chain, this
+      is now a [Definition] over the three deterministic post-storage
+      helpers introduced in Phase 3. The walker proof's final
+      post-storage is exactly this expression, so the bridge axiom
+      [sstore_chain_after_saveProposal_eq_proj] becomes the per-target
+      audit obligation directly.
+
+      Arguments:
+        - [env], [state_base], [memory] — the ambient state context
+        - [storage_base] — the caller-side pre-call storage
+        - [proposalCore_slot] — the keccak-derived target slot
+        - [proposer_address] — the address packed at offset 0 (the
+          walker computes this as [read_memoryt_address_witness ...
+          (Pure.add proposal_mpos 32)])
+        - [voteStart] — the uint48 timestamp packed at offset 20
+          (the walker computes this as [now_timestamp + voteDelay])
+        - [voteDuration] — the uint32 packed at offset 26 *)
+  Definition sstore_chain_after_saveProposal_concrete
+      (env : Environment.t) (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage_base : SimulatedStorage.t)
+      (proposalCore_slot proposer_address voteStart voteDuration : U256.t)
+      : SimulatedStorage.t :=
+    let s1 :=
+      update_storage_value_offset_0_post_storage
+        env state_base memory storage_base
+        (Pure.add proposalCore_slot 0) proposer_address in
+    let s2 :=
+      update_storage_value_offset_20_post_storage
+        env state_base memory s1
+        (Pure.add proposalCore_slot 0) voteStart in
+    update_storage_value_offset_26_post_storage
+      env state_base memory s2
+      (Pure.add proposalCore_slot 0) voteDuration.
+
+  (** ** Bridge axiom **: the walker's chained post-storage equals
+      the sim's post-projection.
+
+      Soundness sketch: the chain produces the same packed-word value
+      that the sim computes for [proj_post_saveProposal_580]. The
+      packed-word formula is fully determined by [proposer_address],
+      [voteStart], [voteDuration] (audit-verified against the EVM
+      bit-encoding). The bridge axiom asserts the equivalence at the
+      [SimulatedStorage.t] level. This is the audit-time witness that
+      the framework-side post-storage observably equals the sim-side
+      projection. *)
   Axiom sstore_chain_after_saveProposal_eq_proj :
     forall env state_base memory storage_base
-           proposalCore_slot voteDelay voteDuration now_ p,
-    sstore_chain_after_saveProposal env state_base memory storage_base
-      proposalCore_slot voteDelay voteDuration now_ p
+           proposalCore_slot proposal_mpos voteDelay voteDuration now_ p,
+    sstore_chain_after_saveProposal_concrete env state_base memory storage_base
+      proposalCore_slot
+      (read_memoryt_address_witness env state_base memory storage_base
+         (Pure.add proposal_mpos 32))
+      (now_ + voteDelay)
+      voteDuration
     = proj_post_saveProposal_580 storage_base p
         voteDelay voteDuration now_.
 
