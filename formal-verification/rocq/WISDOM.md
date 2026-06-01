@@ -2440,6 +2440,239 @@ See also: R041 (resolved — `linkersymbol` definition), R063
 (staticcall callee-spec template), R082 (composite-walker
 discharge — VersionRegistry.deprecateVersion).
 
+## R087: ROG composite-walker discharge — structural blockers
+
+**Task #291 (T3.2-ROG-finish, 2026-06-01)** attempted to extend the R082
+discharge methodology from `VersionRegistry.deprecateVersion` to
+ReserveOptimisticGovernor's three composite walker Axioms
+(`run_fun_propose_389_at_proj_sim`, `run_fun_castVote_4378_at_proj_sim`,
+`run_fun_execute_4145_at_proj_sim`). Diagnosis: **R082's six framework
+primitives are necessary but NOT sufficient for the ROG walkers**.
+Four classes of structural blocker emerged before any per-walker LOC
+was written. (Numbered R087 because R086 was concurrently claimed by
+the UnstakingManager SafeERC20 / linkersymbol framework gap — see
+above; the two diagnoses are independent.)
+
+### Sized profile of each ROG walker body
+
+`fun_castVote_4378` (the simplest entry point) is a 19-LOC Yul wrapper
+that dispatches via `fun__castVote_4615` (also a thin wrapper) →
+`fun__castVote_1014` (the meaningful body, 113 LOC). The 1014 body in
+turn calls **seven** internal helpers:
+
+  - `fun__validateStateBitmap_4891` (45 LOC) → calls `fun_state_592`
+  - `fun_state_592` (204 LOC) — the OZ `Governor.state()` dispatch;
+    contains an external `staticcall` to `token.getPastTotalSupply()`
+    plus 8+ conditional branches across snapshot/deadline/vetoThreshold
+  - `fun_proposalSnapshot_3501` (25 LOC)
+  - `fun__isOptimistic_1236` (15 LOC)
+  - `fun__getVotes_7797` (48 LOC) — external `staticcall` to
+    `token.getPastVotes()`
+  - `fun__getOptimisticVotes_1258` (50 LOC) — external `staticcall` to
+    `token.getOptimisticVotes()`
+  - `fun__countVote_926` (42 LOC) — dispatches to GovernorCountingSimple
+  - `fun__tallyUpdated_1059` (89 LOC) — calls `state()` AGAIN and on
+    the optimistic-defeat-transition path delegatecalls into
+    ProposalLib's `transitionToPessimistic` (itself a 12-step walker
+    that is STILL `Axiom run_fun_transitionToPessimistic_400_at_storage_base`)
+
+Total reachable Yul body for `fun_castVote_4378`: **~700 LOC across 8
+internal helpers**, with 3 external staticcalls and 1 conditional
+delegatecall. The R082 deprecateVersion template handled ONE staticcall
+in ONE function body of ~80 LOC.
+
+`fun_execute_4145` (180-LOC body) calls eight helpers — see
+`fun__getGovernorStorage_3168`, `fun_getProposalId_3355`,
+`fun__encodeStateBitmap_4852` (×2), `fun__validateStateBitmap_4891`
+(which calls the 204-LOC `fun_state_592`), `fun__executor_1072`,
+`fun_pushBack_18486` (OZ Bytes32Deque), `fun__executeOperations_797`
+(which dispatches through TimelockController), `fun_empty_18779`,
+`fun_clear_18743` — plus a conditional `for` loop over targets emitting
+`keccak256` digests, plus a `log1` event emission.
+
+`fun_propose_389` (80-LOC body) is the smallest entry-level body but
+hits the THIRD blocker (see below).
+
+### Blocker 1 — Per-internal-helper sub-axiom proliferation
+
+A mechanical discharge of `fun_castVote_4378` against existing
+framework leaves would require introducing **at least 8 new per-helper
+composite walker sub-axioms** (one per internal helper above), each
+itself a load-bearing trust commitment. Net trust accounting:
+
+  - Before: 1 composite walker `Axiom` (`run_fun_castVote_4378_at_proj_sim`)
+  - After: 1 composite walker `Lemma` + 8 helper composite `Axiom`s
+
+This is **not a net trust reduction** — it relocates the trust from one
+opaque Hoare triple to eight opaque Hoare triples, each with its own
+preconditions and post-state Skolems. R082's discharge gained
+methodology value because `fun_deprecateVersion_187` has NO internal
+helper dispatches (it's a single 21-step monolithic Yul body); the
+framework primitives R082 added (`staticcall_make_state_bridge_absorbing`
+et al.) sufficed to walk the body in 280 LOC.
+
+The ROG walkers are NOT "deeper bodies amenable to the same primitives";
+they are "heavy inheritor compositions" whose audit cost is dominated
+by the inherited OZ Governor / GovernorCountingSimple /
+GovernorPreventLateQuorum / GovernorTimelockControl / GovernorVotes
+base contracts. R078/R079 mechanized the abstract bases via the
+`GovernorBaseEquivalenceTemplate`; that template's slot-anchor
+projection IS the audit-time discharge of the inherited helpers. The
+composite-walker `Axiom`s in `ReserveOptimisticGovernor.v` are
+themselves shaped to delegate inherited-helper discharge to the
+GovernorBase template (see Section 11 of `ReserveOptimisticGovernor.v`,
+which instantiates the template).
+
+### Blocker 2 — Delegatecall has no framework primitive
+
+`fun_propose_389` performs a **delegatecall** (NOT staticcall) into
+`ProposalLib.proposePessimistic` via the linkersymbol-derived
+ProposalLib address. The bytecode opcode `DELEGATECALL` differs from
+`STATICCALL` in semantics: it executes the callee's bytecode under the
+CALLER's storage / address / value context (i.e. the callee can mutate
+the caller's storage).
+
+R063's `StaticCallBridge` provides `staticcall_make_state_bridge` (and
+R082's `_absorbing` sibling) for staticcalls. There is **no equivalent
+primitive for delegatecall** in `AbiEncoding.v`, `StaticCallBridge.v`,
+or `FrameworkExtensions.v`. A `delegatecall_make_state_bridge` would
+need to express:
+
+  - The post-storage equals the callee body's post-storage shape (the
+    delegatecall WRITES the caller's storage).
+  - The post-state's `return_data` records the callee's return.
+  - The post-state's `memory` carries the callee's mstore tail.
+
+Soundness is more delicate than staticcall (which is read-only):
+delegatecall composes the caller's storage shape with the callee's
+write effects, so the bridge must thread the callee's per-function
+walker chain into the bridge's post-state shape. ProposalLib's
+delegatecall target (`proposePessimistic_288`) is itself an unclosed
+`Axiom run_fun_proposePessimistic_288_at_storage_base`.
+
+### Blocker 3 — Three missing minor primitives
+
+Even setting aside delegatecall, `fun_propose_389`'s body uses three
+Yul primitives with no existing framework leaf:
+
+  - `linkersymbol` — used to materialize the ProposalLib library address
+    from its bytecode-relocation tag. Not a Stdlib operation; emitted
+    only by the Solidity linker. Discharge: a simple `Axiom` that
+    `linkersymbol(<lib-hash>) = some fixed address` per audit
+    obligation, ~10 LOC.
+  - `extcodesize` — used to gate the delegatecall (revert if the
+    library hasn't been deployed). Not a Stdlib operation. Discharge:
+    `extcodesize(addr) ≠ 0` under the audit obligation that the
+    library is deployed, ~20 LOC.
+  - `revert_forward_1` — the standard "bubble up the callee's revert
+    data" handler. Used on the iszero-of-delegatecall-result branch.
+    The audit-time success branch picks the non-revert side, so the
+    primitive's discharge is just "this branch is unreachable under
+    the success precondition." ~10 LOC.
+
+These three are **bounded incremental work** (~40 LOC of framework
+primitives total). They are NOT the structural blocker.
+
+### Blocker 4 — ProposalLib's own walker Axioms are not closed
+
+`fun_propose_389` delegates into `ProposalLib.proposePessimistic`,
+which is itself behind `Axiom run_fun_proposePessimistic_288_at_storage_base`
+in `ProposalLib.v`. Even if a `delegatecall_make_state_bridge`
+primitive existed, the bridge's callee-side post-state would still
+need to consume ProposalLib's composite walker — which means
+ProposalLib's composite walker would need to be discharged FIRST.
+Similarly, `fun_execute_4145`'s `fun__executeOperations_797` dispatch
+threads through `TimelockControllerOptimistic.executeBatchBypass_201`
+(an unclosed Axiom) and through the OZ Timelock chain (multiple
+unclosed Axioms in `TimelockControllerOptimistic.v`).
+
+The dependency order — ProposalLib walkers must close before ROG
+walkers can — was implicit in R070's per-contract numbering but is
+now load-bearing for the discharge plan.
+
+### Per-mutator cost estimate (updated)
+
+Given Blockers 1-4, the realistic discharge cost per ROG walker:
+
+  - `fun_castVote_4378`: ~3000-5000 LOC + 8 per-helper composite
+    `Axiom`s. Reuses existing R082 staticcall primitives for each of
+    the 3 external staticcalls.
+  - `fun_execute_4145`: ~2500-4000 LOC + 8 per-helper composite
+    `Axiom`s. Requires the (separately missing)
+    `delegatecall_make_state_bridge` for the TimelockController
+    dispatch. Depends on closing `TimelockControllerOptimistic`'s
+    walker Axioms first.
+  - `fun_propose_389`: ~1500-2500 LOC + 3 minor framework primitives +
+    1 major framework primitive (`delegatecall_make_state_bridge`) +
+    depends on closing `ProposalLib`'s walker Axioms first.
+
+Each of these vastly exceeds the per-mutator R082 budget (280 LOC) and
+each requires multiple framework extensions that R082 did NOT need.
+
+### Recommended path forward
+
+1. **Close ProposalLib's composite walker Axioms first.** Specifically
+   `proposePessimistic_288`, `proposeOptimistic_179`,
+   `transitionToPessimistic_400`. These are precondition for the ROG
+   walkers via delegatecall (propose) and via the OZ Governor base
+   (castVote's tallyUpdated → transitionToPessimistic side-exit).
+2. **Close TimelockControllerOptimistic's walker Axioms** as a
+   parallel workstream. Required for `execute()`.
+3. **Add `delegatecall_make_state_bridge`** to the framework. This is
+   the load-bearing new primitive needed for `propose`. Likely
+   ~150-250 LOC of framework code mirroring the staticcall bridge but
+   threading caller-storage writes through the callee body's
+   post-state Skolem.
+4. **Add the three minor primitives** (`linkersymbol`,
+   `extcodesize`, `revert_forward_1`-as-unreachable) as ~50 LOC of
+   leaves in `AbiEncoding.v` / `StaticCallBridge.v`.
+5. **Discharge `fun_propose_389` first** (smallest body, only the
+   delegatecall is novel once the framework primitives land).
+6. **Discharge `fun_castVote_4378`** by introducing per-helper
+   composite sub-Axioms for each of the 8 OZ Governor internal
+   helpers (`fun__validateStateBitmap_4891` and `fun_state_592` are
+   the load-bearing ones). Each sub-Axiom is itself in scope for the
+   `GovernorBaseEquivalenceTemplate` (R079) — meaning the audit
+   discharge of the sub-Axioms can be delegated to the inherited
+   abstract base, NOT duplicated per inheritor.
+7. **Discharge `fun_execute_4145`** as the most complex; requires
+   the TimelockControllerOptimistic walkers from (2) plus the
+   delegatecall bridge from (3).
+
+### Methodology finding
+
+R082's "single deep monolithic body" template does NOT generalize to
+"deep nested body with multiple internal helper dispatches." The
+inheritor pattern that dominates ROG / Governor / TimelockController
+needs a different methodology:
+
+  - **Per-helper sub-axioms** is the right shape, but they should be
+    derived from the `GovernorBaseEquivalenceTemplate` (R079) so the
+    inheritor's discharge LEMMAS just instantiate the template at
+    concrete slot anchors — NOT replicate the helper's Yul walk per
+    inheritor.
+  - This means the load-bearing investment is **completing the
+    abstract-base template's helper-walker chain**, not the
+    per-inheritor wiring.
+
+The R086 takeaway: the trust-budget retirement plan should target
+GovernorBase / TimelockControllerOptimistic / ProposalLib first, then
+ROG's walkers reduce to a 200-LOC instantiation-and-glue each (NOT a
+fresh 3000-LOC mechanical walk per mutator).
+
+### Status as of 2026-06-01
+
+No code changes attempted in task #291: diagnosis only. The three ROG
+walker Axioms remain in their pre-task shape. The R082 framework
+primitives in `AbiEncoding.v` / `FrameworkExtensions.v` are unaffected
+and remain available for the eventual per-helper sub-axiom discharge
+workstream described above.
+
+See also: R082 (deprecateVersion discharge), R078/R079 (GovernorBase
+template), R065-R071 (per-mutator composite walker recipe), R070
+(ProposalLib walker structure), R086 (concurrent UnstakingManager
+SafeERC20/linkersymbol gap).
+
 ## R065-R071: Per-mutator composite-walker recipe
 
 Validated on 12 mutators across 6 contracts: VersionRegistry,
