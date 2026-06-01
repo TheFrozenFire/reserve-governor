@@ -78,6 +78,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R063: `staticcall` as composite of existing primitives
 - R064: `AbiEncoding.v` module
 - R065-R071: Per-mutator composite-walker recipe (validated on 12 mutators across 6 contracts)
+- R077: ReserveOptimisticGovernor mutator equivalence (Wave 1 — sim Qed + walker scaffold; Wave 2 binding pending GOV-BASE)
 
 ### Common pitfalls
 - R020: `Stdlib.timestamp` semantics (RESOLVED)
@@ -762,6 +763,85 @@ already-correct `function_definition_to_rocq` path for returnVariables.
 
 Pushed on `TheFrozenFire/rocq-of-solidity:fix/r073-r074-shallow-embed`
 in the same commit as R073.
+
+## R077: ReserveOptimisticGovernor mutator equivalence
+
+The hybrid optimistic/pessimistic Governor inherits from a large
+chain of OZ abstract bases (`GovernorUpgradeable`,
+`GovernorSettingsUpgradeable`, `GovernorPreventLateQuorumUpgradeable`,
+`GovernorCountingSimpleUpgradeable`, `GovernorVotesUpgradeable`,
+`GovernorVotesQuorumFractionUpgradeable`,
+`GovernorTimelockControlUpgradeable`) plus `Versioned` + `UUPS`. The
+three full-mutator equivalence targets (`propose`, `castVote`,
+`execute`) ride the R070/R071 composite-walker recipe with three
+OG-specific wrinkles:
+
+**Wrinkle 1 — optimistic-route branch.** `castVote` and `execute`
+both check `_isOptimistic(proposalId)` (defined as
+`vetoThreshold(pid) != 0` — slot read at
+`optimisticProposalDetails[pid].vetoThreshold`). They dispatch
+between:
+- The bespoke optimistic path: against-only voting (`_countVote`
+  reverts on `support != Against`); execute-bypass via
+  `TimelockControllerOptimistic.executeBatchBypass`.
+- The inherited super-chain: standard For/Against/Abstain voting;
+  execute through OZ Timelock.
+
+The composite walker axiom packs both branches into a single
+post-storage existential. Per-branch shapes are exposed as
+documentation axioms (Section 7 of `ReserveOptimisticGovernor.v`).
+
+**Wrinkle 2 — veto-counting walker (sentinel handling).** Optimistic
+`castVote`'s `_tallyUpdated` step checks if the just-incremented
+`againstVotes` crossed the threshold. On success, the contract
+spawns a standard child via `ProposalLib.transitionToPessimistic`,
+which writes `vetoThreshold := UINT256_MAX` (the sentinel) to make
+`_isOptimistic(pid)` return true AND `observe` return Defeated
+forever after. The sim mirrors this as `phase := PhaseDefeated`.
+
+The sentinel handling forces a stickiness-of-Defeated lemma in the
+sim layer: `observe_defeated_sticky_at_threshold` proves that once
+`phase = PhaseDefeated` AND `againstVotes >= vetoThresholdTok`,
+`observe` returns Defeated for any future `now`. (The
+contract-side variant — where the sentinel write makes the
+threshold check unsatisfiable — would require modeling the
+sentinel directly in the sim's `Proposal.t`, which the simulation
+deliberately abstracts away.)
+
+**Wrinkle 3 — Wave-1 vs Wave-2 split.** The mechanization scaffolds
+ahead of two deps:
+- UPSTREAM-SHALLOW (shallow_embed.py fix for OZ Governor base
+  modifier dispatch).
+- GOV-BASE (mechanizing the OZ Governor abstract base at
+  `proofs/equivalence/GovernorBase.v`).
+
+The file structure puts Wave-2 hooks at the boundary where the
+walker axiom statements bind to inherited modifier wrappers and
+the `_isOptimistic` case-split. The Wave-1 sim-level layer is
+fully Qed; the walker axioms are stated against the inheritor's
+storage layout with reflexive observational bridges.
+
+**Trust budget:** 6 composite walker axioms (3 milestone +
+3 branch-documentation) + 1 transition-side-exit axiom + 3
+Skolemized post-storage parameters + 1 sim-environment parameter
+(`now_timestamp`) + 3 role-spec axioms with `True` conclusions
+(not load-bearing for milestone `Print Assumptions`).
+
+Milestone `Print Assumptions` shows: the composite walker axiom,
+the Skolemized post-storage parameter, `now_timestamp`, framework
+primitives (`PrimInt63.*`, `Memory.of_u256_list`,
+`Storage.of_storable_values`), and `Set is impredicative` (all
+pre-existing in the corpus).
+
+Sim-level lemma `Print Assumptions` shows ONLY `Set is impredicative`
+— no contract-specific axioms.
+
+**LOC:** ~1450 across `proofs/equivalence/ReserveOptimisticGovernor.v`,
+covering R077 docstring + Section 1 (sim-level Qeds, ~480 LOC) +
+Sections 3-5 (Skolemized params + observational bridges + composite
+walkers, ~280 LOC) + Section 6 (milestone Qeds, ~140 LOC) +
+Sections 7-9 (branch docs + transition axiom + Wave-2 hooks,
+~120 LOC).
 
 ---
 
