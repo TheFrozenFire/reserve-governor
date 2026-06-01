@@ -3457,7 +3457,7 @@ mechanical bodies to discharge via the R028 walker tactic prelude +
 per-call-site StaticCallBridge + sstore + sload bridges. Estimated
 walker-arm work: ~2000 LOC across the four entry points.
 
-## R090: R088 Phase 2 — ProposalLib helper Lemmas + structural obstacle for full discharge
+## R092: R088 Phase 2 — ProposalLib helper Lemmas + structural obstacle for full discharge
 
 **Task #295 (T3.2-ProposalLib-Phase2, 2026-06-01)** extended R088
 Phase 1 (commit 7be4353) with helper Lemmas and sub-axioms aimed at
