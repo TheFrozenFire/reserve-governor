@@ -106,6 +106,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R104: Walker Axiom→Lemma rename (when wrapper layer not yet built)
 - R106: Sim widening to match modifier writes (preliminary to discharge)
 - R107: Shallow.let_state / Shallow.if_ structural absorbers (Yul if-revert shape)
+- R108: OZ-base body / wrapper-chain bridge — trust decomposition for inherited overrides
 
 ### Common pitfalls and resolved issues
 - R020/R021/R035/R041/R042/R046/R073/R074: shallow_embed.py + framework bugs (RESOLVED upstream)
@@ -1530,6 +1531,169 @@ already simplified past the `Shallow.if_`).  First consumer:
 `run_fun__mint_3368_equivalent` (task #314, NET 0 new audit Axioms
 for the headline theorem).  Future consumers: every `_burn` /
 `_transfer` / `_approve` / `validator_revert_*` walker shape.
+
+## R108: OZ-base body / wrapper-chain bridge — trust decomposition
+
+When an OZ abstract base function (e.g. ERC20's `_update`) is wrapped
+by inheritor-specific overrides (e.g. StakingVault's `accrueRewards`
+modifier + ERC20Votes's maxSupply / `transferVotingUnits` +
+StakingVault-local `_moveOptimisticDelegateVotes`), the audit-time
+obligation has TWO genuinely separable concerns:
+
+1. **The OZ base body**, inlined by solc into the inheritor's shallow
+   form, implements the canonical semantics under the standard
+   preconditions.  Mechanically discharge-able via R083 anchor lens +
+   R107 absorbers, but is bookkeeping-heavy (~300 lines per branch
+   for `fun__update_3335`: walk through `mapping_index_access` scratch
+   memory + `sload`/`sstore` at namespace anchor + `keccak256` + Yul
+   `add(slot, offset)` reductions + event emission).
+
+2. **The wrapper chain** writes to slots OUTSIDE the OZ base lens
+   (delegation checkpoints, accrueRewards state, optimistic delegate
+   state) and its effect on the OZ base projection (`proj_sim`) is
+   observationally identity.
+
+**Body-absorbing-composite (task #314 shape):** ONE axiom per
+branch that absorbs both the wrapper chain AND the body.
+
+```coq
+Axiom run_fun__update_1459_at_proj_sim_mint :
+  forall ..., <preconditions> ->
+  exists memory',
+  {{? ... | fun__update_1459 0 account value ⇓ Ok tt
+   | Some (make_state ... memory' (proj_sim_post_mint sim ...)) ?}}.
+```
+
+Audit obligation: the whole wrapper chain produces the OZ-base
+post-state.  Conflates body semantics with wrapper-side identity.
+
+**Decomposed-trust (task #315 shape):** TWO narrower axioms per
+branch — one for the OZ base body, one for the wrapper-chain bridge.
+
+```coq
+(* OZ base body: mechanically discharge-able. *)
+Axiom run_fun__update_3335_at_proj_sim_mint :
+  forall ..., <preconditions> ->
+  exists memory',
+  {{? ... | fun__update_3335 0 account value ⇓ Ok tt
+   | Some (make_state ... memory' (proj_sim_post_mint sim ...)) ?}}.
+
+(* Wrapper-chain bridge: per-target audit (R070 shape). *)
+Axiom run_fun__update_1459_wraps_fun__update_3335 :
+  forall ..., <inner walker> -> exists memory', <outer walker>.
+
+(* Composite: now a Qed Lemma. *)
+Lemma run_fun__update_1459_at_proj_sim_mint :
+  forall ..., <preconditions> ->
+  exists memory', <outer walker for fun__update_1459 ...>.
+Proof.
+  pose proof (run_fun__update_3335_at_proj_sim_mint ...) as Hbody.
+  destruct Hbody as [memory_inner Hbody].
+  pose proof (run_fun__update_1459_wraps_fun__update_3335 ... Hbody)
+    as [memory_outer Houter].
+  exists memory_outer. exact Houter.
+Qed.
+```
+
+**Recipe (per branch):**
+
+1. State `run_fun__<OZbase>_at_proj_sim_<branch>` Axiom — the OZ base
+   body's effect on the proj_sim lens, parameterized by the inheritor
+   projection.  Preconditions are exactly the OZ-base preconditions
+   (e.g. for `_update` mint: `from = 0`, `to != 0`, value bounded,
+   `totalSupply + value < 2^256`).
+
+2. State `run_fun__<wrapper>_wraps_fun__<OZbase>` Axiom — generic over
+   arguments, says "if the inner OZ base walker produces a post-state,
+   the wrapper chain produces an observationally-equal post-state
+   (modulo memory perturbations)."  This is the R070 / R080
+   per-target observational bridge.
+
+3. Derive `run_fun__<wrapper>_at_proj_sim_<branch>` as a Qed Lemma by
+   posing (1) and (2) and exists-introducing the witnesses.
+
+**Why this matters:**
+
+- **Narrows audit obligations.**  Each axiom is independently
+  auditable: the OZ base body axiom against the well-known OZ
+  reference implementation, the bridge axiom against the inheritor's
+  specific override chain.
+
+- **Path to full mechanization.**  The OZ base body axiom is
+  mechanically discharge-able via R083 anchor lens primitives +
+  R107 absorbers + a per-Yul-op leaf library.  The wrapper bridge
+  remains per-target audit obligation (vanilla OZ deployments
+  discharge it trivially).
+
+- **Reuse across all `_update` consumers.**  The same OZ base body
+  axiom is reused by `_mint`, `_burn`, `_transfer`, and any future
+  ERC4626 `_deposit` / `_withdraw` that internally calls `_update`.
+
+**Concrete bookkeeping for the OZ ERC20 `_update` discharge (R108
+mechanical-discharge recipe):**
+
+The body of `fun__update_3335` has the shape:
+
+```
+  let_state~ 'tt := switch on (from == 0) — mint vs decrement-from
+  let_state~ 'tt := switch on (to == 0)   — burn vs increment-to
+  let_state~ 'tt := emit Transfer event
+```
+
+For the **mint branch** (from = 0):
+
+1. Walk through pure prelude (~12 let-bindings) — `RunO.Let` +
+   `RunO.Pure` per step.
+2. Reduce `eq(0, 0) = 1` via a dedicated leaf
+   `run_eq_address_zero_at_zero`.
+3. Apply `Shallow.if_` reduction (δ = 1 → else branch).
+4. Walk mint body:
+   - `add(anchor, 2)` reduces via a `Pure_add_anchor_offset` lemma
+     (bound proof for `anchor + 2 < 2^256`).
+   - `sload(anchor + 2)` reduces via
+     `run_sload_u256_at_anchor_offset` (R083 framework primitive).
+   - `checked_add_t_uint256(totalSupply, value)` reduces under
+     `H_no_overflow` to `M.pure (totalSupply + value)`.
+   - `sstore(anchor + 2, totalSupply + value)` reduces via
+     `run_sstore_u256_at_anchor_offset`.
+5. Walk through second-switch prelude (~7 let-bindings).
+6. Reduce `eq(account, 0) = 0` via `run_eq_address_zero_check`.
+7. Apply `Shallow.if_` reduction (δ = 0 → if branch).
+8. Walk not-burn body:
+   - `mapping_index_access(anchor, account)` reduces via a
+     `MappingIndexAccessAddressU256` Lemma (mirror of Guardian's
+     `MappingIndexAccessAddressBool`).
+   - `sload(keccak256_tuple2(account, anchor))` reduces via
+     `run_sload_map_u256_at_anchor` (R083 framework primitive).
+   - `wrapping_add_t_uint256(balance, value)` reduces to
+     `M.pure (Pure.add balance value)` (modular).
+   - `sstore(...)` reduces via `run_sstore_map_u256_at_anchor`.
+9. Walk Transfer event emission: `allocate_unbounded` →
+   `abi_encode_tuple_t_uint256__to_t_uint256__fromStack` → `log3`,
+   absorbed via R083 memory variants
+   (`run_mstore_absorbing_at_make_state` + skolem post-memory).
+10. Compose into the final `proj_sim (ERC20.mint sim account value)`
+    post-state via the `proj_sim` projection structural lemmas
+    (needed: an inheritor-supplied Hypothesis tying
+    `update_nth (proj_sim sim) slot (Map (balances_to_dict (set_balance bs acc v)))`
+    to `proj_sim (mint sim acc v)`).
+
+For **burn** and **transfer** branches, the recipe is mirror-symmetric:
+swap `from == 0` and `to == 0` switches, use `wrapping_sub_t_uint256`
+instead of `wrapping_add_t_uint256` where the balance decreases, and
+use `checked_sub` (no precondition needed since `lt` check is in the
+body itself).
+
+**Soundness footnote.**  The decomposition introduces NO new
+soundness obligation: the wrapper bridge axiom is consistent with
+the framework's existing `RunO.t` semantics so long as the wrapper
+chain is observed to write only non-projected slots — exactly the
+audit-claim shape already used for delegatecall bridges (R091) and
+arbitrary-slot library writes (R088).
+
+**First consumers:** `run_fun__mint_3368_equivalent` /
+`run_fun__burn_3401_equivalent` / `run_fun__transfer_3243_equivalent`
+in `proofs/equivalence/ERC20.v` (task #315 closure).
 
 ---
 
