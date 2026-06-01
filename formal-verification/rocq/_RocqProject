@@ -295,3 +295,4 @@ proofs/equivalence/StakingVaultExchange.v
 proofs/equivalence/StakingVaultRewards.v
 proofs/equivalence/StakingVaultDelegation_methodology.v
 proofs/equivalence/StakingVaultAdmin.v
+proofs/equivalence/ERC20.v

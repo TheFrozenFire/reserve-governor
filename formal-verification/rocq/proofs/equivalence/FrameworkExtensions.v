@@ -200,6 +200,108 @@ Module FrameworkExtensions.
       Result.Ok (StorableValue.map_get_u256 map (key, offset))
     | Some state ?}}.
 
+  (** Single-Map sload through a namespace anchor.  OZ ERC20's
+      [_balances : mapping(address => uint256)] lives at offset 0 of
+      the ERC20Storage struct, i.e. at the anchor itself (the struct's
+      first field shares the anchor slot).  A balance lookup
+      [_balances[account]] resolves to [keccak256_tuple2(account,
+      anchor + 0)], which equals [keccak256_tuple2(account, anchor)]
+      under [Pure.add anchor 0 = anchor].  Mirrors upstream's
+      [Storage.run_sload_map_u256] but takes [anchor : U256.t] in
+      place of [Z.of_nat index]. *)
+  Axiom run_sload_map_u256_at_anchor :
+    forall (codes : Codes.t) (environment : Environment.t)
+           (state : State.t)
+           (values : list StorableValue.t)
+           (index : nat) (anchor : U256.t)
+           (map : Dict.t U256.t U256.t)
+           (key : U256.t),
+    IsNamespaceAnchor values index anchor ->
+    List.nth_error values index = Some (StorableValue.Map map) ->
+    {{? codes, environment, Some state |
+      Stdlib.sload (keccak256_tuple2 key anchor) ⇓
+      Result.Ok (StorableValue.map_get_u256 map key)
+    | Some state ?}}.
+
+  (** Single-Map sstore through a namespace anchor.  Companion to
+      [run_sload_map_u256_at_anchor]. *)
+  Axiom run_sstore_map_u256_at_anchor :
+    forall (codes : Codes.t) (environment : Environment.t)
+           (state : State.t)
+           (values : list StorableValue.t)
+           (index : nat) (anchor : U256.t)
+           (key : U256.t) (value : U256.t),
+    IsNamespaceAnchor values index anchor ->
+    State.get_current_storage environment state =
+      Some (Storage.of_storable_values values) ->
+    match List.nth_error values index with
+    | Some (StorableValue.Map map) =>
+      let map' := Dict.declare_or_assign map key value in
+      match List.update_nth values index (StorableValue.Map map') with
+      | Some values' =>
+        let state' :=
+          State.with_current_storage environment state
+            (Storage.of_storable_values values') in
+        {{? codes, environment, Some state |
+          Stdlib.sstore (keccak256_tuple2 key anchor) value ⇓
+          Result.Ok tt
+        | Some state' ?}}
+      | None => True
+      end
+    | _ => True
+    end.
+
+  (** uint256 sload at a fixed offset within a namespace-anchored
+      struct.  OZ ERC20's [_totalSupply] is the third field of the
+      ERC20Storage struct ([_balances] map at offset 0, [_allowances]
+      map at offset 1, [_totalSupply] uint256 at offset 2), accessed
+      via [sload(add(anchor, 2))].
+
+      We model this with a Section-parameterized projection that
+      stores [_totalSupply] at a designated [supply_index] in the
+      abstract storage list, distinct from the [Map] cells indexed by
+      the anchor.  The [IsAnchorOffsetSlot values supply_index anchor
+      offset] binding ties the offset within the struct to the
+      separate list index — discharged per-contract. *)
+  Parameter IsAnchorOffsetSlot :
+    list StorableValue.t -> nat -> U256.t -> U256.t -> Prop.
+
+  Axiom run_sload_u256_at_anchor_offset :
+    forall (codes : Codes.t) (environment : Environment.t)
+           (state : State.t)
+           (values : list StorableValue.t)
+           (supply_index : nat) (anchor : U256.t) (offset : U256.t)
+           (value : U256.t),
+    IsAnchorOffsetSlot values supply_index anchor offset ->
+    State.get_current_storage environment state =
+      Some (Storage.of_storable_values values) ->
+    List.nth_error values supply_index = Some (StorableValue.U256 value) ->
+    {{? codes, environment, Some state |
+      Stdlib.sload (anchor + offset) ⇓
+      Result.Ok value
+    | Some state ?}}.
+
+  Axiom run_sstore_u256_at_anchor_offset :
+    forall (codes : Codes.t) (environment : Environment.t)
+           (state : State.t)
+           (values : list StorableValue.t)
+           (supply_index : nat) (anchor : U256.t) (offset : U256.t)
+           (value : U256.t),
+    IsAnchorOffsetSlot values supply_index anchor offset ->
+    State.get_current_storage environment state =
+      Some (Storage.of_storable_values values) ->
+    match List.update_nth values supply_index (StorableValue.U256 value) with
+    | Some values' =>
+      let state' :=
+        State.with_current_storage environment state
+          (Storage.of_storable_values values') in
+      {{? codes, environment, Some state |
+        Stdlib.sstore (anchor + offset) value ⇓
+        Result.Ok tt
+      | Some state' ?}}
+    | None => True
+    end.
+
   (** ====================================================================
       Gap 2 -- Memory absorption for event-emission tails
       ====================================================================
