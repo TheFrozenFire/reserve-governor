@@ -1,43 +1,106 @@
 # Theorem: ProposalLibEquivalence.run_fun__saveProposal_580_equivalent
-# Source:  ProposalLib.v:1991
+# Source:  ProposalLib.v:2946
 # Module:  ProposalLibEquivalence
 #
 Axioms:
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-ProposalLibEquivalence.run_fun__saveProposal_580_at_storage_base :
+FrameworkExtensions.FrameworkExtensions.sstore_post_storage :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
+ProposalLibEquivalence.sstore_chain_after_saveProposal_eq_proj :
+  forall (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (proposalCore_slot proposal_mpos : RocqOfSolidity.U256.t)
+    (voteDelay : BinNums.Z) (voteDuration : RocqOfSolidity.U256.t)
+    (now_ : BinNums.Z) (p : ProposalLib.ProposalLib.ProposalData.t),
+  ProposalLibEquivalence.sstore_chain_after_saveProposal_concrete env
+    state_base memory storage_base proposalCore_slot
+    (ProposalLibEquivalence.read_memoryt_address_witness env state_base
+       memory storage_base
+       (RocqOfSolidity.Stdlib.Pure.add proposal_mpos
+          (BinNums.Zpos
+             (BinNums.xO
+                (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))))
+    (BinInt.Z.add now_ voteDelay) voteDuration =
+  ProposalLibEquivalence.proj_post_saveProposal_580 storage_base p voteDelay
+    voteDuration now_
+FrameworkExtensions.FrameworkExtensions.sload_witness :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
+ProposalLibEquivalence.saveProposal_tail_post_memory :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedMemory.t
+FrameworkExtensions.FrameworkExtensions.run_sstore_absorbing_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (slot value : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok tt)
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+    (RocqOfSolidity.Stdlib.sstore slot value)
+    (Some
+       (RocqOfSolidity.make_state environment state_base memory
+          (FrameworkExtensions.FrameworkExtensions.sstore_post_storage
+             environment state_base memory storage slot value)))
+FrameworkExtensions.FrameworkExtensions.run_sload_absorbing_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (slot : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok
+       (FrameworkExtensions.FrameworkExtensions.sload_witness environment
+          state_base memory storage slot))
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+    (RocqOfSolidity.Stdlib.sload slot)
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+ProposalLibEquivalence.run_saveProposal_tail_absorbing :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
-    (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (memory : RocqOfSolidity.SimulatedMemory.t)
-    (proposal_mpos proposalCore_slot voteDelay
-     voteDuration : RocqOfSolidity.U256.t)
-    (p : ProposalLib.ProposalLib.ProposalData.t),
-  BinInt.Z.le BinNums.Z0
-    (BinInt.Z.add ProposalLibEquivalence.now_timestamp voteDelay) /\
-  BinInt.Z.lt (BinInt.Z.add ProposalLibEquivalence.now_timestamp voteDelay)
-    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
-       (BinNums.Zpos
-          (BinNums.xO
-             (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xI BinNums.xH))))))) ->
-  BinInt.Z.le BinNums.Z0 voteDuration /\
-  BinInt.Z.lt voteDuration
-    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
-       (BinNums.Zpos
-          (BinNums.xO
-             (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))) ->
-  (exists
-     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
-     memory = (w0 :: w1 :: rest)%list) ->
-  exists memory' : RocqOfSolidity.SimulatedMemory.t,
-    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
-      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-      (ProposalLib_shallow.ProposalLib_680.ProposalLib_680_deployed.fun__saveProposal_580
-         proposal_mpos proposalCore_slot voteDelay voteDuration)
-      (Some
-         (RocqOfSolidity.make_state env state_base memory'
-            (ProposalLibEquivalence.proj_post_saveProposal_580 storage_base p
-               voteDelay voteDuration ProposalLibEquivalence.now_timestamp)))
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (proposal_mpos proposalCore_slot : RocqOfSolidity.U256.t),
+  let memory' :=
+    ProposalLibEquivalence.saveProposal_tail_post_memory env state_base
+      memory storage proposal_mpos proposalCore_slot in
+  RocqOfSolidity.RunO.t codes env
+    (RocqOfSolidity.Result.Ok (RocqOfSolidity.BlockUnit.Tt, tt))
+    (Some (RocqOfSolidity.make_state env state_base memory storage))
+    (ProposalLibEquivalence.saveProposal_tail_block proposal_mpos
+       proposalCore_slot)
+    (Some (RocqOfSolidity.make_state env state_base memory' storage))
+FrameworkExtensions.FrameworkExtensions.run_mload_absorbing_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (offset : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok
+       (FrameworkExtensions.FrameworkExtensions.mload_witness environment
+          state_base memory storage offset))
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+    (RocqOfSolidity.Stdlib.mload offset)
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
 ProposalLibEquivalence.proj_post_saveProposal_580 :
   RocqOfSolidity.SimulatedStorage.t ->
   ProposalLib.ProposalLib.ProposalData.t ->
@@ -48,7 +111,44 @@ RocqOfSolidity.Memory.of_u256_list :
   list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
 RocqOfSolidity.Storage.of_storable_values :
   list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+ProposalLibEquivalence.now_timestamp_bound :
+  BinInt.Z.le BinNums.Z0 ProposalLibEquivalence.now_timestamp /\
+  BinInt.Z.lt ProposalLibEquivalence.now_timestamp
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))))))
 ProposalLibEquivalence.now_timestamp : RocqOfSolidity.U256.t
+FrameworkExtensions.FrameworkExtensions.mload_witness_bound :
+  forall (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (offset : RocqOfSolidity.U256.t),
+  BinInt.Z.le BinNums.Z0
+    (FrameworkExtensions.FrameworkExtensions.mload_witness env state_base
+       memory storage offset) /\
+  BinInt.Z.lt
+    (FrameworkExtensions.FrameworkExtensions.mload_witness env state_base
+       memory storage offset)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))))))
+FrameworkExtensions.FrameworkExtensions.mload_witness :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
 PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
 PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
@@ -58,6 +158,17 @@ PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.int : Set
 PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
 PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+ProposalLibEquivalence.RunO_let_compose :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t) (A B : Set)
+    (e1 : RocqOfSolidity.LowM.t A) (k : A -> RocqOfSolidity.LowM.t B)
+    (state state_inter state' : option RocqOfSolidity.State.t) 
+    (v : A) (output : B),
+  state_inter <> None ->
+  RocqOfSolidity.RunO.t codes environment v state e1 state_inter ->
+  RocqOfSolidity.RunO.t codes environment output state_inter (k v) state' ->
+  RocqOfSolidity.RunO.t codes environment output state
+    (RocqOfSolidity.LowM.let_ e1 k) state'
 ProposalLib.ProposalLib.Desc : Set
 Theory:
 Set is impredicative

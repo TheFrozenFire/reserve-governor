@@ -1,10 +1,10 @@
 # Theorem: ProposalLibEquivalence.run_fun__validateProposal_507_equivalent
-# Source:  ProposalLib.v:1948
+# Source:  ProposalLib.v:2903
 # Module:  ProposalLibEquivalence
 #
 Axioms:
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-ProposalLibEquivalence.run_fun__validateProposal_507_at_storage_base :
+ProposalLibEquivalence.run_fun__validateProposal_507_body_absorbing :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)

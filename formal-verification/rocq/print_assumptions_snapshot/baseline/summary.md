@@ -18,7 +18,7 @@ Counts:
 | Guardian.v | `run_cancel_equivalent_make_state` | GuardianEquivalence | 17 | 5 | OK |
 | ProposalLib.v | `run_fun__governor_679_equivalent` | ProposalLibEquivalence | 10 | 0 | OK |
 | ProposalLib.v | `run_fun__validateProposal_507_equivalent` | ProposalLibEquivalence | 18 | 6 | OK |
-| ProposalLib.v | `run_fun__saveProposal_580_equivalent` | ProposalLibEquivalence | 16 | 4 | OK |
+| ProposalLib.v | `run_fun__saveProposal_580_equivalent` | ProposalLibEquivalence | 27 | 15 | OK |
 | ProposalLib.v | `run_fun_proposeOptimistic_179_equivalent` | ProposalLibEquivalence | 20 | 8 | OK |
 | ProposalLib.v | `run_fun_proposePessimistic_288_equivalent` | ProposalLibEquivalence | 18 | 6 | OK |
 | ProposalLib.v | `run_fun_transitionToPessimistic_400_equivalent` | ProposalLibEquivalence | 16 | 4 | OK |

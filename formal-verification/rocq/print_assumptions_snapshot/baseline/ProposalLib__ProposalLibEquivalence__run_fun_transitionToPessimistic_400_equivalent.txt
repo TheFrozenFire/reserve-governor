@@ -1,10 +1,10 @@
 # Theorem: ProposalLibEquivalence.run_fun_transitionToPessimistic_400_equivalent
-# Source:  ProposalLib.v:2156
+# Source:  ProposalLib.v:3115
 # Module:  ProposalLibEquivalence
 #
 Axioms:
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-ProposalLibEquivalence.run_fun_transitionToPessimistic_400_at_storage_base :
+ProposalLibEquivalence.run_fun_transitionToPessimistic_400_body_absorbing :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
