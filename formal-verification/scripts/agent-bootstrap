@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# agent-bootstrap — prepare an agent worktree for proof work.
+#
+# Agents spawning in isolated worktrees consistently waste time fixing:
+#   1. Missing gitignored generated/*.v files (Yul shallow embeddings)
+#   2. Missing print-assumptions snapshot baseline directory
+#   3. Inactive opam switch (we use rocq820, not the default rocq)
+#   4. Stale branch position vs feature/formal-verification tip
+#
+# This script handles all four in one pass. Agents should run it as
+# their first action and treat its output as authoritative.
+#
+# Usage:
+#   bash formal-verification/scripts/agent-bootstrap [--reset-to <ref>]
+#
+# Options:
+#   --reset-to <ref>    git reset --hard to <ref> before copying files.
+#                       Default: skip reset (use whatever HEAD the
+#                       worktree spawned with).
+#   --skip-build        Skip the post-bootstrap sanity build.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_TREE="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The "canonical" source of gitignored artifacts. This is the user's
+# primary checkout, separate from any agent worktree.
+CANONICAL_TREE="${CANONICAL_TREE:-/Users/jmart/git/reserve/formal-verification/governor}"
+
+RESET_TO=""
+SKIP_BUILD=0
+for arg in "$@"; do
+  case "$arg" in
+    --reset-to)        shift; RESET_TO="$1"; shift ;;
+    --reset-to=*)      RESET_TO="${arg#--reset-to=}" ;;
+    --skip-build)      SKIP_BUILD=1 ;;
+    *) ;;
+  esac
+done
+
+echo "==> agent-bootstrap: preparing $REPO_TREE"
+
+# 1. Optional branch reset.
+if [[ -n "$RESET_TO" ]]; then
+  echo "==> resetting to $RESET_TO"
+  (cd "$REPO_TREE" && git fetch thefrozenfire feature/formal-verification 2>&1 | tail -3)
+  (cd "$REPO_TREE" && git reset --hard "$RESET_TO")
+fi
+
+# 2. Copy gitignored generated files.
+GEN_DST="$REPO_TREE/formal-verification/rocq/generated"
+GEN_SRC="$CANONICAL_TREE/formal-verification/rocq/generated"
+if [[ -d "$GEN_SRC" ]]; then
+  mkdir -p "$GEN_DST"
+  # Copy only .v files, skip git-tracked .gitignore and README.
+  cp "$GEN_SRC"/*.v "$GEN_DST/" 2>/dev/null || true
+  gen_count=$(ls "$GEN_DST"/*.v 2>/dev/null | wc -l | tr -d ' ')
+  echo "==> populated $gen_count generated/*.v files from canonical tree"
+else
+  echo "WARN: canonical tree $GEN_SRC not found — generated/*.v missing" >&2
+fi
+
+# 3. Copy print-assumptions snapshot baseline if missing.
+SNAP_DST="$REPO_TREE/formal-verification/rocq/print_assumptions_snapshot/baseline"
+SNAP_SRC="$CANONICAL_TREE/formal-verification/rocq/print_assumptions_snapshot/baseline"
+if [[ -d "$SNAP_SRC" && ! -f "$SNAP_DST/summary.csv" ]]; then
+  mkdir -p "$SNAP_DST"
+  cp -R "$SNAP_SRC"/* "$SNAP_DST/" 2>/dev/null || true
+  echo "==> populated snapshot baseline from canonical tree"
+fi
+
+# 4. Validate opam switch.
+if [[ -z "${OPAMSWITCH:-}" ]] || [[ "${OPAMSWITCH:-}" != "rocq820" ]]; then
+  echo "==> opam switch not activated. Run: eval \"\$(opam env --switch=rocq820 --set-switch)\""
+  echo "    (this script cannot persist the env across processes; the caller must source it)"
+fi
+
+# 5. Validate rocq-of-solidity dev clone has compiled .vo files.
+ROCQ_TREE="${ROCQ_TREE:-/Users/jmart/git/reserve/formal-verification/rocq-of-solidity}"
+if [[ ! -f "$ROCQ_TREE/rocq/RocqOfSolidity/RocqOfSolidity.vo" ]]; then
+  echo "WARN: $ROCQ_TREE/rocq/RocqOfSolidity/RocqOfSolidity.vo missing" >&2
+  echo "      The rocq-of-solidity dev clone needs its .vo files built." >&2
+  echo "      Bootstrap cannot do this automatically — ask the user." >&2
+fi
+
+# 6. Sanity build (touched-file only, fast).
+if [[ $SKIP_BUILD -eq 0 ]]; then
+  echo "==> sanity build (proofs/equivalence/Common.v as a smoke check)"
+  (cd "$REPO_TREE" \
+   && eval "$(opam env --switch=rocq820 --set-switch)" \
+   && OPAM_SWITCH=rocq820 bash formal-verification/scripts/rocq-build proofs/equivalence/Common.v 2>&1 \
+     | tail -3)
+fi
+
+echo "==> agent-bootstrap: done"
+echo "    Next step: source opam env in your shell:"
+echo "    eval \"\$(opam env --switch=rocq820 --set-switch)\""
