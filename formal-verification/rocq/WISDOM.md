@@ -75,6 +75,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R072: Abstract-base-class equivalence — slot-agnostic helpers + lens
 - R075: OZ TimelockController equivalence methodology — timestamp-as-state-encoding + AccessControl interaction
 - R076: ERC4626 equivalence — share-asset arithmetic + inflation defense
+- R078: ERC20Votes equivalence — multi-base composition (ERC20 + Votes)
 
 ### The R050 staticcall recipe
 - R063: `staticcall` as composite of existing primitives
@@ -728,6 +729,9 @@ per mutator).
   template with asset-balance lens (see R076)
 - `proofs/equivalence/TimelockControllerBase.v` — 52 sim-level
   lemmas + Section template + walker documentation (R075)
+- `proofs/equivalence/ERC20Votes.v` — 24 sim-level lemmas + composed
+  Section template + walker documentation (multi-base composition,
+  see R078 below)
 
 ## R076: ERC4626 equivalence (share-asset arithmetic + inflation defense)
 
@@ -935,6 +939,154 @@ superset of the existing one in terms of public-method coverage.
 `proofs/equivalence/TimelockControllerBase.v` closes under the global
 context: no new axioms beyond what the foundation tier already
 imports.
+
+---
+
+## R078: ERC20Votes equivalence (multi-base composition)
+
+ERC20Votes is the first OZ abstract base in this corpus to inherit
+from TWO other abstract bases simultaneously: `ERC20` (token ledger)
+and `Votes` (delegation + checkpoint history).  Its critical
+override is `_update(from, to, value)`:
+
+```solidity
+function _update(address from, address to, uint256 value) internal virtual override {
+    super._update(from, to, value);                  // ERC20 ledger half
+    if (from == address(0)) {
+        uint256 supply = totalSupply();
+        if (supply > _maxSupply()) revert ERC20ExceededSafeSupply(...);
+    }
+    _transferVotingUnits(from, to, value);           // Votes-side half
+}
+```
+
+Every motion of ERC20 balance MUST mirror in the Votes checkpoint
+history — the override is what enforces the "_getVotingUnits = balanceOf"
+coupling at runtime.  This is the multi-base composition R075 documents.
+
+**Dual-storage update pattern:**
+
+The composed `_update` performs TWO writes against two disjoint
+storage regions in a single Yul fragment:
+
+- ERC20 side: `_balances[from] -= value`, `_balances[to] += value`,
+  `_totalSupply += value` (mint) / `_totalSupply -= value` (burn).
+- Votes side: push `+value` or `-value` onto `_totalCheckpoints`
+  (mint/burn only), and call `_moveDelegateVotes(delegates[from],
+  delegates[to], value)` to update the per-delegate
+  `_delegateCheckpoints` history.
+
+The two sides operate on disjoint slot indices and don't read each
+other's outputs (Votes' `_transferVotingUnits` reads its own
+`voting_units` snapshot, not the just-updated ERC20 `balanceOf`).
+So at the walker level the two halves compose as sequential Yul
+fragments — no aliasing concern.
+
+**Mock composition (`mocks/ERC20Votes.v`):**
+
+`State.t` is a record combining `ERC20.State` and `Votes.State.t`:
+
+```coq
+Module State.
+  Record t : Set := {
+    erc20 : ERC20.State;       (* balances/totalSupply/allowances *)
+    votes : Votes.State.t;     (* delegatee/delegate_ckpt/total_ckpt/voting_units/clock *)
+  }.
+End State.
+```
+
+The composed mutator `update s from to value` calls both halves
+in one step.  The coupling invariant `_getVotingUnits = balanceOf`
+is encoded in `Valid.t`:
+
+```coq
+voting_units_eq_balance :
+  forall a, s.(State.votes).(Votes.State.voting_units) a
+          = ERC20.balanceOf s.(State.erc20) a;
+```
+
+Three Votes-side `transferVotingUnits_total_ckpt_*` lemmas
+(`_mint`, `_burn`, `_pure`) are proven inline in the mock — the
+proofs/equivalence/Votes.v versions can't be re-used because they
+live in the proof file, and mocks must not depend on proofs.
+
+**Section composition (single combined Section, NOT two stacked):**
+
+`Section ERC20VotesEquivalenceTemplate` declares Variables for the
+union of ALL slot indices:
+
+```coq
+Variable slot_balances    : nat.    (* ERC20 side *)
+Variable slot_allowances  : nat.
+Variable slot_totalSupply : nat.
+Variable slot_delegatee     : nat.  (* Votes side *)
+Variable slot_delegate_ckpt : nat.
+Variable slot_total_ckpt    : nat.
+
+Variable project_erc20votes : SimulatedStorage.t -> State.t.
+```
+
+And Hypotheses for BOTH sides' lens correctness — `lens_balances_correct`,
+`lens_totalSupply_correct`, `lens_delegatee_correct`,
+`lens_delegate_ckpt_correct`, `lens_total_ckpt_correct`, plus the
+critical `lens_voting_units_eq_balance` coupling.
+
+**Why one Section, not two:** an alternative (REJECTED) is to stack
+two inherited sections — one inheriting `VotesEquivalenceTemplate`
+and one inheriting (a hypothetical) `ERC20EquivalenceTemplate`.
+That forces the consumer to reason about TWO independent state
+projections that must satisfy a cross-state coupling invariant
+*manually*.  Combining them into a single Section lets the lens
+carry the coupling as a Section-level Hypothesis (discharged once
+at instantiation time, by `reflexivity` on the inheritor's `proj_sim`
+constructor).
+
+**Walker arms — two halves, disjoint slots:**
+
+The composed `_update` walker reads exactly like two stacked Yul
+fragments operating on disjoint slot indices.  Walker tactics that
+already work for single-base equivalence (R040 for sstore-wrappers,
+R047 for case-splits, R033 for if-then-else PureEq) apply to each
+half independently.  Trust budget per call site is the SAME as
+single-base (2-4 composite axioms) — multi-base composition does
+NOT inflate the axiom count.
+
+**Composition with existing methodology:**
+
+- R072 (abstract-base equivalence): ERC20Votes IS an instance of
+  R072, but with two parents.  The "slot-agnostic Section + lens"
+  shape still applies.
+- R055/R059 (set / role membership): not applicable — ERC20Votes
+  uses Maps + Trace208, not EnumerableSet.
+- R063 (staticcall): applies at Governor side when the Governor
+  calls a token's `getPastVotes` externally.  Composes with the
+  per-mutator ERC20Votes lemmas as a sub-Hoare-triple.
+
+**Trust budget:** zero new axioms.  All 24 sim-level lemmas close
+as `Qed` with `Set is impredicative` as the sole assumption.
+
+**Handoff to StakingVault (#256):**
+
+StakingVault inherits ERC20Votes.  To instantiate the methodology:
+
+1. In StakingVault's equivalence file, `Require Import` ERC20Votes.
+2. Build `proj_sim_erc20votes : SimulatedStorage.t -> ERC20Votes.State.t`
+   that projects the StakingVault storage into the composed
+   ERC20Votes state.  The StakingVault state layout is `_balances`
+   at slot 0, `_allowances` at slot 1, `_totalSupply` at slot 2,
+   `_delegatee` at slot 7 (after StakingVault's own dual-delegation
+   slots), `_delegateCheckpoints` at slot 8, `_totalCheckpoints` at
+   slot 9 (subject to revision after R046 lands).
+3. Open `Section ERC20VotesEquivalenceTemplate` and supply slot
+   indices + lens.
+4. Discharge each `lens_*_correct` Hypothesis by `reflexivity`
+   on the projection lambda.
+5. The composed walker lemmas (`mint_increases_totalSupply`,
+   `delegate_sets_delegatee`, etc.) are now in scope.
+6. For each StakingVault method that overrides ERC20Votes (e.g.
+   `_update` for slashing accounting), compose the standard walker
+   recipe (R040 + R047 + R033) against the StakingVault's own Yul
+   body, citing this file's lemmas as the post-state predicates.
 
 ---
 

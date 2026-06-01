@@ -59,6 +59,7 @@ mocks/EnumerableSet.v
 mocks/Votes.v
 mocks/ERC4626.v
 mocks/TimelockController.v
+mocks/ERC20Votes.v
 
 # --- ProposerThrottle ---
 simulations/ProposerThrottle.v
@@ -280,6 +281,7 @@ proofs/equivalence/EnumerableSet.v
 proofs/equivalence/Checkpoints.v
 proofs/equivalence/Votes.v
 proofs/equivalence/ERC4626.v
+proofs/equivalence/ERC20Votes.v
 proofs/equivalence/ECDSA.v
 proofs/equivalence/ProposalLib.v
 proofs/equivalence/SelectorRegistry.v
