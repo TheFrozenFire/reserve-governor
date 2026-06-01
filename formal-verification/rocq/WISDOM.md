@@ -72,6 +72,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R054: `observationally_eq_storage` per-slot pointwise equality
 - R059: `set_eq_at_role` membership equivalence
 - R051: Composite-axiom shape for milestone Qeds
+- R052: Honest `mapping(K => T[])` primitive (`StorableValue.MapToArray`)
 - R072: Abstract-base-class equivalence — slot-agnostic helpers + lens
 - R075: OZ TimelockController equivalence methodology — timestamp-as-state-encoding + AccessControl interaction
 - R076: ERC4626 equivalence — share-asset arithmetic + inflation defense
@@ -669,6 +670,78 @@ Theorem run_<fn>_equivalent_make_state :
 
 The composite axiom is the audit-time obligation. Trust budget per
 mutator: 2-4 axioms.
+
+## R052: Honest `mapping(K => T[])` primitive (`StorableValue.MapToArray`)
+
+OZ's [EnumerableSet] and any other Solidity `mapping(K => T[])`
+consumer lay out per-key dynamic-array storage in a shape distinct
+from the framework's nested-keccak Map/Map2/MapStruct primitives:
+
+```text
+slot[keccak(key, baseSlot)]              = array length
+slot[keccak(keccak(key, baseSlot)) + i]  = values[i]
+```
+
+Pre-R052 the framework had no native carrier for this layout, and
+consumers wrote per-contract trust axioms equating array-shape
+expressions with framework-shape nested keccaks ("Option 1" — false
+in any honest model, accepted as parametric trust). R052 landed the
+honest framework primitive (Option 2) and the single-input keccak
+helper (Option 3, already done):
+
+**Option 3 (upstream, landed earlier):** `keccak256_single` /
+`run_keccak256_single` — the proof-side counterpart to OZ's
+`mstore(0, anchor); keccak256(0, 0x20)` data-area derivation.
+
+**Option 2 (upstream, R052 main payload):** a new constructor on
+`StorableValue.t`:
+
+```coq
+| MapToArray (value : Dict.t U256.t (list U256.t))
+```
+
+with four `Admitted` framework lemmas mirroring the `Map` / `Map2` /
+`MapStruct` axiom family:
+
+- `Storage.run_sload_maptoarray_length` — length read at
+  `keccak(key, index)`
+- `Storage.run_sload_maptoarray_elem` — body read at
+  `keccak(keccak(key, index)) + i`
+- `Storage.run_sstore_maptoarray_length` — length write (resize,
+  zero-fill on grow / truncate on shrink)
+- `Storage.run_sstore_maptoarray_elem` — body element write at
+  `keccak(keccak(key, index)) + i`
+
+plus four `apply_run_*` Ltacs and an `IsStorable.IMapToArray`
+typeclass instance.
+
+**Trust:** the four lemmas are `Admitted` in the framework — exactly
+the same audit status as the existing `Map` / `Map2` / `MapStruct`
+primitives. The trust transfers ONCE to the framework rather than
+being re-asserted per-consumer.
+
+**Governor-side status (Guardian.v):** the upstream primitive is in
+place and verified to compose (smoke test
+`MapToArrayLengthSmokeTest.run_length_smoke` in
+`proofs/equivalence/Guardian.v`). The pre-existing four R052 Option
+1 axioms (`run_sload_role_values_length_at_proj_sim`,
+`run_sstore_role_values_length_at_proj_sim`,
+`run_sstore_role_values_body_at_proj_sim`,
+`run_sload_role_values_length_at_proj_sim_post`,
+`run_sload_role_values_body_at_proj_sim`) remain in place — their
+elimination requires a structural refactor of `proj_sim` to put
+`MapToArray` at slot index 1 (the keccak shape that matches OZ's
+`keccak(role, 1)` length anchor). That refactor touches ~330
+references across Guardian.v's bridge lemmas and is scoped as a
+follow-on task; the upstream landing unblocks it.
+
+**Cross-references:**
+
+- Constructor / lemmas: `rocq-of-solidity/rocq/RocqOfSolidity/proofs/RocqOfSolidity.v`
+- Smoke test: `Guardian.v::MapToArrayLengthSmokeTest`
+- Remaining Option 1 axioms: `Guardian.v::run_sload_role_values_*` /
+  `run_sstore_role_values_*`
+- Audit trail: `Audit.v` Caveat-5 (Resolved upstream blockers list)
 
 ## R072: Abstract-base-class equivalence — slot-agnostic helpers
 

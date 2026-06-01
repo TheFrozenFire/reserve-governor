@@ -1177,8 +1177,76 @@ Module GuardianEquivalence.
 
   End ArrayDataslotBytes32.
 
-  (** ===== R051.c Phase 3 — Per-contract trust axioms for the
-      `_values` array slot expressions =====
+  (** ----- MapToArray smoke test (R052 Option 2 uplink) -----
+
+      Validates that the upstream
+      [Storage.run_sload_maptoarray_length] /
+      [Storage.run_sload_maptoarray_elem] primitives compose cleanly
+      with this file's [make_state] / [proj_sim] machinery. The
+      auxiliary projection [proj_maptoarray] places the MapToArray
+      AT SLOT 1 (matching the OZ-actual [keccak(role, 1)] anchor for
+      the EnumerableSet [_values] array). With slot 1 in this shape,
+      the OZ-actual reads close honestly via the upstream lemmas --
+      no per-contract trust axiom for the array slot expression.
+
+      Each test below is a single-step Hoare triple; the heavy lifting
+      lives in the Admitted upstream lemma. The smoke test ensures the
+      Ltac dispatcher resolves, the slot-index threading
+      ([Z.of_nat 1] vs [1]) lines up, and the post-state matches the
+      [make_state] shape -- so a follow-on refactor that moves
+      [proj_sim]'s slot 1 to MapToArray has a known-good landing
+      point. *)
+  Module MapToArrayLengthSmokeTest.
+
+    (** Auxiliary 4-slot projection with [MapToArray] at index 1.
+        Slot 0 stays at Map2 (members), slots 2 and 3 are unused
+        placeholders for the smoke test. *)
+    Definition proj_maptoarray
+        (member_map : Dict.t (U256.t * U256.t) U256.t)
+        (arr_map : Dict.t U256.t (list U256.t)) :
+        SimulatedStorage.t :=
+      [ StorableValue.Map2 member_map;
+        StorableValue.MapToArray arr_map;
+        StorableValue.U256 0;
+        StorableValue.U256 0 ].
+
+    (** Length read at the OZ-actual array anchor. *)
+    Lemma run_length_smoke
+        codes env state_base memory
+        (member_map : Dict.t (U256.t * U256.t) U256.t)
+        (arr_map : Dict.t U256.t (list U256.t))
+        (role : U256.t) :
+      let proj := proj_maptoarray member_map arr_map in
+      {{? codes, env, Some (make_state env state_base memory proj) |
+        Stdlib.sload (keccak256_tuple2 role 1) ⇓
+        Result.Ok (StorableValue.array_length_u256 arr_map role)
+      | Some (make_state env state_base memory proj) ?}}.
+    Proof.
+      intros proj.
+      apply (Storage.run_sload_maptoarray_length proj 1%nat arr_map role).
+      reflexivity.
+    Qed.
+
+    (** Body element read at the OZ-actual array body slot. *)
+    Lemma run_elem_smoke
+        codes env state_base memory
+        (member_map : Dict.t (U256.t * U256.t) U256.t)
+        (arr_map : Dict.t U256.t (list U256.t))
+        (role : U256.t) (i : nat) :
+      let proj := proj_maptoarray member_map arr_map in
+      {{? codes, env, Some (make_state env state_base memory proj) |
+        Stdlib.sload (keccak256_single (keccak256_tuple2 role 1) + Z.of_nat i) ⇓
+        Result.Ok (StorableValue.array_get_u256 arr_map role i)
+      | Some (make_state env state_base memory proj) ?}}.
+    Proof.
+      intros proj.
+      apply (Storage.run_sload_maptoarray_elem proj 1%nat arr_map role i).
+      reflexivity.
+    Qed.
+
+  End MapToArrayLengthSmokeTest.
+
+  (** ===== R051.c Phase 3 — `_values` array slot expressions =====
 
       Background. The framework's Map / Map2 / MapStruct axioms expose
       sload / sstore at NESTED-KECCAK slot shapes
@@ -1200,24 +1268,62 @@ Module GuardianEquivalence.
       the framework Map2 axiom uses
       [keccak256_tuple2 idx (keccak256_tuple2 role 3)] but OZ uses
       [keccak256_single (keccak256_tuple2 role 1) + idx]. The two
-      shapes are distinct symbolic terms.
+      shapes are distinct symbolic terms under the current 4-slot
+      projection.
 
-      The axioms below close the gap the same way the slot-1
-      positions modeling does (R049 docstring): we accept the
-      array-shape slot expression as the trusted point at which the
-      sload / sstore is dispatched against [proj_sim]'s slot 2 / slot
-      3. R052 Option 1 (per-shape opaque-rewriting axioms) — accepted
-      here because R052's Option 2 (a [StorableValue.Array]
-      constructor) is the long-term clean upstream extension but
-      not yet built.
+      ----- R052 Option 2 (MapToArray) status: LANDED UPSTREAM -----
+
+      The honest framework primitive is now available:
+
+        StorableValue.MapToArray : Dict.t U256.t (list U256.t) -> StorableValue.t
+
+      together with four sload/sstore lemmas
+      ([Storage.run_sload_maptoarray_length],
+       [Storage.run_sload_maptoarray_elem],
+       [Storage.run_sstore_maptoarray_length],
+       [Storage.run_sstore_maptoarray_elem]) and matching
+      [apply_run_*] Ltacs in rocq-of-solidity's
+      [proofs/RocqOfSolidity.v]. The lemmas match the EXACT
+      slot expressions OZ emits for [mapping(K => T[])]:
+
+        sload (keccak(key, index))               -> length
+        sload (keccak(keccak(key, index)) + i)   -> values[i]
+        sstore (keccak(key, index)) new_len      -> resize
+        sstore (keccak(keccak(key, index)) + i)  -> assign
+
+      To USE these primitives in place of the four Option 1 axioms
+      below, the [proj_sim] projection needs slot 1 to hold a
+      [MapToArray] (so the [keccak(role, 1)] slot expression maps to
+      the array's per-role contents). That refactor is structural --
+      it touches the ~330 references to [length_map_in] /
+      [body_map_in] / [role_values_length_map] /
+      [role_values_body_map] across this file -- and is scoped as a
+      separate task. The smoke test
+      [MapToArrayLengthSmokeTest.run_length_smoke] below proves that
+      the upstream primitive composes cleanly with the existing
+      [make_state] / projection machinery, so the refactor's
+      mechanical surface is the only blocker.
+
+      ----- Status of the four axioms below -----
+
+      The four axioms below remain in place AS WRITTEN. They are
+      parametric-trust statements over the CURRENT 4-slot projection
+      (slot 2 = Map length, slot 3 = Map2 body). Under the upstream
+      MapToArray landing they are no longer the framework's only
+      option: a future refactor that moves [proj_sim] to a
+      [MapToArray]-at-slot-1 shape converts each axiom into a
+      provable lemma whose only Admitted dependency is the upstream
+      [run_sload_maptoarray_*] / [run_sstore_maptoarray_*] family.
 
       Documented as an audit caveat: the equation between
       [keccak256_single (keccak256_tuple2 role 1) + i] and a
       hypothetical "keccak (idx, keccak(role, 3))" is FALSE in any
-      honest model. It is parametric trust the same way R021's
-      [RunO.CallContract] rule and the slot-1 positions approximation
-      are. The trade-off is documented in Audit.v's
-      caveat-on-EnumerableSet-modeling entry. *)
+      honest model under the current projection. It is parametric
+      trust the same way R021's [RunO.CallContract] rule and the
+      slot-1 positions approximation are. The trade-off is
+      documented in Audit.v's caveat-on-EnumerableSet-modeling
+      entry; that entry now records the upstream MapToArray landing
+      as the resolution path. *)
 
   (** ----- Axiom: sload at array length anchor =====
 

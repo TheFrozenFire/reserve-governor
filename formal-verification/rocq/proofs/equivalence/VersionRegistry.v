@@ -1277,20 +1277,20 @@ Module VersionRegistryEquivalence.
     split; [|split].
     - intros key. specialize (H0 key).
       destruct (List.nth_error s2 0) as [v2|] eqn:E2; [|exact I].
-      destruct v2 as [d2| | |]; try exact I.
+      destruct v2 as [d2| | | |]; try exact I.
       destruct (List.nth_error s1 0) as [v1|] eqn:E1; [|exact I].
-      destruct v1 as [d1| | |]; try exact I.
+      destruct v1 as [d1| | | |]; try exact I.
       symmetry. exact H0.
     - intros key. specialize (H1 key).
       destruct (List.nth_error s2 1) as [v2|] eqn:E2; [|exact I].
-      destruct v2 as [d2| | |]; try exact I.
+      destruct v2 as [d2| | | |]; try exact I.
       destruct (List.nth_error s1 1) as [v1|] eqn:E1; [|exact I].
-      destruct v1 as [d1| | |]; try exact I.
+      destruct v1 as [d1| | | |]; try exact I.
       symmetry. exact H1.
     - destruct (List.nth_error s2 2) as [v2|] eqn:E2; [|exact I].
-      destruct v2 as [| u2 | |]; try exact I.
+      destruct v2 as [| u2 | | |]; try exact I.
       destruct (List.nth_error s1 2) as [v1|] eqn:E1; [|exact I].
-      destruct v1 as [| u1 | |]; try exact I.
+      destruct v1 as [| u1 | | |]; try exact I.
       symmetry. exact H2.
   Qed.
 

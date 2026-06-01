@@ -279,7 +279,30 @@ Require ReserveGovernor.proofs.Integration_upgrade_authorization.
       - R041: missing [linkersymbol] Yul primitive
       - R042: [M.monadic] "object of type ident" trap
       - R046: shallow_embed dropping sstore in OZ [_grantRole]
-      - R052: upstream [keccak256_single] helper
+      - R052 Opt 3: upstream [keccak256_single] helper +
+                    [run_keccak256_single]
+      - R052 Opt 2: upstream [StorableValue.MapToArray] constructor +
+                    four sload/sstore lemmas (length read/write, body
+                    read/write) + four [apply_run_*] Ltacs +
+                    [IsStorable.IMapToArray] typeclass. Honest
+                    framework primitive for OZ EnumerableSet's
+                    [mapping(K => T[])] storage shape; the trust now
+                    sits at the framework level (one [Admitted] family
+                    of primitives) rather than per-contract array-slot
+                    rewriting axioms. Smoke test verifying composition
+                    with the existing [make_state] / [proj_sim]
+                    machinery: [Guardian.v::MapToArrayLengthSmokeTest].
+
+                    The pre-existing four Guardian-local Option 1
+                    axioms (`run_sload_role_values_length_at_proj_sim`
+                    + the three companions) remain on the books pending
+                    a structural refactor of [proj_sim] that places the
+                    MapToArray at slot index 1 (necessary for the
+                    keccak shape to match OZ's [keccak(role, 1)]
+                    anchor). The refactor is mechanical (~330
+                    references to `length_map_in` / `body_map_in` /
+                    `role_values_length_map` / `role_values_body_map`)
+                    and is the next step in this thread.
 
     For contracts whose equivalence files are fully closed (no Admits
     in the body modulo the documented composite axioms), divergence
