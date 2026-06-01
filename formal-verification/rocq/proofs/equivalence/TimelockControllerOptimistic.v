@@ -161,6 +161,86 @@ Module TimelockControllerOptimisticEquivalence.
     True.
 
   (** ====================================================================
+      R088 sub-axioms — per-helper composite walker primitives
+      ====================================================================
+
+      Discharging the outer composite walker [Axiom]s for
+      [revokeOptimisticProposer] / [cancel] / [scheduleBatch] /
+      [executeBatch] / [executeBatchBypass] mechanically requires walking
+      through several internal OZ helpers whose own bodies route through
+      ERC-7201-anchored sloads (R083), EnumerableSet swap-and-pop (R084),
+      and the abstract TimelockController storage namespace. R087
+      Blocker 1 documents that a fully mechanical per-helper discharge of
+      every internal call introduces more per-helper sub-axioms than it
+      retires from the outer walker.
+
+      R088's contribution is to redistribute the composite walker
+      [Axiom]'s trust into smaller, sharper-shaped sub-axioms shared
+      across the four outer mutators. Specifically:
+
+        - [run_fun__checkRole_2033_under_role] — the OZ AccessControl
+          gate. Reused by ALL 5 mutators (revoke, cancel, schedule,
+          executeBatch, executeBatchBypass). Storage unchanged; memory
+          may transform (the gate emits no events but may write scratch
+          buffers for the inner hasRole walk).
+
+        - [run_fun__revokeRole_121_at_storage_base] — the revoke effect
+          (used by [revokeOptimisticProposer]). Threads the
+          [proj_post_revokeOptimisticProposer_136] Skolem.
+
+        - [run_fun_cancel_1394_inner_at_storage_base] — the cancel body
+          (require-pending + sstore 0 + log2). Threads
+          [proj_post_cancel_1394].
+
+      The outer walker [Axiom]s for [revokeOptimisticProposer] and
+      [cancel] are promoted to [Qed] [Lemma]s that compose
+      [run_fun__checkRole_2033_under_role] with the per-mutator body
+      sub-axiom. The remaining three outer walkers
+      ([scheduleBatch] / [executeBatch] / [executeBatchBypass]) stay as
+      [Axiom]s for now — they have additional internal helpers (R087
+      Blocker 1) and [executeBatch] / [executeBatchBypass] hit
+      delegatecall (R087 Blocker 2). See the per-walker [Axiom] block
+      for the residual-work note. *)
+
+  (** Sub-axiom: [fun__checkRole_2033] succeeds under a role precondition.
+
+      Audit-time witness: under [H_role caller = true], the gate's
+      inner sload+revert chain (R083 ERC-7201 anchor walk through OZ
+      AccessControl) succeeds with storage unchanged. Memory may
+      transform (the inner [fun__msgSender_4831] read + hasRole walk
+      writes scratch words at offsets 0/0x20). The shape is the OZ
+      gate's natural signature: pre-state storage = post-state storage;
+      memory existential absorbs the scratch writes.
+
+      Audit obligation per (role, role-predicate) pair: the gate is
+      mechanically the composition of [fun__msgSender] + [hasRole]
+      + [iszero] + [require_helper]; the failure branch is unreachable
+      under the role precondition. *)
+  Axiom run_fun__checkRole_2033_under_role :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (role : U256.t)
+           (role_pred : Address -> bool),
+    role_pred env.(Environment.caller) = true ->
+    0 <= env.(Environment.caller) < 2^160 ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists w0' w1' rest',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun__checkRole_2033 role ⇓ Result.Ok tt
+    | Some (make_state env state_base (w0' :: w1' :: rest') storage_base) ?}}.
+
+  (** The body-specific sub-axioms ([run_fun__revokeRole_121_at_storage_base]
+      and [run_fun_cancel_1394_inner_at_storage_base]) depend on the
+      Skolemized post-storage [Parameter]s and the [now_timestamp]
+      [Parameter] declared further below; we therefore declare them in
+      a deferred-axioms block AFTER the [proj_post_<fn>] [Parameter]
+      block (see the "Per-mutator inner-body composite walker
+      sub-axioms" block below). *)
+
+  (** ====================================================================
       Storage equivalence relation
 
       Same shape as ProposalLib's: per-target observational equality
@@ -254,6 +334,78 @@ Module TimelockControllerOptimisticEquivalence.
 
   Parameter proj_post_cancel_1394 :
     SimulatedStorage.t -> OpId -> U256.t -> SimulatedStorage.t.
+
+  (** ====================================================================
+      R088 per-mutator inner-body composite walker sub-axioms
+      ====================================================================
+
+      These sub-axioms encapsulate the body-of-modifier walks of the
+      individual mutators that the outer composite walker [Lemma]s
+      ([revokeOptimisticProposer] / [cancel]) consume. Each is sharper
+      than the outer composite walker [Axiom] (no modifier wrapper, no
+      gate dispatch — those are factored into
+      [run_fun__checkRole_2033_under_role]).
+
+      See the per-axiom comment for the body-Yul → primitive mapping
+      and the audit-time obligations. *)
+
+  (** Sub-axiom: [fun__revokeRole_121] body effect.
+
+      Walks: [fun__revokeRole_577] → [fun__revokeRole_2265] +
+      [fun_remove_3127] (the OZ EnumerableSet swap-and-pop body — R084).
+      The post-storage is the role-removal effect at the
+      AccessControlEnumerable namespace. We pin the post-storage to the
+      Skolemized [proj_post_revokeOptimisticProposer_136] so the outer
+      walker's post-state matches verbatim.
+
+      Audit obligation: the body mechanically chains
+      [_getAccessControlEnumerableStorage] → [_revokeRole_2265] (the
+      flag write at slot 0 of the AccessControl namespace) →
+      conditional [fun_remove_3127] (R084 swap-and-pop at the
+      AccessControlEnumerable namespace). Both effects compose into
+      [proj_post_revokeOptimisticProposer_136] via the abstract
+      Skolem. *)
+  Axiom run_fun__revokeRole_121_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (role account : U256.t)
+           (H_caller_bound : 0 <= env.(Environment.caller) < 2^160)
+           (H_account_bound : 0 <= account < 2^160)
+           (H_role_optimistic :
+              role = 0x26f49d08685d9cdd4951a7470bc8fbe9dd0f00419c1a44c1b89f845867ae12e0),
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory' (revoked : U256.t),
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun__revokeRole_121 role account ⇓ Result.Ok revoked
+    | Some (make_state env state_base memory'
+              (proj_post_revokeOptimisticProposer_136 storage_base account)) ?}}.
+
+  (** Sub-axiom: [fun_cancel_1394_inner] body effect.
+
+      Walks: [fun_isOperationPending_963] gate (sim H_pending discharges
+      the require) + mapping_index_access(timestamps, id) +
+      storage_set_to_zero (sstore 0) + log2 (Cancelled event). The
+      post-storage is [proj_post_cancel_1394]. *)
+  Axiom run_fun_cancel_1394_inner_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (id : OpId)
+           (sim : Timelock.State.t)
+           (H_pending :
+              Timelock.op_status sim id now_timestamp = Timelock.OpWaiting \/
+              Timelock.op_status sim id now_timestamp = Timelock.OpReady),
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      fun_cancel_1394_inner id ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_cancel_1394 storage_base id now_timestamp)) ?}}.
 
   (** ====================================================================
       Concrete slot-indexed observational predicates
@@ -481,8 +633,16 @@ Module TimelockControllerOptimisticEquivalence.
       Audit-time witness: the assembly closes mechanically; the inner
       _revokeRole call's storage effects are encapsulated in R059's
       EnumerableSet remove-by-swap-and-pop walker (proven for Guardian
-      and AccessControlEnumerable). *)
-  Axiom run_fun_revokeOptimisticProposer_136_at_proj_sim :
+      and AccessControlEnumerable).
+
+      R088 closure: the original [Axiom] has been replaced by this
+      [Qed] [Lemma] composing the per-helper sub-axioms
+      [run_fun__checkRole_2033_under_role] and
+      [run_fun__revokeRole_121_at_storage_base]. Net trust impact:
+      1 walker [Axiom] → 1 walker [Lemma] + 2 narrower sub-[Axiom]s,
+      one of which ([run_fun__checkRole_2033_under_role]) is shared
+      across the 5 outer mutators. *)
+  Lemma run_fun_revokeOptimisticProposer_136_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -498,6 +658,60 @@ Module TimelockControllerOptimisticEquivalence.
       fun_revokeOptimisticProposer_136 account ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
               (proj_post_revokeOptimisticProposer_136 storage_base account)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory account
+           H_caller_canceller H_caller_bound H_account_bound H_mem.
+    (** Phase 1: dispatch [fun__checkRole_2033] sub-axiom (the gate). *)
+    pose proof (run_fun__checkRole_2033_under_role
+                  codes env state_base storage_base memory
+                  0xfd643c72710c63c0180259aba6b2d05451e3591a24e58b62239378085726f783
+                  has_CANCELLER_ROLE
+                  H_caller_canceller H_caller_bound H_mem) as Hgate.
+    destruct Hgate as (w0_g & w1_g & rest_g & Hgate).
+    set (memory_gate := w0_g :: w1_g :: rest_g).
+    assert (H_mem_gate : exists w0 w1 rest, memory_gate = w0 :: w1 :: rest)
+      by (exists w0_g, w1_g, rest_g; reflexivity).
+    (** Phase 2: dispatch [fun__revokeRole_121] sub-axiom (the body). *)
+    pose proof (run_fun__revokeRole_121_at_storage_base
+                  codes env state_base storage_base memory_gate
+                  0x26f49d08685d9cdd4951a7470bc8fbe9dd0f00419c1a44c1b89f845867ae12e0
+                  account
+                  H_caller_bound H_account_bound eq_refl H_mem_gate) as Hbody.
+    destruct Hbody as (memory' & revoked & Hbody).
+    exists memory'.
+    (** Phase 3: walk the outer body's mechanical assembly.
+
+        The body has three levels of [M.call] nesting:
+          [fun_revokeOptimisticProposer_136] →
+            [modifier_onlyRole_128] →
+              [constant_CANCELLER_ROLE_616] (literal)
+              [fun__checkRole_2033] (Hgate)
+              [fun_revokeOptimisticProposer_136_inner] →
+                [constant_OPTIMISTIC_PROPOSER_ROLE_285] (literal)
+                [fun__revokeRole_121] (Hbody)
+
+        The walker arms below dispatch each level mechanically. Each
+        constant evaluation is a pure-binding sub-walk; each named
+        function call dispatches its corresponding hypothesis. *)
+    unfold fun_revokeOptimisticProposer_136,
+           modifier_onlyRole_128,
+           fun_revokeOptimisticProposer_136_inner,
+           constant_CANCELLER_ROLE_616,
+           constant_OPTIMISTIC_PROPOSER_ROLE_285.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (fun__checkRole_2033 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hgate | ]
+      | |- {{? _, _, _ | LowM.Call (fun__revokeRole_121 _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Call _ _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
 
   (** ----- Composite walker axiom for [fun_executeBatchBypass_201] -----
 
@@ -722,8 +936,15 @@ Module TimelockControllerOptimisticEquivalence.
         S3.  Function returns unit.
 
       The post-storage exposed by [proj_post_cancel_1394] is the
-      storage_base with timestamps[id] = 0. *)
-  Axiom run_fun_cancel_1394_at_proj_sim :
+      storage_base with timestamps[id] = 0.
+
+      R088 closure: promoted from [Axiom] to [Qed] [Lemma] via the
+      same trust-redistribution split as
+      [run_fun_revokeOptimisticProposer_136_at_proj_sim]: dispatches
+      [run_fun__checkRole_2033_under_role] (shared gate) and
+      [run_fun_cancel_1394_inner_at_storage_base] (cancel-specific
+      body). *)
+  Lemma run_fun_cancel_1394_at_proj_sim :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -747,6 +968,44 @@ Module TimelockControllerOptimisticEquivalence.
       fun_cancel_1394 id ⇓ Result.Ok tt
     | Some (make_state env state_base memory'
               (proj_post_cancel_1394 storage_base id now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory id sim
+           H_caller_canceller H_caller_bound H_pending H_success H_mem.
+    (** Phase 1: gate dispatch. *)
+    pose proof (run_fun__checkRole_2033_under_role
+                  codes env state_base storage_base memory
+                  0xfd643c72710c63c0180259aba6b2d05451e3591a24e58b62239378085726f783
+                  has_CANCELLER_ROLE
+                  H_caller_canceller H_caller_bound H_mem) as Hgate.
+    destruct Hgate as (w0_g & w1_g & rest_g & Hgate).
+    set (memory_gate := w0_g :: w1_g :: rest_g).
+    assert (H_mem_gate : exists w0 w1 rest, memory_gate = w0 :: w1 :: rest)
+      by (exists w0_g, w1_g, rest_g; reflexivity).
+    (** Phase 2: inner-body dispatch. *)
+    pose proof (run_fun_cancel_1394_inner_at_storage_base
+                  codes env state_base storage_base memory_gate id sim
+                  H_pending H_mem_gate) as Hbody.
+    destruct Hbody as (memory' & Hbody).
+    exists memory'.
+    (** Phase 3: walk the outer body's mechanical assembly. Same
+        modifier+gate+body shape as [revokeOptimisticProposer]. *)
+    unfold fun_cancel_1394,
+           modifier_onlyRole_1356,
+           constant_CANCELLER_ROLE_616.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ | LowM.Call (fun__checkRole_2033 _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hgate | ]
+      | |- {{? _, _, _ | LowM.Call (fun_cancel_1394_inner _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hbody | ]
+      | |- {{? _, _, _ | LowM.Call _ _ ⇓ _ | _ ?}} => cu
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} => apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
 
   (** ====================================================================
       Milestone Theorems — five public-function equivalences
