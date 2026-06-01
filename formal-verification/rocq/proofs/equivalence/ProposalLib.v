@@ -68,6 +68,7 @@
 
 Require Import Coq.ZArith.ZArith.
 Require Import Coq.Lists.List.
+Require Import Lia.
 Import ListNotations.
 
 Require Import RocqOfSolidity.RocqOfSolidity.
@@ -823,6 +824,289 @@ Module ProposalLibEquivalence.
   Qed.
 
   (** ====================================================================
+      R088 Phase 2: arbitrary-offset memory-read leaves
+      ====================================================================
+
+      These wrappers bundle the small [cleanup_t_*(mload(ptr))] read
+      helpers used by [_saveProposal_580]'s event prelude. The body of
+      each is just an mload at an arbitrary U256 pointer followed by a
+      pointwise cleanup, then return the value. The post-state is the
+      input state (mload doesn't mutate). Skolem witness shape:
+
+        cleanup_t_address(mload_witness ptr) = Pure.and (mload_witness)
+                                                       0xffffffffffffffffffffffffffffffffffffffff
+        cleanup_t_uint256(mload_witness ptr) = mload_witness ptr
+                                                (cleanup_t_uint256 is identity)
+
+      Audit obligation: every memory read in ProposalLib's source
+      addresses an aligned offset within the live free-memory region.
+      The Skolem witness for these reads is opaque (we never depend on
+      its concrete value at the equivalence layer; the sim-side
+      [sim_post_saveProposal] doesn't reference it). *)
+
+  Definition read_memoryt_address_witness
+      (env : Environment.t) (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (ptr : U256.t) : U256.t :=
+    Pure.and (mload_witness env state_base memory storage ptr)
+             0xffffffffffffffffffffffffffffffffffffffff.
+
+  Lemma run_read_from_memoryt_address_absorbing
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (ptr : U256.t) :
+    let state := make_state env state_base memory storage in
+    {{? codes, env, Some state |
+      read_from_memoryt_address ptr ⇓
+        Result.Ok
+          (read_memoryt_address_witness env state_base memory storage ptr)
+    | Some state ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_memoryt_address, read_memoryt_address_witness.
+    lu.
+    l. { s.
+         c. { apply (run_mload_absorbing_at_make_state codes env state_base
+                       memory storage ptr). }
+         s.
+         c. { unfold cleanup_t_address, cleanup_t_uint160.
+              repeat (lu || cu || p). }
+         p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  Definition read_memoryt_uint256_witness
+      (env : Environment.t) (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (ptr : U256.t) : U256.t :=
+    mload_witness env state_base memory storage ptr.
+
+  Lemma run_read_from_memoryt_uint256_absorbing
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (ptr : U256.t) :
+    let state := make_state env state_base memory storage in
+    {{? codes, env, Some state |
+      read_from_memoryt_uint256 ptr ⇓
+        Result.Ok
+          (read_memoryt_uint256_witness env state_base memory storage ptr)
+    | Some state ?}}.
+  Proof.
+    cbv zeta.
+    unfold read_from_memoryt_uint256, read_memoryt_uint256_witness.
+    lu.
+    l. { s.
+         c. { apply (run_mload_absorbing_at_make_state codes env state_base
+                       memory storage ptr). }
+         s.
+         c. { apply run_cleanup_t_uint256. }
+         p. }
+    repeat (lu || cu || p).
+  Qed.
+
+  (** [array_length_t_arrayₓ_t_address_ₓdyn_memory_ptr] reads the
+      length word at [mload(ptr)] — the first word of an EVM-style
+      dynamic array's memory representation. *)
+  Lemma run_array_length_t_arrayₓ_t_address_ₓdyn_memory_ptr_absorbing
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (ptr : U256.t) :
+    let state := make_state env state_base memory storage in
+    {{? codes, env, Some state |
+      array_length_t_arrayₓ_t_address_ₓdyn_memory_ptr ptr ⇓
+        Result.Ok (mload_witness env state_base memory storage ptr)
+    | Some state ?}}.
+  Proof.
+    cbv zeta.
+    unfold array_length_t_arrayₓ_t_address_ₓdyn_memory_ptr.
+    lu.
+    l. { c. { apply (run_mload_absorbing_at_make_state codes env state_base
+                       memory storage ptr). }
+         p. }
+    p.
+  Qed.
+
+  (** [checked_add_t_uint256] at a [make_state] state — happy path
+      under the no-overflow precondition. Storage / memory unchanged.
+
+      This is the absorbing variant of ThrottleLib's
+      [run_checked_add_t_uint256] (which holds at an arbitrary [state]
+      already); we restate it specialised at [make_state] for
+      composability inside the walker discharge. *)
+  Lemma run_checked_add_t_uint256_at_make_state
+      (codes : Codes.t) (env : Environment.t)
+      (state_base : RocqOfSolidity.State.t)
+      (memory : SimulatedMemory.t) (storage : SimulatedStorage.t)
+      (x y : U256.t)
+      (H_x : 0 <= x < 2^256)
+      (H_y : 0 <= y < 2^256)
+      (H_no_overflow : x + y < 2^256) :
+    let state := make_state env state_base memory storage in
+    {{? codes, env, Some state |
+      checked_add_t_uint256 x y ⇓ Result.Ok (x + y)
+    | Some state ?}}.
+  Proof.
+    cbv zeta.
+    unfold checked_add_t_uint256.
+    lu. repeat (lu || cu || p).
+    s. unfold Pure.gt, Pure.add.
+    destruct (_ >? _) eqn:?; s.
+    { lia. }
+    { pe; f_equal. lia. }
+  Qed.
+
+  (** ====================================================================
+      R088 Phase 2: sub-axioms for [_saveProposal_580] tail-block
+      ====================================================================
+
+      The Yul body of [_saveProposal_580] decomposes into:
+
+        S1-S11:  the 3-sstore prelude — discharged mechanically against
+                 the three [run_update_storage_value_offset_*_absorbing]
+                 wrappers above.
+        S12-S28: the event-emission trailer — Skolemized as one
+                 sub-axiom. It contains the memory reads for the log
+                 emit (proposalId, proposer, targets/values/calldatas
+                 pointers; allocate signatures array; the two sloads of
+                 voteStart + the sload of voteDuration; the
+                 checked_add_t_uint48 of voteStart + voteDuration; the
+                 mload(160) for description ptr; allocate_unbounded
+                 + 10-field abi_encode_tuple; log1).
+
+      The trailer's structural payload is: storage UNCHANGED (no sstore,
+      no external call); memory updated opaquely (zero-fill loop +
+      abi_encode writes); the [log1] primitive is itself M.pure tt
+      per [simulations/RocqOfSolidity.v]'s convention.
+
+      The Skolem post-memory is exposed as an explicit function of
+      inputs so [apply] can unify with the enclosing walker's
+      post-state.
+
+      AUDIT OBLIGATION: the trailer makes only memory-side and log
+      effects. Audit reviewers of ProposalLib's compiled Yul confirm:
+       (1) no sstore in the trailer;
+       (2) no external call (no staticcall/call/delegatecall/create);
+       (3) all mstores are at aligned offsets within the pre-allocated
+           memory region;
+       (4) the log1 emission is structurally a no-op at this
+           framework level (logs are ignored per the framework
+           semantic in simulations/RocqOfSolidity.v).
+
+      Together these justify the Skolem-post-memory + unchanged-
+      storage absorption. *)
+
+  Parameter saveProposal_tail_post_memory :
+    Environment.t -> RocqOfSolidity.State.t -> SimulatedMemory.t ->
+    SimulatedStorage.t ->
+    (* The arguments threaded through the trailer: proposal_mpos,
+       proposalCore_slot. *)
+    U256.t -> U256.t -> SimulatedMemory.t.
+
+  (** The trailer block, abstracted out into a Definition so the
+      sub-axiom can mention it once at the [LowM] level. The block
+      is the body of [fun__saveProposal_580] from line 4148 of the
+      shallow file onwards: starting at the [let~ _233_mpos] binding
+      (the first read after the three sstores) and continuing through
+      the event emit.
+
+      We define it parametrically on [proposal_mpos] and
+      [proposalCore_slot] (and discard the other state vars from the
+      enclosing scope by inlining; see body for the let-chain). *)
+  Definition saveProposal_tail_block
+      (proposal_mpos : U256.t) (proposalCore_slot : U256.t) :
+      M.t (BlockUnit.t * unit) :=
+    let~ _233_mpos := [[ proposal_mpos ]] in
+    let~ expr_551_mpos := [[ _233_mpos ]] in
+    let~ _234 := [[ add ~(| expr_551_mpos, 0 |) ]] in
+    let~ _235 := [[ read_from_memoryt_uint256 ~(| _234 |) ]] in
+    let~ expr_552 := [[ _235 ]] in
+    let~ _236_mpos := [[ proposal_mpos ]] in
+    let~ expr_553_mpos := [[ _236_mpos ]] in
+    let~ _237 := [[ add ~(| expr_553_mpos, 32 |) ]] in
+    let~ _238 := [[ read_from_memoryt_address ~(| _237 |) ]] in
+    let~ expr_554 := [[ _238 ]] in
+    let~ _239_mpos := [[ proposal_mpos ]] in
+    let~ expr_555_mpos := [[ _239_mpos ]] in
+    let~ _240 := [[ add ~(| expr_555_mpos, 64 |) ]] in
+    let~ _241_mpos := [[ mload ~(| _240 |) ]] in
+    let~ expr_556_mpos := [[ _241_mpos ]] in
+    let~ _242_mpos := [[ proposal_mpos ]] in
+    let~ expr_557_mpos := [[ _242_mpos ]] in
+    let~ _243 := [[ add ~(| expr_557_mpos, 96 |) ]] in
+    let~ _244_mpos := [[ mload ~(| _243 |) ]] in
+    let~ expr_558_mpos := [[ _244_mpos ]] in
+    let~ _245_mpos := [[ proposal_mpos ]] in
+    let~ expr_562_mpos := [[ _245_mpos ]] in
+    let~ _246 := [[ add ~(| expr_562_mpos, 64 |) ]] in
+    let~ _247_mpos := [[ mload ~(| _246 |) ]] in
+    let~ expr_563_mpos := [[ _247_mpos ]] in
+    let~ expr_564 := [[ array_length_t_arrayₓ_t_address_ₓdyn_memory_ptr ~(| expr_563_mpos |) ]] in
+    let~ expr_565_mpos := [[ allocate_and_zero_memory_array_t_arrayₓ_t_string_memory_ptr_ₓdyn_memory_ptr ~(| expr_564 |) ]] in
+    let~ _248_mpos := [[ proposal_mpos ]] in
+    let~ expr_566_mpos := [[ _248_mpos ]] in
+    let~ _249 := [[ add ~(| expr_566_mpos, 128 |) ]] in
+    let~ _250_mpos := [[ mload ~(| _249 |) ]] in
+    let~ expr_567_mpos := [[ _250_mpos ]] in
+    let~ _251_slot := [[ proposalCore_slot ]] in
+    let~ expr_568_slot := [[ _251_slot ]] in
+    let~ _252 := [[ add ~(| expr_568_slot, 0 |) ]] in
+    let~ _253 := [[ read_from_storage_split_offset_20_t_uint48 ~(| _252 |) ]] in
+    let~ expr_569 := [[ _253 ]] in
+    let~ _254_slot := [[ proposalCore_slot ]] in
+    let~ expr_570_slot := [[ _254_slot ]] in
+    let~ _255 := [[ add ~(| expr_570_slot, 0 |) ]] in
+    let~ _256 := [[ read_from_storage_split_offset_20_t_uint48 ~(| _255 |) ]] in
+    let~ expr_571 := [[ _256 ]] in
+    let~ _257_slot := [[ proposalCore_slot ]] in
+    let~ expr_572_slot := [[ _257_slot ]] in
+    let~ _258 := [[ add ~(| expr_572_slot, 0 |) ]] in
+    let~ _259 := [[ read_from_storage_split_offset_26_t_uint32 ~(| _258 |) ]] in
+    let~ expr_573 := [[ _259 ]] in
+    let~ expr_574 := [[ checked_add_t_uint48 ~(| expr_571, convert_t_uint32_to_t_uint48 ~(| expr_573 |) |) ]] in
+    let~ _260_mpos := [[ proposal_mpos ]] in
+    let~ expr_575_mpos := [[ _260_mpos ]] in
+    let~ _261 := [[ add ~(| expr_575_mpos, 160 |) ]] in
+    let~ _262_mpos := [[ mload ~(| _261 |) ]] in
+    let~ expr_576_mpos := [[ _262_mpos ]] in
+    let~ _263 := [[ 0x7d84a6263ae0d98d3329bd7b46bb4e8d6f98cd35a7adb45c274c8b7fd5ebd5e0 ]] in
+    let_state~ 'tt :=
+      let~ _264 := [[ allocate_unbounded ~(||) ]] in
+      let~ _265 := [[ abi_encode_tuple_t_uint256_t_address_t_arrayₓ_t_address_ₓdyn_memory_ptr_t_arrayₓ_t_uint256_ₓdyn_memory_ptr_t_arrayₓ_t_string_memory_ptr_ₓdyn_memory_ptr_t_arrayₓ_t_bytes_memory_ptr_ₓdyn_memory_ptr_t_uint48_t_uint48_t_string_memory_ptr__to_t_uint256_t_address_t_arrayₓ_t_address_ₓdyn_memory_ptr_t_arrayₓ_t_uint256_ₓdyn_memory_ptr_t_arrayₓ_t_string_memory_ptr_ₓdyn_memory_ptr_t_arrayₓ_t_bytes_memory_ptr_ₓdyn_memory_ptr_t_uint256_t_uint256_t_string_memory_ptr__fromStack ~(| _264, expr_552, expr_554, expr_556_mpos, expr_558_mpos, expr_565_mpos, expr_567_mpos, expr_569, expr_574, expr_576_mpos |) ]] in
+      do~ [[ log1 ~(| _264, sub ~(| _265, _264 |), _263 |) ]] in
+      M.pure (BlockUnit.Tt, tt)
+    default~ tt in
+    M.pure (BlockUnit.Tt, tt).
+
+  Axiom run_saveProposal_tail_absorbing :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (memory : SimulatedMemory.t)
+           (storage : SimulatedStorage.t)
+           (proposal_mpos : U256.t)
+           (proposalCore_slot : U256.t),
+    let memory' :=
+      saveProposal_tail_post_memory env state_base memory storage
+                                     proposal_mpos proposalCore_slot in
+    {{? codes, env, Some (make_state env state_base memory storage) |
+      saveProposal_tail_block proposal_mpos proposalCore_slot
+        ⇓ Result.Ok (BlockUnit.Tt, tt)
+    | Some (make_state env state_base memory' storage) ?}}.
+
+  Axiom saveProposal_tail_post_memory_length :
+    forall env state_base memory storage proposal_mpos proposalCore_slot,
+    List.length (saveProposal_tail_post_memory env state_base memory storage
+                  proposal_mpos proposalCore_slot)
+    = List.length memory.
+
+  (** Bridge axiom for the 3-sstore chain is defined AFTER
+      [proj_post_saveProposal_580] is in scope; see
+      [sstore_chain_after_saveProposal_eq_proj] below the
+      [Parameter proj_post_saveProposal_580] declaration. *)
+
+  (** ====================================================================
       R070: ProposalLib public function equivalences — R065/R066/R067 recipe
             ported to a multi-staticcall library
       ====================================================================
@@ -1049,6 +1333,30 @@ Module ProposalLibEquivalence.
     SimulatedStorage.t ->
     OptimisticProposalDetails.t -> U256.t -> SimulatedStorage.t.
 
+  (** R088 Phase 2 bridge axiom: the 3-sstore chain at
+      [proposalCore_slot] (offsets 0, 0, 0 with packed-slot updates
+      inside via the wrapper bodies) produces a post-storage that
+      equals the sim's projection [proj_post_saveProposal_580].
+
+      This is the per-target audit obligation from R088. The
+      [sstore_post_storage] Skolem chain — opaque at the framework
+      level — is concretely the slot+0 packed-word update with the
+      address, voteStart, and voteDuration packed in. The sim's
+      [proj_post_saveProposal_580 storage_base p voteDelay voteDuration
+      now_timestamp] is, by audit, exactly such an update. *)
+  Parameter sstore_chain_after_saveProposal :
+    Environment.t -> RocqOfSolidity.State.t -> SimulatedMemory.t ->
+    SimulatedStorage.t -> U256.t -> U256.t -> U256.t -> U256.t ->
+    ProposalData.t -> SimulatedStorage.t.
+
+  Axiom sstore_chain_after_saveProposal_eq_proj :
+    forall env state_base memory storage_base
+           proposalCore_slot voteDelay voteDuration now_ p,
+    sstore_chain_after_saveProposal env state_base memory storage_base
+      proposalCore_slot voteDelay voteDuration now_ p
+    = proj_post_saveProposal_580 storage_base p
+        voteDelay voteDuration now_.
+
   (** ====================================================================
       Storage-equivalence relation — pointwise per slot
       ====================================================================
@@ -1231,7 +1539,31 @@ Module ProposalLibEquivalence.
       every sstore maps to a known wrapper (R040 / R051); the toUint48 /
       toUint32 calls discharge via the within-bound Admitted helpers
       above (which are themselves Qed'd modulo the [Shallow.if_]
-      walker pattern). *)
+      walker pattern).
+
+      **R088 Phase 2 status (task #295, see R090 in WISDOM).** Phase 2
+      added framework helpers
+      ([run_read_from_memoryt_*_absorbing],
+       [run_array_length_*_absorbing],
+       [run_checked_add_t_uint256_at_make_state]),
+      a tail-absorption sub-axiom ([run_saveProposal_tail_absorbing]
+      for S12-S28), and a bridge axiom
+      ([sstore_chain_after_saveProposal_eq_proj]) for the 3-sstore
+      chain.
+
+      The mechanical walking of S1-S11 hit a structural obstacle: the
+      existing R088 wrapper Lemmas
+      ([run_update_storage_value_offset_*_absorbing]) existentially
+      quantify the post-storage. When chained, each storage_post evar
+      is created INSIDE the proof script (via [edestruct]) and isn't
+      in scope of the outer [eexists memory'] evar — so
+      [c. apply H_wrapper] cannot unify the chain into the expected
+      post-state [proj_post_saveProposal_580 ...].
+
+      R090 documents the issue and the resolution path
+      (deterministic-post-storage wrapper redesign). For now the
+      composite walker remains an [Axiom]; the Phase 2 helpers above
+      are Qed Lemmas reusable for future discharges. *)
   Axiom run_fun__saveProposal_580_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
@@ -1254,6 +1586,117 @@ Module ProposalLibEquivalence.
     | Some (make_state env state_base memory'
               (proj_post_saveProposal_580 storage_base p
                  voteDelay voteDuration now_timestamp)) ?}}.
+
+  (** Stale proof body from Phase 2 discharge attempt — kept as a
+      comment for future reference of how far the mechanical walk
+      reaches before hitting the existential-storage-post obstacle. *)
+  (*
+    unfold fun__saveProposal_580.
+    lu.
+    (* === S1-S2: read proposer from memory[proposal_mpos + 32] === *)
+    l. { p. } (* _222_mpos := proposal_mpos *)
+    l. { p. } (* expr_523_mpos := _222_mpos *)
+    l. { (* _223 := add(expr_523_mpos, 32) *)
+         s. c. { p. } p. }
+    l. { (* _224 := read_from_memoryt_address(_223). Absorbing. *)
+         c. { apply run_read_from_memoryt_address_absorbing. }
+         p. }
+    l. { p. } (* expr_524 := _224 *)
+    (* === S3: sstore at proposalCore_slot + 0 === *)
+    l. { p. } (* _225_slot := proposalCore_slot *)
+    l. { p. } (* expr_520_slot := _225_slot *)
+    l. { (* _226 := add(expr_520_slot, 0) *) s. c. { p. } p. }
+    l. {
+      (* update_storage_value_offset_0_t_address_to_t_address. The
+         wrapper's hypothesis is [0 <= value < 2^160] on the value
+         being written — the value is the mload_witness AND-ed with the
+         160-bit address mask (cleanup_t_address), so it's bounded
+         in [0, 2^160). *)
+      assert (Hbound160 :
+        0 <= read_memoryt_address_witness env state_base memory storage_base
+               (Pure.add proposal_mpos 32) < 2^160).
+      { pose proof (mload_witness_bound env state_base memory storage_base
+                      (Pure.add proposal_mpos 32)) as Hw.
+        unfold read_memoryt_address_witness, Pure.and.
+        change 1461501637330902918203684832716283019655932542975
+          with (Z.ones 160).
+        rewrite Z.land_ones by lia.
+        split.
+        - apply Z_mod_nonneg_nonneg; lia.
+        - apply Z.mod_pos_bound. lia. }
+      edestruct (run_update_storage_value_offset_0_t_address_to_t_address_absorbing
+                   codes env state_base memory storage_base
+                   (Pure.add proposalCore_slot 0)
+                   (read_memoryt_address_witness env state_base memory storage_base
+                      (Pure.add proposal_mpos 32))
+                   Hbound160)
+        as [storage_post_0 H0].
+      c. { apply H0. }
+      p. }
+    l. { p. } (* expr_525 := expr_524 *)
+    l. { p. } (* expr_530_address := linkersymbol _ — pure constant *)
+    (* === S4-S8: timestamp + checked_add + toUint48 + sstore at offset 20 === *)
+    l. { (* expr_533 := timestamp *)
+         c. { apply (ThrottleLibEquivalence.ThrottleLibLeaves.run_timestamp
+                       codes env _ now_timestamp).
+              unfold make_state, RocqOfSolidity.State.with_current_storage.
+              destruct (Dict.assign_function _ _ _) eqn:?; cbn; exact H_block_timestamp. }
+         p. }
+    l. { p. } (* _227 := voteDelay *)
+    l. { p. } (* expr_534 := _227 *)
+    l. { (* expr_535 := checked_add_t_uint256(now_timestamp, voteDelay) *)
+         c. { apply (run_checked_add_t_uint256_at_make_state
+                       codes env state_base memory storage_base
+                       now_timestamp voteDelay).
+              - (* H_x : 0 <= now_timestamp < 2^256 — implied by uint48 bound *)
+                split; [|lia]. lia.
+              - (* H_y : 0 <= voteDelay < 2^256 *)
+                split; [lia|]. lia.
+              - (* H_no_overflow : now_timestamp + voteDelay < 2^256 *)
+                change (2^256) with 115792089237316195423570985008687907853269984665640564039457584007913129639936.
+                lia. }
+         p. }
+    l. { (* expr_536 := fun_toUint48_7536 (now_timestamp + voteDelay) *)
+         c. { apply (run_fun_toUint48_7536_within_bound
+                       codes env _ (now_timestamp + voteDelay)
+                       H_voteDelay_uint48). }
+         p. }
+    l. { p. } (* _228_slot := proposalCore_slot *)
+    l. { p. } (* expr_527_slot := _228_slot *)
+    l. { s. c. { p. } p. } (* _229 := add(expr_527_slot, 0) *)
+    l. { (* update_storage_value_offset_20_t_uint48_to_t_uint48 *)
+         edestruct run_update_storage_value_offset_20_t_uint48_to_t_uint48_absorbing
+           as [storage_post_20 H20].
+         { exact H_voteDelay_uint48. }
+         c. { apply H20. }
+         p. }
+    l. { p. } (* expr_537 := expr_536 *)
+    l. { p. } (* expr_542_address := linkersymbol _ *)
+    (* === S9-S11: voteDuration + toUint32 + sstore at offset 26 === *)
+    l. { p. } (* _230 := voteDuration *)
+    l. { p. } (* expr_544 := _230 *)
+    l. { (* expr_545 := fun_toUint32_7592 voteDuration *)
+         c. { apply (run_fun_toUint32_7592_within_bound
+                       codes env _ voteDuration H_voteDuration_uint32). }
+         p. }
+    l. { p. } (* _231_slot := proposalCore_slot *)
+    l. { p. } (* expr_539_slot := _231_slot *)
+    l. { s. c. { p. } p. } (* _232 := add(expr_539_slot, 0) *)
+    l. { (* update_storage_value_offset_26_t_uint32_to_t_uint32 *)
+         edestruct run_update_storage_value_offset_26_t_uint32_to_t_uint32_absorbing
+           as [storage_post_26 H26].
+         { exact H_voteDuration_uint32. }
+         c. { apply H26. }
+         p. }
+    l. { p. } (* expr_546 := expr_545 *)
+    (* === S12-S28: event-emission trailer. Absorbed via the
+           run_saveProposal_tail_absorbing sub-axiom. The remaining body
+           in the goal matches saveProposal_tail_block by definition. *)
+    fold (saveProposal_tail_block proposal_mpos proposalCore_slot).
+    apply (run_saveProposal_tail_absorbing
+             codes env state_base _ _ proposal_mpos proposalCore_slot).
+  Qed.
+  *)
 
   (** ----- Composite walker axiom for [fun__validateProposal_507] -----
 

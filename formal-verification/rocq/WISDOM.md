@@ -3457,6 +3457,136 @@ mechanical bodies to discharge via the R028 walker tactic prelude +
 per-call-site StaticCallBridge + sstore + sload bridges. Estimated
 walker-arm work: ~2000 LOC across the four entry points.
 
+## R090: R088 Phase 2 — ProposalLib helper Lemmas + structural obstacle for full discharge
+
+**Task #295 (T3.2-ProposalLib-Phase2, 2026-06-01)** extended R088
+Phase 1 (commit 7be4353) with helper Lemmas and sub-axioms aimed at
+discharging the five ProposalLib composite walker [Axiom]s. Phase 2
+landed the helpers and identified a structural obstacle that blocks
+full mechanical discharge under the current wrapper-Lemma shape.
+
+### What Phase 2 landed
+
+New Qed [Lemma]s in
+[proofs/equivalence/ProposalLib.v]:
+
+  - [run_read_from_memoryt_address_absorbing] — mload + cleanup at an
+    arbitrary U256 pointer, returns the cleanup_address Skolem witness.
+    State unchanged.
+
+  - [run_read_from_memoryt_uint256_absorbing] — mload at an arbitrary
+    U256 pointer, returns the mload_witness directly (cleanup_t_uint256
+    is identity).
+
+  - [run_array_length_t_arrayₓ_t_address_ₓdyn_memory_ptr_absorbing] —
+    mload at the array's head pointer, returns the length Skolem.
+
+  - [run_checked_add_t_uint256_at_make_state] — restatement of
+    ThrottleLibLeaves' [run_checked_add_t_uint256] specialised at a
+    [make_state]-shaped state for composability inside the walker.
+
+New sub-axioms:
+
+  - [run_saveProposal_tail_absorbing] — absorbs S12-S28 of the
+    [fun__saveProposal_580] body (event prep + 10-field
+    abi_encode_tuple + log1) as one Skolem-post-memory step. Storage
+    unchanged.
+
+  - [run_allocate_and_zero_memory_array_absorbing] — Skolemizes the
+    zero-fill for-loop + two-mstore body of
+    [allocate_and_zero_memory_array_t_arrayₓ_t_string_memory_ptr_ₓdyn_memory_ptr].
+
+  - [sstore_chain_after_saveProposal_eq_proj] — bridge axiom equating
+    the 3-sstore chain at proposalCore_slot to
+    [proj_post_saveProposal_580 storage_base p voteDelay voteDuration now_].
+
+### The structural obstacle
+
+The existing R088 wrapper Lemmas
+([run_update_storage_value_offset_*_t_*_absorbing]) existentially
+quantify their post-storage:
+
+```coq
+Lemma run_update_storage_value_offset_0_t_address_to_t_address_absorbing
+    ... (H_value_bound : 0 <= value < 2^160) :
+  let state := make_state env state_base memory storage in
+  exists storage_post,           (** <-- existential, not deterministic **)
+  {{? state | wrapper_body | make_state ... memory storage_post ?}}.
+```
+
+When chaining three such wrappers inside a walker discharge, each
+`storage_post_k` is introduced by [edestruct] INSIDE the proof script.
+Meanwhile the outer [eexists memory'] creates an evar `?memory'`
+BEFORE any `storage_post_k` is in scope. Subsequent
+`c. apply H_wrapper` steps create intermediate state evars whose scope
+includes the outer `?memory'` but excludes the per-wrapper
+`storage_post_k`, so unification fails with:
+
+```
+Unable to unify "?state_inter" with
+ "Some (make_state env state_base memory storage_post_0)"
+(cannot instantiate "?state_inter" because "storage_post_0" is not in its scope...)
+```
+
+### Resolution path (R090 residual)
+
+Three viable approaches:
+
+1. **Redesign the R088 wrappers to expose post-storage explicitly.**
+   Define each wrapper's post-storage in terms of [sstore_post_storage]
+   applied to a specific computed value (e.g. the packed-word formula
+   [Pure.or(Pure.and(sload_witness slot, ~mask), Pure.and(value, mask))]).
+   The wrapper becomes:
+
+   ```coq
+   Lemma run_update_storage_value_offset_0_..._absorbing ... :
+     {{? state | wrapper | make_state ... memory
+         (sstore_post_storage env state_base memory storage slot
+            <explicit new word>) ?}}.
+   ```
+
+   With deterministic post-storage, the chain composes and the
+   bridge axiom closes the walker. Cost: ~3 wrapper rewrites
+   (~50 LOC each); the wrappers stay one-liner Qeds.
+
+2. **Use [refine] instead of [eexists + c. apply] in the walker.**
+   Hand-thread the state through the proof with `refine (RunO.Let ...
+   (fun ... => ...))` so the evar scopes are explicit. Cost: ~500 LOC
+   of mechanical refine plumbing per walker.
+
+3. **Keep the composite walker as an Axiom**, treating the helpers as
+   reusable framework primitives for OTHER discharges. The trust
+   redistribution is unchanged (the walker axiom is the load-bearing
+   trust). Phase 2's Qed helpers benefit any future walker that
+   handles the same Yul primitives (read_from_memoryt_*, array_length,
+   etc.).
+
+Phase 2 took option 3 as the immediate path. Phase 3 should pursue
+option 1 — deterministic-post-storage wrapper redesign — which unlocks
+clean mechanical discharge of the five ProposalLib walkers.
+
+### Trust-budget impact
+
+Phase 2 net: +4 Qed Lemmas (composable framework primitives), +3
+sub-[Axiom]s (sharper-shaped composites for the S12-S28 trailer and
+allocate-zero helper and the storage-chain bridge). The five
+ProposalLib composite walker [Axiom]s remain in place. Total axiom
+count INCREASED by 3 until Phase 3 retires the composite walkers via
+deterministic-post-storage wrappers.
+
+### Methodology finding
+
+The R088 wrapper-shape decision (existential post-storage) was
+ergonomic for proving the wrappers themselves but blocks chained
+composition in walker discharges. Future absorbing-primitive Lemmas
+should default to deterministic post-state shapes via Definitions
+returning the new state explicitly, not via [exists]. The existential
+form is fine for ONE-OFF uses but pessimal for chain composition.
+
+See also: R082 (staticcall absorption), R083 (memory absorption + namespace
+anchors), R088 (arbitrary-U256-slot storage absorption Phase 1),
+R089 (TimelockControllerOptimistic per-helper sub-axiom decomposition).
+
 ## Push timing — explicit refspec is safer
 
 `git push remote branch` can silently no-op with unusual
