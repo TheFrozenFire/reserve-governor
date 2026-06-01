@@ -84,7 +84,24 @@ if [[ ! -f "$ROCQ_TREE/rocq/RocqOfSolidity/RocqOfSolidity.vo" ]]; then
   echo "      Bootstrap cannot do this automatically — ask the user." >&2
 fi
 
-# 6. Sanity build (touched-file only, fast).
+# 6. Enforce that origin is pull-only. The upstream `reserve-protocol/reserve-governor`
+#    is the official repo — pushes from agent work go to `thefrozenfire` (the
+#    personal fork) instead. Origin's pushurl is set to an invalid placeholder so
+#    `git push origin <branch>` fails loudly instead of silently polluting
+#    upstream with worktree-agent-* branches.
+#
+#    Agent worktrees share .git config with the main checkout, so this is set
+#    once at the repo level and inherited by every worktree.
+ORIGIN_PUSHURL="$(cd "$REPO_TREE" && git config remote.origin.pushurl 2>/dev/null || echo "")"
+if [[ "$ORIGIN_PUSHURL" != *"DO_NOT_PUSH"* ]]; then
+  echo "==> setting origin to pull-only (pushurl=DO_NOT_PUSH_use_thefrozenfire_remote)"
+  (cd "$REPO_TREE" && git remote set-url --push origin "DO_NOT_PUSH_use_thefrozenfire_remote")
+else
+  echo "==> origin is already pull-only (good)"
+fi
+echo "    Push commands: 'git push thefrozenfire <branch>'. 'git push origin' will fail loudly."
+
+# 7. Sanity build (touched-file only, fast).
 if [[ $SKIP_BUILD -eq 0 ]]; then
   echo "==> sanity build (proofs/equivalence/Common.v as a smoke check)"
   (cd "$REPO_TREE" \
