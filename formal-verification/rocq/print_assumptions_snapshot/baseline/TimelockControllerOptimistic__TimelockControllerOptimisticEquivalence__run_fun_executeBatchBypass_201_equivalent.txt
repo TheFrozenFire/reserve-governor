@@ -1,10 +1,10 @@
 # Theorem: TimelockControllerOptimisticEquivalence.run_fun_executeBatchBypass_201_equivalent
-# Source:  TimelockControllerOptimistic.v:820
+# Source:  TimelockControllerOptimistic.v:1440
 # Module:  TimelockControllerOptimisticEquivalence
 #
 Axioms:
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-TimelockControllerOptimisticEquivalence.run_fun_executeBatchBypass_201_at_proj_sim :
+TimelockControllerOptimisticEquivalence.run_fun_executeBatchBypass_201_inner_at_storage_base :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
@@ -14,10 +14,34 @@ TimelockControllerOptimisticEquivalence.run_fun_executeBatchBypass_201_at_proj_s
      payloads_offset payloads_length predecessor
      salt : RocqOfSolidity.U256.t) (id : Timelock.Timelock.OpId)
     (sim : Timelock.Timelock.State.t),
+  Timelock.Timelock.get_ts sim id = BinNums.Z0 ->
+  TimelockControllerOptimisticEquivalence.has_EXECUTOR_ROLE
+    env.(RocqOfSolidity.Environment.caller) = true \/
   TimelockControllerOptimisticEquivalence.has_PROPOSER_ROLE
     env.(RocqOfSolidity.Environment.caller) = true ->
-  TimelockControllerOptimisticEquivalence.has_EXECUTOR_ROLE
-    env.(RocqOfSolidity.Environment.caller) = true ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+      (TimelockControllerOptimistic_shallow.TimelockControllerOptimistic_222.TimelockControllerOptimistic_222_deployed.fun_executeBatchBypass_201_inner
+         targets_offset targets_length values_offset values_length
+         payloads_offset payloads_length predecessor salt)
+      (Some
+         (RocqOfSolidity.make_state env state_base memory'
+            (TimelockControllerOptimisticEquivalence.proj_post_executeBatchBypass_201
+               storage_base id
+               TimelockControllerOptimisticEquivalence.now_timestamp)))
+TimelockControllerOptimisticEquivalence.run_fun__checkRole_2033_under_role :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (role : RocqOfSolidity.U256.t)
+    (role_pred : Timelock.Timelock.Address -> bool),
+  role_pred env.(RocqOfSolidity.Environment.caller) = true ->
   BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
   BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
     (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
@@ -27,28 +51,18 @@ TimelockControllerOptimisticEquivalence.run_fun_executeBatchBypass_201_at_proj_s
                 (BinNums.xO
                    (BinNums.xO
                       (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
-  Timelock.Timelock.get_ts sim id = BinNums.Z0 ->
-  Timelock.Timelock.executeBatchBypass sim id
-    TimelockControllerOptimisticEquivalence.now_timestamp
-    (TimelockControllerOptimisticEquivalence.has_PROPOSER_ROLE
-       env.(RocqOfSolidity.Environment.caller))
-    (TimelockControllerOptimisticEquivalence.has_EXECUTOR_ROLE
-       env.(RocqOfSolidity.Environment.caller)) <>
-  Timelock.Timelock.revert_unauthorized ->
   (exists
      (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
      memory = (w0 :: w1 :: rest)%list) ->
-  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+  exists
+    (w0' w1' : RocqOfSolidity.U256.t) (rest' : list RocqOfSolidity.U256.t),
     RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
       (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-      (TimelockControllerOptimistic_shallow.TimelockControllerOptimistic_222.TimelockControllerOptimistic_222_deployed.fun_executeBatchBypass_201
-         targets_offset targets_length values_offset values_length
-         payloads_offset payloads_length predecessor salt)
+      (TimelockControllerOptimistic_shallow.TimelockControllerOptimistic_222.TimelockControllerOptimistic_222_deployed.fun__checkRole_2033
+         role)
       (Some
-         (RocqOfSolidity.make_state env state_base memory'
-            (TimelockControllerOptimisticEquivalence.proj_post_executeBatchBypass_201
-               storage_base id
-               TimelockControllerOptimisticEquivalence.now_timestamp)))
+         (RocqOfSolidity.make_state env state_base 
+            (w0' :: w1' :: rest')%list storage_base))
 TimelockControllerOptimisticEquivalence.proj_post_executeBatchBypass_201_observes :
   forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (id : Timelock.Timelock.OpId) (now_ : RocqOfSolidity.U256.t),

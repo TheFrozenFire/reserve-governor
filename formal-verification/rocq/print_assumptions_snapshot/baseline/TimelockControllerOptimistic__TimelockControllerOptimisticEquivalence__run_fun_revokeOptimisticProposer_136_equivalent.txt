@@ -1,18 +1,16 @@
 # Theorem: TimelockControllerOptimisticEquivalence.run_fun_revokeOptimisticProposer_136_equivalent
-# Source:  TimelockControllerOptimistic.v:774
+# Source:  TimelockControllerOptimistic.v:1394
 # Module:  TimelockControllerOptimisticEquivalence
 #
 Axioms:
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-TimelockControllerOptimisticEquivalence.run_fun_revokeOptimisticProposer_136_at_proj_sim :
+TimelockControllerOptimisticEquivalence.run_fun__revokeRole_121_at_storage_base :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
     (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (memory : RocqOfSolidity.SimulatedMemory.t)
-    (account : Timelock.Timelock.Address),
-  TimelockControllerOptimisticEquivalence.has_CANCELLER_ROLE
-    env.(RocqOfSolidity.Environment.caller) = true ->
+    (role account : RocqOfSolidity.U256.t),
   BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
   BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
     (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
@@ -31,18 +29,70 @@ TimelockControllerOptimisticEquivalence.run_fun_revokeOptimisticProposer_136_at_
                 (BinNums.xO
                    (BinNums.xO
                       (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  role =
+  BinNums.Zpos
+    (BinNums.xO
+       (BinNums.xO
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xI
+                      (BinNums.xI
+                         (BinNums.xI
+                            (BinNums.xO
+                               (BinNums.xI
+                                  (BinNums.xO
+                                     (BinNums.xO
+                                        (BinNums.xI
+                                           (BinNums.xO
+                                              (BinNums.xO
+                                                 (BinNums.xO
+                                                 (BinNums.xO
+                                                 (BinNums.xI
+                                                 (BinNums.xI (...)))))))))))))))))))) ->
   (exists
      (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
      memory = (w0 :: w1 :: rest)%list) ->
-  exists memory' : RocqOfSolidity.SimulatedMemory.t,
-    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+  exists
+    (memory' : RocqOfSolidity.SimulatedMemory.t) (revoked : RocqOfSolidity.U256.t),
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok revoked)
       (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-      (TimelockControllerOptimistic_shallow.TimelockControllerOptimistic_222.TimelockControllerOptimistic_222_deployed.fun_revokeOptimisticProposer_136
-         account)
+      (TimelockControllerOptimistic_shallow.TimelockControllerOptimistic_222.TimelockControllerOptimistic_222_deployed.fun__revokeRole_121
+         role account)
       (Some
          (RocqOfSolidity.make_state env state_base memory'
             (TimelockControllerOptimisticEquivalence.proj_post_revokeOptimisticProposer_136
                storage_base account)))
+TimelockControllerOptimisticEquivalence.run_fun__checkRole_2033_under_role :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (role : RocqOfSolidity.U256.t)
+    (role_pred : Timelock.Timelock.Address -> bool),
+  role_pred env.(RocqOfSolidity.Environment.caller) = true ->
+  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
+  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  (exists
+     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
+     memory = (w0 :: w1 :: rest)%list) ->
+  exists
+    (w0' w1' : RocqOfSolidity.U256.t) (rest' : list RocqOfSolidity.U256.t),
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
+      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+      (TimelockControllerOptimistic_shallow.TimelockControllerOptimistic_222.TimelockControllerOptimistic_222_deployed.fun__checkRole_2033
+         role)
+      (Some
+         (RocqOfSolidity.make_state env state_base 
+            (w0' :: w1' :: rest')%list storage_base))
 TimelockControllerOptimisticEquivalence.proj_post_revokeOptimisticProposer_136_observes :
   forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (account : Timelock.Timelock.Address),

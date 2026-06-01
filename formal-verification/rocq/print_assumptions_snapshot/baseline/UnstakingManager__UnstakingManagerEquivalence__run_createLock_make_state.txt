@@ -1,10 +1,15 @@
 # Theorem: UnstakingManagerEquivalence.run_createLock_make_state
-# Source:  UnstakingManager.v:820
+# Source:  UnstakingManager.v:1224
 # Module:  UnstakingManagerEquivalence
 #
 Axioms:
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-UnstakingManagerEquivalence.run_fun_createLock_144_at_proj_sim :
+UnstakingManagerEquivalence.safeTransferFrom_T_TOKEN :
+  forall (token from to : UnstakingManager.UnstakingManager.Address)
+    (amount : RocqOfSolidity.U256.t),
+  UnstakingManagerEquivalence.safeTransferFrom_success_spec token from to
+    amount
+UnstakingManagerEquivalence.run_fun_createLock_144_inner_at_proj_sim :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
@@ -53,6 +58,27 @@ UnstakingManagerEquivalence.run_fun_createLock_144_at_proj_sim :
                    (BinNums.xO
                       (BinNums.xO
                          (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))))))) ->
+  (forall token target_addr : BinNums.Z,
+   BinInt.Z.le BinNums.Z0 token /\
+   BinInt.Z.lt token
+     (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+        (BinNums.Zpos
+           (BinNums.xO
+              (BinNums.xO
+                 (BinNums.xO
+                    (BinNums.xO
+                       (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+   BinInt.Z.le BinNums.Z0 target_addr /\
+   BinInt.Z.lt target_addr
+     (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+        (BinNums.Zpos
+           (BinNums.xO
+              (BinNums.xO
+                 (BinNums.xO
+                    (BinNums.xO
+                       (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+   UnstakingManagerEquivalence.safeTransferFrom_success_spec token user
+     target_addr amount) ->
   (exists
      (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
      memory = (w0 :: w1 :: rest)%list) ->
@@ -65,32 +91,8 @@ UnstakingManagerEquivalence.run_fun_createLock_144_at_proj_sim :
          user amount unlockTime)
       (Some
          (RocqOfSolidity.make_state env state_base memory'
-            (UnstakingManagerEquivalence.proj_post_createLock
-               (UnstakingManagerEquivalence.proj_sim sim) user amount
+            (UnstakingManagerEquivalence.proj_post_createLock sim user amount
                unlockTime)))
-UnstakingManagerEquivalence.proj_post_createLock_observes_nextLockId :
-  forall (sim : UnstakingManager.UnstakingManager.State.t)
-    (user amount unlockTime : RocqOfSolidity.U256.t),
-  UnstakingManagerEquivalence.eq_at_nextLockId
-    (UnstakingManagerEquivalence.proj_post_createLock
-       (UnstakingManagerEquivalence.proj_sim sim) user amount unlockTime)
-    (UnstakingManagerEquivalence.proj_sim
-       (UnstakingManagerEquivalence.createLock_sim_post sim user amount
-          unlockTime))
-UnstakingManagerEquivalence.proj_post_createLock_observes :
-  forall (sim : UnstakingManager.UnstakingManager.State.t)
-    (user amount unlockTime : RocqOfSolidity.U256.t),
-  UnstakingManagerEquivalence.eq_at_locks
-    (UnstakingManagerEquivalence.proj_post_createLock
-       (UnstakingManagerEquivalence.proj_sim sim) user amount unlockTime)
-    (UnstakingManagerEquivalence.proj_sim
-       (UnstakingManagerEquivalence.createLock_sim_post sim user amount
-          unlockTime))
-UnstakingManagerEquivalence.proj_post_createLock :
-  RocqOfSolidity.SimulatedStorage.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
 RocqOfSolidity.Memory.of_u256_list :
   list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
 RocqOfSolidity.Storage.of_storable_values :

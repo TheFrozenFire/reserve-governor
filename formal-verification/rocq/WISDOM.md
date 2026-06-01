@@ -5302,4 +5302,160 @@ the inner-body sub-axioms now ready for walker discharge).  R097
 workstream consuming the same SafeERC20 framework).  R098 (the
 discharge plan this entry executes — Option A path).
 
+## R100: StakingVaultExchange inner-body modifier-wrapper discharge
+
+**Task #305 (R097 closure phase 3, 2026-06-01).** Closes the
+"inner-body Axioms remaining" residual flagged in R097.  The two
+inner-body Axioms (`run_fun__deposit_630_at_storage_base`,
+`run_fun__withdraw_736_at_storage_base`) are now Qed `Lemma`s.
+
+### Structural barrier confirmation
+
+Before attempting a full body walk, R098's `proj_post_<X>`
+abstract-Parameter barrier was re-verified against
+StakingVaultExchange's siblings.  The shape is identical:
+
+  - `proj_post_deposit_4312` and `proj_post_withdraw_4403` are
+    declared as `Parameter`s (Section 6 of `StakingVaultExchange.v`,
+    lines 856-879).
+  - A direct body walk of `fun__deposit_630` /
+    `fun__withdraw_736` would emit a concrete chain of
+    `sstore_post_storage` (slots 0x0c, 0x0d) + `call_post_memory`
+    (SafeERC20.safeTransferFrom / forceApprove / safeTransfer +
+    log3 / log4 events) Skolems whose composition cannot be
+    proven equal to the abstract `Parameter`-shaped post-state
+    without either (Option A) converting the `Parameter` to a
+    `Definition` of that chain, or (Option B) restating the
+    inner Axiom existentially.  Both options invalidate the
+    four R097 outer walker Lemmas and the four Section-10
+    milestone Theorems.
+
+### Narrower trust redistribution adopted
+
+Each inner-body Axiom wraps a single function-body call:
+
+  - `fun__deposit_630 caller receiver assets shares` =
+    `do~ [[ modifier_accrueRewards_610 ~(| caller, receiver,
+      assets, shares |) ]] in M.pure (BlockUnit.Tt, tt)`
+    (StakingVault_shallow.v lines 10592-10597).
+
+  - `fun__withdraw_736 caller receiver owner assets shares` =
+    `do~ [[ modifier_accrueRewards_647 ~(| caller, receiver,
+      owner, assets, shares |) ]] in M.pure (BlockUnit.Tt, tt)`
+    (StakingVault_shallow.v lines 14742-14747).
+
+This permits a narrow R088-style trust redistribution: introduce
+modifier-wrapper sub-axioms that carry the same Skolem post-state
+(`proj_post_deposit_4312 ...` / `proj_post_withdraw_4403 ...`),
+then discharge each inner-body Axiom to a Qed `Lemma` that walks
+the trivial 2-line outer wrapper.
+
+```coq
+Axiom run_modifier_accrueRewards_610_at_storage_base : ...
+  fun __deposit_630 body :=
+    modifier_accrueRewards_610 caller receiver assets shares
+    => post : proj_post_deposit_4312 storage_base
+                  caller assets receiver now_timestamp.
+
+Lemma run_fun__deposit_630_at_storage_base : ...  (* Qed via the
+  modifier sub-axiom + a 6-line lazymatch walk of the outer
+  wrapper *)
+```
+
+Same pattern for `withdraw_736` / `modifier_accrueRewards_647`.
+
+### Net trust delta
+
+Before R100 (R097 state):
+  - 2 inner-body `Axiom`s carrying the full shallow-body of the
+    `_deposit` / `_withdraw` mutators (~120 / ~190 LOC each).
+
+After R100 (this entry):
+  - 2 modifier-wrapper `Axiom`s carrying the
+    `modifier_accrueRewards_<X>` body (one let-bind layer
+    narrower; same `proj_post_<X>` Skolem post-state).
+  - 2 Qed `Lemma`s `run_fun__deposit_630_at_storage_base` and
+    `run_fun__withdraw_736_at_storage_base` (replacing the
+    `Axiom`s of the same name).
+
+Net axiom count: unchanged (2 Axioms removed, 2 modifier-wrapper
+Axioms added; 2 new Qed Lemmas).  The substantive trust narrowing
+is small: the discharged outer-wrapper boilerplate is the
+2-line `let~ '(_, tt) := do~ modifier ... in M.pure ...` plus
+the outermost `M.pure tt` of each `fun_<X>_<id>`.
+
+### Why this matters even though the narrowing is small
+
+The Section-10 milestone Theorems now reference
+`modifier_accrueRewards_610` / `_647` in their `Print Assumptions`
+output instead of `fun__deposit_630` / `fun__withdraw_736`.  The
+shallow-form modifier definitions are byte-for-byte the OZ
+ERC4626 modifier-wrapping pattern (caller / receiver / args
+aliasing + `fun__accrueRewards_1192` call + the inner-body call),
+which is the actual auditable surface.  The discharge:
+
+  1. Removes the trivial outermost monadic ceremony from the
+     audit obligation.
+  2. Demonstrates the modifier-wrapper sub-axiom shape works (a
+     template applicable to any solc-generated ERC4626 modifier
+     entry point).
+  3. Closes the R097-tagged "inner-body Axioms remain" residual.
+
+### Deeper discharge path (not in this task)
+
+A fuller R098-style restructuring would discharge the modifier
+sub-axiom itself.  Two layers further would be required:
+
+  - Layer 1: split `modifier_accrueRewards_610` into
+    `run_fun__accrueRewards_1192_at_storage_base` (Skolem'd
+    intermediate storage) +
+    `run_fun__deposit_630_inner_at_storage_base` (Skolem'd
+    final storage).  Each carries an abstract intermediate
+    `Parameter` for the post-state.
+  - Layer 2: discharge `run_fun__deposit_630_inner` by walking
+    its 3-step body (2 sstores at slots 0x0c, 0x0d + a call to
+    `fun__deposit_4546`).  The final post-state must equal
+    `proj_post_deposit_4312 ...` — exactly the R098 Option A /
+    B blocker.
+
+The estimated cost for layer 2 (per body) is 400-800 LOC of Ltac
+plus the R098 restructuring of the `proj_post_<X>` Parameters
+(which would invalidate the 4 outer walker Lemmas and 4
+milestone Theorems and require their re-proof).  R099 (sister
+entry, UnstakingManager Option A) shows the Parameter→Definition
+restructure landed cleanly for UnstakingManager when the post-state
+is a pure function of `sim` + args; the same restructure should
+apply to StakingVaultExchange, provided the StakingVault sim-state
+`State.t` is extended to carry the ERC20 / Votes substates that
+deposit / withdraw touch.  This is the R101 candidate workstream.
+
+### Validation
+
+  - Build: green (`rocq-build` exits 0; all 4 milestone Theorems
+    now Qed against the modifier-wrapper sub-axioms instead of
+    the inner-body Axioms).
+  - `Print Assumptions` per milestone Theorem: 4 of 4 milestones
+    show the named obligation moves from
+    `run_fun__deposit_630_at_storage_base` /
+    `run_fun__withdraw_736_at_storage_base` (Axiom) to
+    `run_modifier_accrueRewards_610_at_storage_base` /
+    `run_modifier_accrueRewards_647_at_storage_base` (Axiom).
+  - Snapshot baseline refreshed
+    (`print_assumptions_snapshot/baseline/StakingVaultExchange__*`).
+  - File delta: ~150 / -38 LOC in StakingVaultExchange.v (the
+    two Lemma proofs + the two new modifier-wrapper Axioms;
+    minus the two old inner-body Axioms).
+
+### See also
+
+R097 (this entry's prerequisite — the four outer walker
+discharge), R098 (the structural-barrier analysis for
+UnstakingManager that applies identically here), R099 (sister
+UnstakingManager Option A discharge — Parameter→Definition
+methodology, the deeper-discharge template applicable here next
+under R101), R094 (the R088-style trust redistribution template),
+R088 (TimelockControllerOptimistic original per-helper sub-axiom
+template).  R040 / R048 / R082 / R083 / R093 (the framework
+primitives consumed inside the modifier sub-axioms when those
+are eventually discharged in turn).
 

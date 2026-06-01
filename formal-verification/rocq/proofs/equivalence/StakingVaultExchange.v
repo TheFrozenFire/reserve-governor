@@ -1385,7 +1385,83 @@ Module StakingVaultExchangeEquivalence.
       [safeTransferFrom_success_spec_concrete] etc. template (R063 /
       R086 shape; the concrete Parameters live in Section 8c below). *)
 
-  Axiom run_fun__deposit_630_at_storage_base :
+  (** ===== R100 modifier-wrapper sub-axioms (R088 trust redistribution).
+
+      Each [run_fun__deposit_630_at_storage_base] /
+      [run_fun__withdraw_736_at_storage_base] inner-body axiom was the
+      monolithic R097 closure obligation: the entire 120/190 LOC of
+      shallow-form body inside one opaque Skolem.  R098 (UnstakingManager
+      parallel-investigation) diagnosed the structural barrier on
+      discharging such axioms to Qed Lemmas: the body walk produces a
+      concrete chain of [sstore_post_storage] / [call_post_memory]
+      Skolems whose composition cannot be proven equal to the abstract
+      [Parameter] post-state without either (Option A) converting the
+      [Parameter] to a [Definition] of that chain, or (Option B)
+      restating the inner Axiom existentially over the post-state.
+
+      Instead of pursuing the structural restructuring (which would
+      invalidate the four R097 outer walker Lemmas and the four
+      milestone Theorems in Section 10), this R100 phase performs a
+      narrower trust redistribution: split each inner-body Axiom into
+      a modifier-wrapper sub-axiom (one per mutator) plus a Qed [Lemma]
+      that walks the trivial outer wrapper. The modifier-wrapper
+      sub-axiom carries the same Skolem post-state as the original
+      inner-body Axiom — but the auditable surface excludes the outer
+      wrapper's two-line ceremony ([let~ '(_,tt) := do~ <modifier> in
+      M.pure (BlockUnit.Tt, tt) in M.pure tt]).
+
+      Net trust delta: the inner-body Axiom is removed; the modifier
+      sub-axiom replaces it at the same Skolem shape.  The outer
+      wrapper Lemma is mechanically Qed against the sub-axiom.  No
+      change to milestone Theorems' [Print Assumptions] sets at the
+      Skolem level; the named obligation moves from [fun__deposit_630]
+      to [modifier_accrueRewards_610] (resp. [modifier_accrueRewards_647]).
+
+      Phase 3 closure shape (Task #305): inner-body Axiom → Qed Lemma
+      composing a modifier-wrapper sub-axiom. *)
+
+  Axiom run_modifier_accrueRewards_610_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (caller receiver assets shares : U256.t),
+    0 <= caller < 2^160 ->
+    0 <= receiver < 2^160 ->
+    0 <= assets ->
+    0 <= shares ->
+    U256.Valid.t assets ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      modifier_accrueRewards_610 caller receiver assets shares ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_deposit_4312 storage_base
+                 caller assets receiver now_timestamp)) ?}}.
+
+  Axiom run_modifier_accrueRewards_647_at_storage_base :
+    forall (codes : Codes.t) (env : Environment.t)
+           (state_base : RocqOfSolidity.State.t)
+           (storage_base : SimulatedStorage.t)
+           (memory : SimulatedMemory.t)
+           (caller receiver owner assets shares : U256.t),
+    0 <= caller < 2^160 ->
+    0 <= receiver < 2^160 ->
+    0 <= owner < 2^160 ->
+    0 <= assets ->
+    0 <= shares ->
+    U256.Valid.t assets ->
+    (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
+    exists memory',
+    {{? codes, env,
+        Some (make_state env state_base memory storage_base) |
+      modifier_accrueRewards_647 caller receiver owner assets shares ⇓ Result.Ok tt
+    | Some (make_state env state_base memory'
+              (proj_post_withdraw_4403 storage_base
+                 caller assets receiver owner now_timestamp)) ?}}.
+
+  Lemma run_fun__deposit_630_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -1404,8 +1480,37 @@ Module StakingVaultExchangeEquivalence.
     | Some (make_state env state_base memory'
               (proj_post_deposit_4312 storage_base
                  caller assets receiver now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory
+           caller receiver assets shares
+           H_caller H_receiver H_assets_nn H_shares_nn H_assets_u256 H_mem.
+    (** Phase 1: dispatch the modifier sub-axiom to obtain the
+        post-storage Skolem. *)
+    pose proof (run_modifier_accrueRewards_610_at_storage_base
+                  codes env state_base storage_base memory
+                  caller receiver assets shares
+                  H_caller H_receiver H_assets_nn H_shares_nn
+                  H_assets_u256 H_mem)
+      as Hmod.
+    destruct Hmod as (memory' & Hmod).
+    exists memory'.
+    (** Phase 2: walk the trivial outer wrapper. *)
+    unfold fun__deposit_630.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (modifier_accrueRewards_610 _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hmod | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
 
-  Axiom run_fun__withdraw_736_at_storage_base :
+  Lemma run_fun__withdraw_736_at_storage_base :
     forall (codes : Codes.t) (env : Environment.t)
            (state_base : RocqOfSolidity.State.t)
            (storage_base : SimulatedStorage.t)
@@ -1425,6 +1530,35 @@ Module StakingVaultExchangeEquivalence.
     | Some (make_state env state_base memory'
               (proj_post_withdraw_4403 storage_base
                  caller assets receiver owner now_timestamp)) ?}}.
+  Proof.
+    intros codes env state_base storage_base memory
+           caller receiver owner assets shares
+           H_caller H_receiver H_owner H_assets_nn H_shares_nn
+           H_assets_u256 H_mem.
+    (** Phase 1: dispatch the modifier sub-axiom. *)
+    pose proof (run_modifier_accrueRewards_647_at_storage_base
+                  codes env state_base storage_base memory
+                  caller receiver owner assets shares
+                  H_caller H_receiver H_owner H_assets_nn H_shares_nn
+                  H_assets_u256 H_mem)
+      as Hmod.
+    destruct Hmod as (memory' & Hmod).
+    exists memory'.
+    (** Phase 2: walk the trivial outer wrapper. *)
+    unfold fun__withdraw_736.
+    unfold M.strong_let_, M.let_, M.generic_let, M.pure, M.call.
+    repeat (lazymatch goal with
+      | |- {{? _, _, _ | LowM.Let _ _ ⇓ _ | _ ?}} => l
+      | |- {{? _, _, _ |
+            LowM.Call (modifier_accrueRewards_647 _ _ _ _ _) _ ⇓ _ | _ ?}} =>
+          c; [ exact Hmod | ]
+      | |- {{? _, _, _ | LowM.Pure (Result.Ok _) ⇓ _ | _ ?}} =>
+          apply RunO.Pure
+      | |- _ => s
+      end).
+    all: cbn match.
+    all: try apply RunO.Pure.
+  Qed.
 
   (** ===== Post-storage bridge axioms (R094 / R096) =====
 

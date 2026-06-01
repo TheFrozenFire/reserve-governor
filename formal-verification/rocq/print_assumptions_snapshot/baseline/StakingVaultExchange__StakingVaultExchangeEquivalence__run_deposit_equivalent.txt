@@ -1,18 +1,18 @@
 # Theorem: StakingVaultExchangeEquivalence.run_deposit_equivalent
-# Source:  StakingVaultExchange.v:1388
+# Source:  StakingVaultExchange.v:2314
 # Module:  StakingVaultExchangeEquivalence
 #
 Axioms:
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-StakingVaultExchangeEquivalence.run_fun_deposit_4312_at_storage_base :
+StakingVaultExchangeEquivalence.run_modifier_accrueRewards_610_at_storage_base :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
     (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (memory : RocqOfSolidity.SimulatedMemory.t)
-    (assets receiver : RocqOfSolidity.U256.t),
-  BinInt.Z.le BinNums.Z0 env.(RocqOfSolidity.Environment.caller) /\
-  BinInt.Z.lt env.(RocqOfSolidity.Environment.caller)
+    (caller receiver assets shares : RocqOfSolidity.U256.t),
+  BinInt.Z.le BinNums.Z0 caller /\
+  BinInt.Z.lt caller
     (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
        (BinNums.Zpos
           (BinNums.xO
@@ -20,7 +20,6 @@ StakingVaultExchangeEquivalence.run_fun_deposit_4312_at_storage_base :
                 (BinNums.xO
                    (BinNums.xO
                       (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
-  BinInt.Z.le BinNums.Z0 assets ->
   BinInt.Z.le BinNums.Z0 receiver /\
   BinInt.Z.lt receiver
     (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
@@ -30,20 +29,70 @@ StakingVaultExchangeEquivalence.run_fun_deposit_4312_at_storage_base :
                 (BinNums.xO
                    (BinNums.xO
                       (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+  BinInt.Z.le BinNums.Z0 assets ->
+  BinInt.Z.le BinNums.Z0 shares ->
   RocqOfSolidity.U256.Valid.t assets ->
   (exists
      (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
      memory = (w0 :: w1 :: rest)%list) ->
-  exists
-    (memory' : RocqOfSolidity.SimulatedMemory.t) (shares : RocqOfSolidity.U256.t),
-    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok shares)
+  exists memory' : RocqOfSolidity.SimulatedMemory.t,
+    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
       (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-      (StakingVaultExchangeEquivalence.fun_deposit_4312_op assets receiver)
+      (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.modifier_accrueRewards_610
+         caller receiver assets shares)
       (Some
          (RocqOfSolidity.make_state env state_base memory'
             (StakingVaultExchangeEquivalence.proj_post_deposit_4312
-               storage_base env.(RocqOfSolidity.Environment.caller) assets
-               receiver StakingVaultExchangeEquivalence.now_timestamp)))
+               storage_base caller assets receiver
+               StakingVaultExchangeEquivalence.now_timestamp)))
+StakingVaultExchangeEquivalence.run_fun_previewDeposit_4220_returns :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (assets : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes env
+    (RocqOfSolidity.Result.Ok
+       (StakingVaultExchangeEquivalence.preview_deposit_value storage_base
+          assets))
+    (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+    (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun_previewDeposit_4220
+       assets)
+    (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+StakingVaultExchangeEquivalence.run_fun_maxDeposit_4158_returns :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (env : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (receiver : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes env
+    (RocqOfSolidity.Result.Ok
+       (BinNums.Zpos
+          (BinNums.xI
+             (BinNums.xI
+                (BinNums.xI
+                   (BinNums.xI
+                      (BinNums.xI
+                         (BinNums.xI
+                            (BinNums.xI
+                               (BinNums.xI
+                                  (BinNums.xI
+                                     (BinNums.xI
+                                        (BinNums.xI
+                                           (BinNums.xI
+                                              (BinNums.xI
+                                                 (BinNums.xI
+                                                 (BinNums.xI
+                                                 (BinNums.xI
+                                                 (BinNums.xI
+                                                 (BinNums.xI
+                                                 (BinNums.xI (...))))))))))))))))))))))
+    (Some (RocqOfSolidity.make_state env state_base memory storage_base))
+    (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun_maxDeposit_4158
+       receiver)
+    (Some (RocqOfSolidity.make_state env state_base memory storage_base))
 StakingVaultExchangeEquivalence.proj_post_deposit_4312_observes :
   forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (caller assets receiver now_ : RocqOfSolidity.U256.t),
@@ -56,6 +105,15 @@ StakingVaultExchangeEquivalence.proj_post_deposit_4312 :
   RocqOfSolidity.U256.t ->
   RocqOfSolidity.U256.t ->
   RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
+StakingVaultExchangeEquivalence.preview_deposit_value_nn :
+  forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (assets : RocqOfSolidity.U256.t),
+  BinInt.Z.le BinNums.Z0
+    (StakingVaultExchangeEquivalence.preview_deposit_value storage_base
+       assets)
+StakingVaultExchangeEquivalence.preview_deposit_value :
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
 RocqOfSolidity.Memory.of_u256_list :
   list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
 RocqOfSolidity.Storage.of_storable_values :
@@ -68,9 +126,6 @@ PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.int : Set
-StakingVaultExchangeEquivalence.fun_deposit_4312_op :
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t -> RocqOfSolidity.M.t RocqOfSolidity.U256.t
 PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
 PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 Theory:

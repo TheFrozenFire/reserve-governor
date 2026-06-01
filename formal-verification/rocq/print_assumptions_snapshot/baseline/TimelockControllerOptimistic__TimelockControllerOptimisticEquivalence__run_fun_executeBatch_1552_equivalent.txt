@@ -1,10 +1,10 @@
 # Theorem: TimelockControllerOptimisticEquivalence.run_fun_executeBatch_1552_equivalent
-# Source:  TimelockControllerOptimistic.v:942
+# Source:  TimelockControllerOptimistic.v:1562
 # Module:  TimelockControllerOptimisticEquivalence
 #
 Axioms:
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-TimelockControllerOptimisticEquivalence.run_fun_executeBatch_1552_at_proj_sim :
+TimelockControllerOptimisticEquivalence.run_modifier_onlyRoleOrOpenRole_1463_at_proj_sim :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
@@ -29,18 +29,13 @@ TimelockControllerOptimisticEquivalence.run_fun_executeBatch_1552_at_proj_sim :
     TimelockControllerOptimisticEquivalence.now_timestamp =
   Timelock.Timelock.OpReady ->
   predecessor = BinNums.Z0 ->
-  Timelock.Timelock.executeBatch sim id
-    TimelockControllerOptimisticEquivalence.now_timestamp
-    (TimelockControllerOptimisticEquivalence.has_EXECUTOR_ROLE
-       env.(RocqOfSolidity.Environment.caller)) <>
-  Timelock.Timelock.revert_unauthorized ->
   (exists
      (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
      memory = (w0 :: w1 :: rest)%list) ->
   exists memory' : RocqOfSolidity.SimulatedMemory.t,
     RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
       (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-      (TimelockControllerOptimistic_shallow.TimelockControllerOptimistic_222.TimelockControllerOptimistic_222_deployed.fun_executeBatch_1552
+      (TimelockControllerOptimistic_shallow.TimelockControllerOptimistic_222.TimelockControllerOptimistic_222_deployed.modifier_onlyRoleOrOpenRole_1463
          targets_offset targets_length values_offset values_length
          payloads_offset payloads_length predecessor salt)
       (Some
