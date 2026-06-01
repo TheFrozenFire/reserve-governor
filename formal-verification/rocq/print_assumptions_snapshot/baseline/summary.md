@@ -22,9 +22,9 @@ Counts:
 | ProposalLib.v | `run_fun_proposeOptimistic_179_equivalent` | ProposalLibEquivalence | 20 | 8 | OK |
 | ProposalLib.v | `run_fun_proposePessimistic_288_equivalent` | ProposalLibEquivalence | 18 | 6 | OK |
 | ProposalLib.v | `run_fun_transitionToPessimistic_400_equivalent` | ProposalLibEquivalence | 16 | 4 | OK |
-| ReserveOptimisticGovernor.v | `run_propose_equivalent` | ReserveOptimisticGovernorEquivalence | 15 | 3 | OK |
-| ReserveOptimisticGovernor.v | `run_castVote_equivalent` | ReserveOptimisticGovernorEquivalence | 15 | 3 | OK |
-| ReserveOptimisticGovernor.v | `run_execute_equivalent` | ReserveOptimisticGovernorEquivalence | 15 | 3 | OK |
+| ReserveOptimisticGovernor.v | `run_propose_equivalent` | ReserveOptimisticGovernorEquivalence | 16 | 4 | OK |
+| ReserveOptimisticGovernor.v | `run_castVote_equivalent` | ReserveOptimisticGovernorEquivalence | 16 | 4 | OK |
+| ReserveOptimisticGovernor.v | `run_execute_equivalent` | ReserveOptimisticGovernorEquivalence | 16 | 4 | OK |
 | RewardTokenRegistry.v | `run_isRegistered_equivalent` | RewardTokenRegistryEquivalence | 18 | 6 | OK |
 | RewardTokenRegistry.v | `run_registerRewardToken_equivalent_make_state` | RewardTokenRegistryEquivalence | 16 | 4 | OK |
 | RewardTokenRegistry.v | `run_unregisterRewardToken_equivalent_make_state` | RewardTokenRegistryEquivalence | 16 | 4 | OK |
@@ -33,7 +33,7 @@ Counts:
 | SelectorRegistry.v | `run_isAllowed_equivalent_make_state` | SelectorRegistryEquivalence | 16 | 4 | OK |
 | SelectorRegistry.v | `run_targets_equivalent_make_state` | SelectorRegistryEquivalence | 15 | 3 | OK |
 | SelectorRegistry.v | `run_selectorsAllowed_equivalent_make_state` | SelectorRegistryEquivalence | 15 | 3 | OK |
-| StakingVaultAdmin.v | `run_setUnstakingDelay_equivalent` | StakingVaultAdminEquivalence | 15 | 3 | OK |
+| StakingVaultAdmin.v | `run_setUnstakingDelay_equivalent` | StakingVaultAdminEquivalence | 30 | 18 | OK |
 | StakingVaultAdmin.v | `run_setNativeRewardRate_equivalent` | StakingVaultAdminEquivalence | 15 | 3 | OK |
 | StakingVaultAdmin.v | `run_grantRole_equivalent` | StakingVaultAdminEquivalence | 14 | 2 | OK |
 | StakingVaultAdmin.v | `run_revokeRole_equivalent` | StakingVaultAdminEquivalence | 14 | 2 | OK |

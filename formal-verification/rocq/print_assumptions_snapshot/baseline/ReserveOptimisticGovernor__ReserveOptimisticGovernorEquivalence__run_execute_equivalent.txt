@@ -1,5 +1,5 @@
 # Theorem: ReserveOptimisticGovernorEquivalence.run_execute_equivalent
-# Source:  ReserveOptimisticGovernor.v:1272
+# Source:  ReserveOptimisticGovernor.v:1508
 # Module:  ReserveOptimisticGovernorEquivalence
 #
 Axioms:
@@ -47,6 +47,13 @@ ReserveOptimisticGovernorEquivalence.run_fun_execute_4145_at_proj_sim :
             (ReserveOptimisticGovernorEquivalence.proj_post_execute_4145
                storage_base pid isOpt
                ReserveOptimisticGovernorEquivalence.now_timestamp)))
+ReserveOptimisticGovernorEquivalence.proj_post_execute_4145_observes :
+  forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (pid : RocqOfSolidity.U256.t) (isOpt : bool)
+    (now : RocqOfSolidity.U256.t),
+  ReserveOptimisticGovernorEquivalence.eq_at_optimistic_proposal_details
+    (ReserveOptimisticGovernorEquivalence.proj_post_execute_4145 storage_base
+       pid isOpt now) storage_base
 ReserveOptimisticGovernorEquivalence.proj_post_execute_4145 :
   RocqOfSolidity.SimulatedStorage.t ->
   RocqOfSolidity.U256.t ->

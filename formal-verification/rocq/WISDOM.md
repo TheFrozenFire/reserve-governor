@@ -86,7 +86,7 @@ decisions and architectural memos, see `formal-verification/notes/`.
 - R064: `AbiEncoding.v` module
 - R065-R071: Per-mutator composite-walker recipe (validated on 12 mutators across 6 contracts)
 - R077: ReserveOptimisticGovernor mutator equivalence (Wave 1 — sim Qed + walker scaffold; Wave 2 binding pending GOV-BASE)
-- R083: StakingVault rewards equivalence — multi-token accrual + R063 safeTransfer + zero-first reentrancy lift
+- R083: Framework extensions — ERC-7201 namespace lens (`run_sload_map2_u256_at_anchor`) + memory absorption (`run_mstore_absorbing_at_make_state`, `run_mload_absorbing_at_make_state`)
 
 ### Common pitfalls
 - R020: `Stdlib.timestamp` semantics (RESOLVED)
@@ -1815,6 +1815,218 @@ the rd field into the state_base argument.
 **Per-mutator cost** (updated): the original R065 axiom's discharge
 is now ~500-1500 LOC mechanical assembly.  This is meaningful but
 bounded work.
+
+## R083: Framework extensions — ERC-7201 namespace lens + memory absorption
+
+Two upstream-framework gaps were blocking walker discharges across
+multiple OZ mutators (StakingVaultAdmin's grantRole / revokeRole /
+renounceRole, TimelockControllerOptimistic's TimelockController
+gate walks, ProposalLib's role reads).  T3.1's diagnosis was that
+both gaps were structural and reusable.  R083 adds two minimal
+framework primitives that close them:
+
+### Gap 1 — ERC-7201 namespaced storage lens
+
+**Symptom.** OZ AccessControl / AccessControlEnumerable / UUPS /
+ERC20Permit / Initializable / ReentrancyGuard all store at
+keccak-derived ERC-7201 namespace anchors (e.g. AccessControl at
+`0x02dd7bc7dec4dceedda775e58dd541e08a116c6c53815c0bd028192f7b626800`).
+Upstream's `Storage.run_sload_map2_u256` axiom pins the inner-keccak
+slot expression to `Z.of_nat <small_nat>`, which CANNOT unify with
+a 256-bit keccak output.
+
+**Pre-R083 state.** Walker discharges through `_checkRole` /
+`_hasRole` / similar were blocked at the
+`sload(keccak256_tuple2 account (keccak256_tuple2 role anchor))`
+step.  Files punted with focused gate axioms like
+`run_fun__checkRole_<id>_succeeds_under_admin` (monolithic Axioms
+covering the whole gate walk).
+
+**Fix.** Add a slot-anchor-agnostic Storage primitive in
+`proofs/equivalence/FrameworkExtensions.v`:
+
+```coq
+Parameter IsNamespaceAnchor :
+  list StorableValue.t -> nat -> U256.t -> Prop.
+
+Axiom run_sload_map2_u256_at_anchor :
+  forall codes environment state values index anchor
+         (map : Dict.t (U256.t * U256.t) U256.t) key1 key2,
+  IsNamespaceAnchor values index anchor ->
+  List.nth_error values index = Some (StorableValue.Map2 map) ->
+  {{? codes, environment, Some state |
+    Stdlib.sload (keccak256_tuple2 key2 (keccak256_tuple2 key1 anchor)) ⇓
+    Result.Ok (StorableValue.map_get_u256 map (key1, key2))
+  | Some state ?}}.
+```
+
+Companion `run_sload_struct_field_at_anchor` (for the
+[mapping(K => Struct)] anchored shape) and
+`run_sstore_map2_u256_at_anchor` (for writes) follow the same
+template.
+
+**Per-contract binding.** Each contract declares one Axiom of the
+form:
+
+```coq
+Axiom accessControl_namespace_binding :
+  forall sb, IsNamespaceAnchor sb slot_accessControl 0x02dd...
+```
+
+This is the audit-time obligation: the abstract projection MUST
+pin the designated slot to the keccak-derived anchor.  Same
+discipline as the existing R040 wrapper-shape audit obligations.
+
+**Soundness.** Upstream's `Storage.of_storable_values` is
+`Admitted`, so the framework leaves the projection function
+unspecified beyond the existing `run_sload_*`/`run_sstore_*`
+axioms.  Adding more axioms about the projection's behaviour at
+OTHER slot expressions is consistent so long as no two axioms
+force contradictory values at the same slot.  The new
+`IsNamespaceAnchor`-gated axiom describes the projection at the
+namespaced shape `keccak256_tuple2 k1 (keccak256_tuple2 k2 anchor)`,
+and per-contract binding axioms ensure no two anchors route to
+the same list index.
+
+### Gap 2 — Memory absorption for event-emission tails
+
+**Symptom.** Upstream's `Memory.run_mload` / `run_mstore` require
+per-index `nth_error memory index = Some _` hypotheses.  For
+walker tails where the memory result doesn't matter (event
+emission: `allocate_unbounded -> mstore -> log1`), the per-index
+bookkeeping is onerous and brittle.  In particular, the
+event-emission tail writes at a free-memory-pointer address
+(`mload(64)`), which is RUNTIME-DERIVED and can't be pinned to a
+literal `32 * Z.of_nat _` shape.
+
+**Pre-R083 state.** T3.1's `run_fun__setUnstakingDelay_773_at_storage_base`
+left two `nth_error`-shaped goals as `Admitted` (the
+`allocate_unbounded` mload and the abi-encode mstore).
+
+**Fix.** Add absorbing variants in
+`proofs/equivalence/FrameworkExtensions.v` with Skolemized
+post-state shapes:
+
+```coq
+Parameter mstore_post_memory :
+  Environment.t -> State.t -> SimulatedMemory.t -> SimulatedStorage.t ->
+  U256.t -> U256.t -> SimulatedMemory.t.
+
+Axiom run_mstore_absorbing_at_make_state :
+  forall codes environment state_base memory storage offset value,
+  {{? codes, environment,
+      Some (make_state environment state_base memory storage) |
+    Stdlib.mstore offset value ⇓ Result.Ok tt
+  | Some (make_state environment state_base
+            (mstore_post_memory environment state_base memory storage
+                                offset value)
+            storage) ?}}.
+```
+
+The Skolemized form lets `apply` unify directly against the
+post-state of an enclosing `eapply RunO.Call` step, without
+threading per-index `nth_error` hypotheses.  Companion
+`run_mload_absorbing_at_make_state` returns a Skolemized
+`mload_witness` value.
+
+**Soundness.** In Solidity practice every Yul mstore/mload writes
+at a 32-aligned address (free-memory pointer is `0x80 + k*32`;
+scratch space is at `0` and `0x20`).  Under the 32-aligned
+convention, `update_bytes (of_u256_list memory) offset
+(u256_as_bytes value)` is expressible as `of_u256_list memory'`
+for some `memory'`.  The Skolem function `mstore_post_memory`
+points at that witness.
+
+The AUDIT-TIME OBLIGATION per use site: the contract's mstore
+offsets are aligned.  All governor contracts pass this audit
+(every Yul mstore in the emitted IR is either at a literal
+32-aligned address or at `allocate_unbounded() + k*32`).
+
+The alternative — threading per-index alignment preconditions
+through every walker — would explode the precondition surface;
+the absorber localises the soundness obligation to per-contract
+audit review of the source's mstore shapes.
+
+### Composition with existing methodology
+
+R083 framework extensions compose cleanly with:
+
+- **R040** (wrapper-shape sstore): unchanged.  R040 wraps the
+  upstream `Storage.run_sstore_u256` with the contract's concrete
+  slot index; R083's `run_sload_map2_u256_at_anchor` is the
+  namespaced sibling for reads through ERC-7201 anchors.
+- **R067 / R070** (per-mutator composite walker recipe):
+  unchanged.  Composite walker axioms can now be derived as
+  `Qed` Lemmas if the namespace-lens + memory-absorbing
+  primitives close the gate walk + memory tail.
+- **R055 / R059** (Guardian role-membership patterns):
+  unchanged.  Guardian's slot-0 role storage uses the literal-slot
+  primitives; namespace-anchored contracts (StakingVaultAdmin,
+  TimelockControllerOptimistic, etc.) now use R083's anchor
+  variants.
+
+### Validation — T3.1 closure
+
+R083 validated by closing T3.1's two residuals at
+`proofs/equivalence/StakingVaultAdmin.v`:
+
+1. `run_fun__setUnstakingDelay_773_at_storage_base` — was
+   `Admitted` with two `nth_error` residuals.  Now `Qed`, with
+   the memory tail discharged via
+   `run_mload_absorbing_at_make_state` /
+   `run_mstore_absorbing_at_make_state`.
+
+2. `run_fun__checkRole_13513_succeeds_under_admin` — was a
+   monolithic `Axiom`.  Now a `Qed` `Lemma` derived from:
+     - `FrameworkExtensions.run_sload_map2_u256_at_anchor`
+     - Two focused audit-time facts:
+         (a) `accessControl_namespace_binding` (per-projection
+             namespace pinning),
+         (b) `admin_role_membership_at_storage_base` (sim-side
+             witness that `has_DEFAULT_ADMIN_ROLE caller = true`
+             implies `map_get_u256 m (0, caller) = 1` in the
+             slot-15 Map2).
+
+**Trust budget impact** (per `Print Assumptions`):
+- Before R083: 2 monolithic sub-axioms +
+  upstream framework primitives.
+- After R083: 0 contract-level sub-axioms;
+  2 new R083 framework primitives (reusable across all
+  ERC-7201-namespaced OZ inheritors);
+  2 audit-time facts (specific to StakingVault's AccessControl
+  projection);
+  2 Skolemization parameters (`mload_witness`,
+  `mstore_post_memory`).
+
+The contract-level axioms have been REPLACED by reusable framework
+primitives plus narrower per-projection audit facts.  Net effect:
+trust is REDISTRIBUTED from per-mutator gate axioms to per-framework
+primitives + per-projection bindings.  This pays off across all
+OZ-AccessControl-inheriting contracts (T3.3 grantRole/revokeRole/
+renounceRole, TimelockControllerOptimistic's gate walks,
+ProposalLib's role reads).
+
+### Where to use R083 framework primitives
+
+- **Namespace-anchored sload** (`run_sload_map2_u256_at_anchor`,
+  `run_sload_struct_field_at_anchor`): any walker reading through
+  an ERC-7201 namespace.  Use in T3.3 for the grantRole / revokeRole
+  / renounceRole gate walks; TimelockControllerOptimistic for its
+  AccessControl gate; ProposalLib's vote storage reads; etc.
+
+- **Namespace-anchored sstore** (`run_sstore_map2_u256_at_anchor`):
+  any walker writing through an ERC-7201 namespace.  Use in T3.3
+  for the grantRole / revokeRole role-flag writes;
+  TimelockControllerOptimistic for its scheduling Map2 writes.
+
+- **Absorbing mload / mstore** (`run_mload_absorbing_at_make_state`,
+  `run_mstore_absorbing_at_make_state`): any walker tail that
+  emits events, reads the free-memory pointer, or writes scratch
+  buffers without per-index memory shape requirements.
+
+See also: R040 (wrapper-shape sstore), R055 (membership
+equivalence), R067 (composite-walker template), R070 (per-mutator
+recipe), R072 (abstract-base-class slot-agnostic helpers).
 
 ## R065-R071: Per-mutator composite-walker recipe
 

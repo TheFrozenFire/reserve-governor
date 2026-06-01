@@ -1,85 +1,232 @@
 # Theorem: StakingVaultAdminEquivalence.run_setUnstakingDelay_equivalent
-# Source:  StakingVaultAdmin.v:1814
+# Source:  StakingVaultAdmin.v:2409
 # Module:  StakingVaultAdminEquivalence
 #
 Axioms:
+RocqOfSolidity.CanonizeState.with_current_storage_twice_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (storage1 storage2 : RocqOfSolidity.Storage.t),
+  RocqOfSolidity.State.with_current_storage environment
+    (RocqOfSolidity.State.with_current_storage environment state storage1)
+    storage2 =
+  RocqOfSolidity.State.with_current_storage environment state storage2
+RocqOfSolidity.CanonizeState.update_memory_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (new_memory : list RocqOfSolidity.U256.t),
+  RecordUpdate.set RocqOfSolidity.State.memory
+    (RocqOfSolidity.Memory.of_u256_list new_memory)
+    (RocqOfSolidity.make_state environment state memory storage) =
+  RocqOfSolidity.make_state environment state new_memory storage
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
-StakingVaultAdminEquivalence.run_fun__setUnstakingDelay_773_at_storage_base :
+RocqOfSolidity.Storage.run_sstore_u256 :
+  forall (values : list RocqOfSolidity.StorableValue.t) 
+    (index : nat) (value : RocqOfSolidity.U256.t)
+    (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t),
+  let state0 :=
+    RocqOfSolidity.State.with_current_storage environment state
+      (RocqOfSolidity.Storage.of_storable_values values) in
+  match
+    RocqOfSolidity.List.update_nth values index
+      (RocqOfSolidity.StorableValue.U256 value)
+  with
+  | Some values' =>
+      let state' :=
+        RocqOfSolidity.State.with_current_storage environment state0
+          (RocqOfSolidity.Storage.of_storable_values values') in
+      RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok tt)
+        (Some state0)
+        (RocqOfSolidity.Stdlib.sstore (BinInt.Z.of_nat index) value)
+        (Some state')
+  | None => True
+  end
+RocqOfSolidity.Storage.run_sload_u256 :
+  forall (values : list RocqOfSolidity.StorableValue.t) 
+    (index : nat) (value : RocqOfSolidity.U256.t)
+    (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t),
+  RocqOfSolidity.State.get_current_storage environment state =
+  Some (RocqOfSolidity.Storage.of_storable_values values) ->
+  List.nth_error values index =
+  Some (RocqOfSolidity.StorableValue.U256 value) ->
+  RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok value)
+    (Some state) (RocqOfSolidity.Stdlib.sload (BinInt.Z.of_nat index))
+    (Some state)
+FrameworkExtensions.FrameworkExtensions.run_sload_map2_u256_at_anchor :
   forall (codes : RocqOfSolidity.Codes.t)
-    (env : RocqOfSolidity.Environment.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (values : list RocqOfSolidity.StorableValue.t) 
+    (index : nat) (anchor : RocqOfSolidity.U256.t)
+    (map : RocqOfSolidity.Dict.t
+             (RocqOfSolidity.U256.t * RocqOfSolidity.U256.t)
+             RocqOfSolidity.U256.t) (key1 key2 : RocqOfSolidity.U256.t),
+  FrameworkExtensions.FrameworkExtensions.IsNamespaceAnchor values index
+    anchor ->
+  List.nth_error values index = Some (RocqOfSolidity.StorableValue.Map2 map) ->
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok
+       (RocqOfSolidity.StorableValue.map_get_u256 map (key1, key2)))
+    (Some state)
+    (RocqOfSolidity.Stdlib.sload
+       (RocqOfSolidity.keccak256_tuple2 key2
+          (RocqOfSolidity.keccak256_tuple2 key1 anchor))) 
+    (Some state)
+FrameworkExtensions.FrameworkExtensions.run_mstore_absorbing_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
     (state_base : RocqOfSolidity.State.t)
-    (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (memory : RocqOfSolidity.SimulatedMemory.t)
-    (delay : RocqOfSolidity.U256.t),
-  (exists v0 : RocqOfSolidity.U256.t,
-     List.nth_error storage_base
-       StakingVaultAdminEquivalence.slot_unstakingDelay =
-     Some (RocqOfSolidity.StorableValue.U256 v0)) ->
-  BinInt.Z.le delay
-    (BinNums.Zpos
-       (BinNums.xO
-          (BinNums.xO
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (offset value : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok tt)
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+    (RocqOfSolidity.Stdlib.mstore offset value)
+    (Some
+       (RocqOfSolidity.make_state environment state_base
+          (FrameworkExtensions.FrameworkExtensions.mstore_post_memory
+             environment state_base memory storage offset value) storage))
+RocqOfSolidity.Memory.run_mstore :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t) (words : list RocqOfSolidity.U256.t)
+    (index : nat) (word : RocqOfSolidity.U256.t),
+  match RocqOfSolidity.List.update_nth words index word with
+  | Some words' =>
+      let state' :=
+        RecordUpdate.set RocqOfSolidity.State.memory
+          (RocqOfSolidity.Memory.of_u256_list words') state in
+      RocqOfSolidity.RunO.t codes environment (RocqOfSolidity.Result.Ok tt)
+        (Some state)
+        (RocqOfSolidity.Stdlib.mstore
+           (BinInt.Z.mul
+              (BinNums.Zpos
+                 (BinNums.xO
+                    (BinNums.xO
+                       (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))
+              (BinInt.Z.of_nat index)) word) (Some state')
+  | None => True
+  end
+FrameworkExtensions.FrameworkExtensions.run_mload_absorbing_at_make_state :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state_base : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t)
+    (offset : RocqOfSolidity.U256.t),
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok
+       (FrameworkExtensions.FrameworkExtensions.mload_witness environment
+          state_base memory storage offset))
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+    (RocqOfSolidity.Stdlib.mload offset)
+    (Some (RocqOfSolidity.make_state environment state_base memory storage))
+RocqOfSolidity.run_keccak256_tuple2 :
+  forall (codes : RocqOfSolidity.Codes.t)
+    (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t) (memory : list RocqOfSolidity.U256.t)
+    (index : nat) (a b : RocqOfSolidity.U256.t),
+  state.(RocqOfSolidity.State.memory) =
+  RocqOfSolidity.Memory.of_u256_list memory ->
+  List.nth_error memory index = Some a ->
+  List.nth_error memory (S index) = Some b ->
+  RocqOfSolidity.RunO.t codes environment
+    (RocqOfSolidity.Result.Ok (RocqOfSolidity.keccak256_tuple2 a b))
+    (Some state)
+    (RocqOfSolidity.Stdlib.keccak256
+       (BinInt.Z.mul
+          (BinNums.Zpos
              (BinNums.xO
-                (BinNums.xO
-                   (BinNums.xO
-                      (BinNums.xO
-                         (BinNums.xO
-                            (BinNums.xO
-                               (BinNums.xO
-                                  (BinNums.xI
-                                     (BinNums.xO
-                                        (BinNums.xI
-                                           (BinNums.xO
-                                              (BinNums.xI
-                                                 (BinNums.xI
-                                                 (BinNums.xI
-                                                 (BinNums.xO
-                                                 (BinNums.xO
-                                                 (BinNums.xI (...))))))))))))))))))))) ->
-  BinInt.Z.le BinNums.Z0 delay ->
-  exists memory' : RocqOfSolidity.SimulatedMemory.t,
-    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
-      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-      (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun__setUnstakingDelay_773
-         delay)
-      (Some
-         (RocqOfSolidity.make_state env state_base memory'
-            (StakingVaultAdminEquivalence.update_slot storage_base
-               StakingVaultAdminEquivalence.slot_unstakingDelay
-               (RocqOfSolidity.StorableValue.U256 delay))))
-StakingVaultAdminEquivalence.run_fun__checkRole_13513_succeeds_under_admin :
-  forall (codes : RocqOfSolidity.Codes.t)
-    (env : RocqOfSolidity.Environment.t)
-    (state_base : RocqOfSolidity.State.t)
-    (storage_base : RocqOfSolidity.SimulatedStorage.t)
-    (memory : RocqOfSolidity.SimulatedMemory.t)
-    (role : RocqOfSolidity.U256.t),
-  StakingVaultAdminEquivalence.has_DEFAULT_ADMIN_ROLE
-    env.(RocqOfSolidity.Environment.caller) = true ->
-  role = BinNums.Z0 ->
-  (exists
-     (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
-     memory = (w0 :: w1 :: rest)%list) ->
-  exists memory' : RocqOfSolidity.SimulatedMemory.t,
-    RocqOfSolidity.RunO.t codes env (RocqOfSolidity.Result.Ok tt)
-      (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-      (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun__checkRole_13513
-         role)
-      (Some (RocqOfSolidity.make_state env state_base memory' storage_base))
+                (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))
+          (BinInt.Z.of_nat index))
+       (BinInt.Z.mul
+          (BinNums.Zpos
+             (BinNums.xO
+                (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))
+          (BinNums.Zpos (BinNums.xO BinNums.xH)))) 
+    (Some state)
 RocqOfSolidity.Memory.of_u256_list :
   list RocqOfSolidity.U256.t -> RocqOfSolidity.Memory.t
 RocqOfSolidity.Storage.of_storable_values :
   list RocqOfSolidity.StorableValue.t -> RocqOfSolidity.Storage.t
+FrameworkExtensions.FrameworkExtensions.mstore_post_memory :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedMemory.t
+FrameworkExtensions.FrameworkExtensions.mload_witness :
+  RocqOfSolidity.Environment.t ->
+  RocqOfSolidity.State.t ->
+  RocqOfSolidity.SimulatedMemory.t ->
+  RocqOfSolidity.SimulatedStorage.t ->
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
 PrimInt63.lxor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.ltb : PrimInt63.int -> PrimInt63.int -> bool
 PrimInt63.lsr : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.lsl : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.lor : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
 PrimInt63.land : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+StakingVaultAdminEquivalence.keccak256_tuple2_offset_bound :
+  forall key index offset : RocqOfSolidity.U256.t,
+  BinInt.Z.le BinNums.Z0 offset /\
+  BinInt.Z.lt offset
+    (BinNums.Zpos
+       (BinNums.xO
+          (BinNums.xO (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH)))))) ->
+  BinInt.Z.le BinNums.Z0 (RocqOfSolidity.keccak256_tuple2 key index) /\
+  BinInt.Z.lt
+    (BinInt.Z.add (RocqOfSolidity.keccak256_tuple2 key index) offset)
+    (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+       (BinNums.Zpos
+          (BinNums.xO
+             (BinNums.xO
+                (BinNums.xO
+                   (BinNums.xO
+                      (BinNums.xO
+                         (BinNums.xO (BinNums.xO (BinNums.xO BinNums.xH))))))))))
+RocqOfSolidity.keccak256_tuple2 :
+  RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t -> RocqOfSolidity.U256.t
 PrimInt63.int : Set
 StakingVaultAdminEquivalence.has_DEFAULT_ADMIN_ROLE :
   RocqOfSolidity.U256.t -> bool
+RocqOfSolidity.get_memory_make_state_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t)
+    (memory : RocqOfSolidity.SimulatedMemory.t)
+    (storage : RocqOfSolidity.SimulatedStorage.t),
+  (RocqOfSolidity.make_state environment state memory storage)
+  .(RocqOfSolidity.State.memory) = RocqOfSolidity.Memory.of_u256_list memory
+RocqOfSolidity.State.get_current_storage_with_current_storage_eq :
+  forall (environment : RocqOfSolidity.Environment.t)
+    (state : RocqOfSolidity.State.t) (storage : RocqOfSolidity.Storage.t),
+  RocqOfSolidity.State.get_current_storage environment
+    (RocqOfSolidity.State.with_current_storage environment state storage) =
+  Some storage
 PrimInt63.eqb : PrimInt63.int -> PrimInt63.int -> bool
+StakingVaultAdminEquivalence.admin_role_membership_at_storage_base :
+  forall (sb : RocqOfSolidity.SimulatedStorage.t)
+    (caller : RocqOfSolidity.U256.t),
+  StakingVaultAdminEquivalence.has_DEFAULT_ADMIN_ROLE caller = true ->
+  exists
+    m : RocqOfSolidity.Dict.t (RocqOfSolidity.U256.t * RocqOfSolidity.U256.t)
+          RocqOfSolidity.U256.t,
+    List.nth_error sb StakingVaultAdminEquivalence.slot_accessControl =
+    Some (RocqOfSolidity.StorableValue.Map2 m) /\
+    RocqOfSolidity.StorableValue.map_get_u256 m (BinNums.Z0, caller) =
+    BinNums.Zpos BinNums.xH
 PrimInt63.add : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+StakingVaultAdminEquivalence.accessControl_namespace_binding :
+  forall sb : RocqOfSolidity.SimulatedStorage.t,
+  FrameworkExtensions.FrameworkExtensions.IsNamespaceAnchor sb
+    StakingVaultAdminEquivalence.slot_accessControl
+    StakingVaultAdminEquivalence.accessControl_namespace_anchor
 Theory:
 Set is impredicative

@@ -1,5 +1,5 @@
 # Theorem: ReserveOptimisticGovernorEquivalence.run_castVote_equivalent
-# Source:  ReserveOptimisticGovernor.v:1217
+# Source:  ReserveOptimisticGovernor.v:1447
 # Module:  ReserveOptimisticGovernorEquivalence
 #
 Axioms:
@@ -46,6 +46,13 @@ ReserveOptimisticGovernorEquivalence.run_fun_castVote_4378_at_proj_sim :
             (ReserveOptimisticGovernorEquivalence.proj_post_castVote_4378
                storage_base proposalId voter support weight
                ReserveOptimisticGovernorEquivalence.now_timestamp)))
+ReserveOptimisticGovernorEquivalence.proj_post_castVote_4378_observes :
+  forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (pid : RocqOfSolidity.U256.t) (voter : Governor.Governor.Address)
+    (support weight now : RocqOfSolidity.U256.t),
+  ReserveOptimisticGovernorEquivalence.eq_at_governance_call
+    (ReserveOptimisticGovernorEquivalence.proj_post_castVote_4378
+       storage_base pid voter support weight now) storage_base
 ReserveOptimisticGovernorEquivalence.proj_post_castVote_4378 :
   RocqOfSolidity.SimulatedStorage.t ->
   RocqOfSolidity.U256.t ->

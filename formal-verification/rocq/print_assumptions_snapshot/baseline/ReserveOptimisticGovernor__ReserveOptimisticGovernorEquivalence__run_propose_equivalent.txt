@@ -1,5 +1,5 @@
 # Theorem: ReserveOptimisticGovernorEquivalence.run_propose_equivalent
-# Source:  ReserveOptimisticGovernor.v:1165
+# Source:  ReserveOptimisticGovernor.v:1386
 # Module:  ReserveOptimisticGovernorEquivalence
 #
 Axioms:
@@ -36,6 +36,16 @@ ReserveOptimisticGovernorEquivalence.run_fun_propose_389_at_proj_sim :
                storage_base pid env.(RocqOfSolidity.Environment.caller)
                votingDelay votingPeriod
                ReserveOptimisticGovernorEquivalence.now_timestamp)))
+ReserveOptimisticGovernorEquivalence.proj_post_propose_389_observes :
+  forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
+    (pid : RocqOfSolidity.U256.t) (proposer : Governor.Governor.Address)
+    (votingDelay votingPeriod now : RocqOfSolidity.U256.t),
+  ReserveOptimisticGovernorEquivalence.eq_at_governance_call
+    (ReserveOptimisticGovernorEquivalence.proj_post_propose_389 storage_base
+       pid proposer votingDelay votingPeriod now) storage_base /\
+  ReserveOptimisticGovernorEquivalence.eq_at_optimistic_proposal_details
+    (ReserveOptimisticGovernorEquivalence.proj_post_propose_389 storage_base
+       pid proposer votingDelay votingPeriod now) storage_base
 ReserveOptimisticGovernorEquivalence.proj_post_propose_389 :
   RocqOfSolidity.SimulatedStorage.t ->
   RocqOfSolidity.U256.t ->

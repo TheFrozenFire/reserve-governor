@@ -1,5 +1,5 @@
 # Theorem: StakingVaultAdminEquivalence.run_revokeRole_equivalent
-# Source:  StakingVaultAdmin.v:1956
+# Source:  StakingVaultAdmin.v:2551
 # Module:  StakingVaultAdminEquivalence
 #
 Axioms:
