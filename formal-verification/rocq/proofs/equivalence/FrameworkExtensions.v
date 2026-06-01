@@ -693,4 +693,87 @@ Module FrameworkExtensions.
   Ltac apply_run_sload_absorbing :=
     apply run_sload_absorbing_at_make_state.
 
+  (** ====================================================================
+      R107 — Shallow.let_state / Shallow.if_ structural absorbers
+      ====================================================================
+
+      Many Yul walkers wrap the post-condition checks in
+      [let_state~ 'tt := Shallow.if_ cond <revert_block> tt default~ tt in
+       <continuation>].  Under our preconditions [cond = 0], the revert
+      branch is skipped and the [Shallow.if_] reduces by computation to
+      [M.pure (BlockUnit.Tt, tt)].  The outer [Shallow.let_state] then
+      dispatches on the BlockUnit mode.  Closing this by hand requires
+      either (a) walking the four BlockUnit constructors via [destruct],
+      most of which are contradictory, or (b) absorbing the dispatch into
+      a single structural lemma.
+
+      Route (b) is the absorber pattern below.  It is reusable across
+      every walker whose Shallow.if_ branch returns the Tt mode — i.e.
+      every "if (revert_cond) revert(...)" pattern after the cond is
+      proven zero.  See WISDOM R107 for the methodology.
+
+      Soundness: these are Qed Lemmas.  Their proofs unfold
+      [Shallow.let_state] / [Shallow.if_] and apply [RunO.Let] + [RunO.Pure]
+      structurally.  No new audit-time axioms. *)
+
+  (** Absorber for [Shallow.let_state] when the inner expression is
+      [M.pure (BlockUnit.Tt, x)].  Reduces the post-let_state expression
+      to [snd (body x)].  Reusable for ANY walker whose preceding
+      [Shallow.if_] / [Shallow.let_state] body returns the Tt mode. *)
+  Lemma run_shallow_let_state_pure_BlockUnit_Tt
+      (codes : Codes.t) (env : Environment.t)
+      {S1 S2 : Set}
+      (state : option RocqOfSolidity.State.t)
+      (x : S1)
+      (body : S1 -> S2 * Shallow.t S2)
+      (output : Result.t (BlockUnit.t * S2))
+      (state' : option RocqOfSolidity.State.t)
+      (H : {{? codes, env, state | snd (body x) ⇓ output | state' ?}}) :
+    {{? codes, env, state |
+      Shallow.let_state (M.pure (BlockUnit.Tt, x)) body ⇓ output | state' ?}}.
+  Proof.
+    unfold Shallow.let_state, M.strong_let_, M.generic_let, M.pure.
+    eapply RunO.Let.
+    - apply RunO.Pure.
+    - cbn match. exact H.
+  Qed.
+
+  (** [Shallow.if_ 0 success failure] takes the failure branch.  By
+      [Shallow.if_]'s definition this evaluates to
+      [M.pure (BlockUnit.Tt, failure)] — a constructor [Result.Ok]. *)
+  Lemma run_shallow_if_zero
+      (codes : Codes.t) (env : Environment.t)
+      {S : Set}
+      (state : option RocqOfSolidity.State.t)
+      (success : M.t (BlockUnit.t * S))
+      (failure : S) :
+    {{? codes, env, state |
+      Shallow.if_ 0 success failure ⇓ Result.Ok (BlockUnit.Tt, failure)
+    | state ?}}.
+  Proof.
+    unfold Shallow.if_. cbn. apply RunO.Pure.
+  Qed.
+
+  (** Composite absorber: [Shallow.let_state] wrapping a [Shallow.if_]
+      with condition known to be zero (no-revert branch).  The post-
+      let_state continuation collapses to [snd (body failure)], which
+      then typically further reduces via [cbn]/[simpl]. *)
+  Lemma run_shallow_let_state_if_zero
+      (codes : Codes.t) (env : Environment.t)
+      {S1 S2 : Set}
+      (state : option RocqOfSolidity.State.t)
+      (success : M.t (BlockUnit.t * S1))
+      (failure : S1)
+      (body : S1 -> S2 * Shallow.t S2)
+      (output : Result.t (BlockUnit.t * S2))
+      (state' : option RocqOfSolidity.State.t)
+      (H : {{? codes, env, state | snd (body failure) ⇓ output | state' ?}}) :
+    {{? codes, env, state |
+      Shallow.let_state (Shallow.if_ 0 success failure) body ⇓ output | state' ?}}.
+  Proof.
+    unfold Shallow.if_. cbn.
+    apply (run_shallow_let_state_pure_BlockUnit_Tt
+             codes env state failure body output state' H).
+  Qed.
+
 End FrameworkExtensions.
