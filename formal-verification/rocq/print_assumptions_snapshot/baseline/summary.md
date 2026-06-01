@@ -60,7 +60,7 @@ Counts:
 | TimelockControllerOptimistic.v | `run_fun_executeBatch_1552_equivalent` | TimelockControllerOptimisticEquivalence | 17 | 5 | OK |
 | TimelockControllerOptimistic.v | `run_fun_cancel_1394_equivalent` | TimelockControllerOptimisticEquivalence | 18 | 6 | OK |
 | UnstakingManager.v | `run_createLock_make_state` | UnstakingManagerEquivalence | 14 | 2 | OK |
-| UnstakingManager.v | `run_cancelLock_make_state` | UnstakingManagerEquivalence | 14 | 2 | OK |
+| UnstakingManager.v | `run_cancelLock_make_state` | UnstakingManagerEquivalence | 15 | 3 | OK |
 | UnstakingManager.v | `run_claimLock_make_state` | UnstakingManagerEquivalence | 14 | 2 | OK |
 | VersionRegistry.v | `run_isDeprecated_equivalent_scaffold` | VersionRegistryEquivalence | 19 | 7 | OK |
 | VersionRegistry.v | `run_deployments_equivalent_scaffold` | VersionRegistryEquivalence | 19 | 7 | OK |

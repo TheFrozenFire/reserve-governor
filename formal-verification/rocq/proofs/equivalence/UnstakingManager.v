@@ -836,6 +836,40 @@ Module UnstakingManagerEquivalence.
         token spender value ⇓ Result.Ok tt
     | Some (make_state env state_base memory' storage) ?}}.
 
+  (** ----- T-VAULT deployment-fact spec + axiom (R098 / R102 — cancelLock) -----
+
+      cancelLock's body dispatches a direct [Stdlib.call] to the
+      registered StakingVault.deposit selector (0x6e553f65), passing
+      [amount] (the cancelled lock's amount) + [user] (the lock's
+      original creator) as the deposit's [assets] + [receiver]
+      arguments.  Per R098's structural diagnosis, this is NOT a
+      SafeERC20 wrapper — it's a direct external call to the
+      registered StakingVault.
+
+      The audit-time T-VAULT trust boundary: the deployed StakingVault
+      is well-behaved per its ERC4626 contract — [deposit(assets,
+      receiver)] returns a non-zero share count and does not revert.
+
+      Declared here (above the inner-body Axioms) so that the
+      cancelLock inner-body Axiom can carry an explicit T-VAULT
+      precondition.  The [Axiom] form is the audit-time deployment
+      witness, peer to [forceApprove_T_TOKEN] et al. *)
+
+  Parameter stakingVault_deposit_success_spec :
+    Address (* vault *) -> U256.t (* assets *) -> Address (* receiver *) -> Prop.
+
+  (** T-VAULT deployment-fact axiom (R102).  Peer obligation to the
+      T-TOKEN family.  Witnesses: the deployed StakingVault (at
+      immutable slot 13) is well-behaved per ERC4626 — [deposit(assets,
+      receiver)] accepts the call, returns a non-zero share count,
+      does not revert.  Surfaced now (alongside T-TOKEN) so that the
+      cancelLock walker workstream's T-VAULT precondition flows
+      through to the milestone Theorem's [Print Assumptions] without
+      requiring a follow-up commit at full inner-body discharge time. *)
+  Axiom stakingVault_deposit_T_VAULT :
+    forall (vault : Address) (assets : U256.t) (receiver : Address),
+    stakingVault_deposit_success_spec vault assets receiver.
+
   (** ----- Per-mutator composite walker axioms (R082 shape) -----
 
       Each bundles the full Yul body's transitions from [proj_sim sim]
@@ -939,6 +973,19 @@ Module UnstakingManagerEquivalence.
        0 <= vault_addr < 2^160 ->
        forceApprove_success_spec token vault_addr
          (lock_at sim lockId).(Lock.amount)) ->
+    (* Audit obligation: the cancelLock body's direct [Stdlib.call]
+       to StakingVault.deposit (selector 0x6e553f65; loadimmutable
+       slot 13) must succeed.  Per R099's T-VAULT diagnosis, this is
+       a peer obligation to T-TOKEN.  The witness is
+       [stakingVault_deposit_success_spec vault_addr amount user]:
+       the deployed StakingVault.deposit accepts the (assets =
+       cancelled amount, receiver = lock's original user) call and
+       does not revert. *)
+    (forall vault_addr,
+       0 <= vault_addr < 2^160 ->
+       stakingVault_deposit_success_spec vault_addr
+         (lock_at sim lockId).(Lock.amount)
+         (lock_at sim lockId).(Lock.user)) ->
     (exists w0 w1 rest, memory = w0 :: w1 :: rest) ->
     exists memory',
     {{? codes, env,
@@ -1001,31 +1048,6 @@ Module UnstakingManagerEquivalence.
   Axiom safeTransferFrom_T_TOKEN :
     forall (token from to : Address) (amount : U256.t),
     safeTransferFrom_success_spec token from to amount.
-
-  (** ----- T-VAULT deployment-fact spec (R098 / cancelLock) -----
-
-      cancelLock's body dispatches a direct [Stdlib.call] to the
-      registered StakingVault.deposit selector (0x6e553f65), passing
-      [amount] (the cancelled lock's amount) + [user] (the lock's
-      original creator) as the deposit's [assets] + [receiver]
-      arguments.  Per R098's structural diagnosis, this is NOT a
-      SafeERC20 wrapper — it's a direct external call to the
-      registered StakingVault.
-
-      The audit-time T-VAULT trust boundary: the deployed StakingVault
-      is well-behaved per its ERC4626 contract — [deposit(assets,
-      receiver)] returns a non-zero share count and does not revert.
-
-      Surfaced as a [Parameter] (success spec) per the R094 T-TOKEN
-      pattern.  No [Axiom] discharge is attempted in this commit;
-      the witness is the future-work obligation tied to the inner-body
-      walker discharge (Phase B per R098).  The [Parameter] declaration
-      makes the obligation EXPLICIT so that when the cancelLock inner-
-      body walker is closed in a follow-up task, the T-VAULT
-      precondition is already named at the audit layer. *)
-
-  Parameter stakingVault_deposit_success_spec :
-    Address (* vault *) -> U256.t (* assets *) -> Address (* receiver *) -> Prop.
 
   Axiom forceApprove_T_TOKEN :
     forall (token spender : Address) (value : U256.t),
@@ -1117,6 +1139,8 @@ Module UnstakingManagerEquivalence.
              H_user H_not_claimed H_caller_bound).
     - intros token vault_addr _ _.
       apply forceApprove_T_TOKEN.
+    - intros vault_addr _.
+      apply stakingVault_deposit_T_VAULT.
     - exact H_mem.
   Qed.
 

@@ -1,9 +1,15 @@
 # Theorem: UnstakingManagerEquivalence.run_cancelLock_make_state
-# Source:  UnstakingManager.v:1283
+# Source:  UnstakingManager.v:1307
 # Module:  UnstakingManagerEquivalence
 #
 Axioms:
 PrimInt63.sub : PrimInt63.int -> PrimInt63.int -> PrimInt63.int
+UnstakingManagerEquivalence.stakingVault_deposit_T_VAULT :
+  forall (vault : UnstakingManager.UnstakingManager.Address)
+    (assets : RocqOfSolidity.U256.t)
+    (receiver : UnstakingManager.UnstakingManager.Address),
+  UnstakingManagerEquivalence.stakingVault_deposit_success_spec vault assets
+    receiver
 UnstakingManagerEquivalence.run_fun_cancelLock_212_inner_at_proj_sim :
   forall (codes : RocqOfSolidity.Codes.t)
     (env : RocqOfSolidity.Environment.t)
@@ -47,6 +53,21 @@ UnstakingManagerEquivalence.run_fun_cancelLock_212_inner_at_proj_sim :
    UnstakingManagerEquivalence.forceApprove_success_spec token vault_addr
      (UnstakingManager.UnstakingManager.lock_at sim lockId)
      .(UnstakingManager.UnstakingManager.Lock.amount)) ->
+  (forall vault_addr : BinNums.Z,
+   BinInt.Z.le BinNums.Z0 vault_addr /\
+   BinInt.Z.lt vault_addr
+     (BinInt.Z.pow (BinNums.Zpos (BinNums.xO BinNums.xH))
+        (BinNums.Zpos
+           (BinNums.xO
+              (BinNums.xO
+                 (BinNums.xO
+                    (BinNums.xO
+                       (BinNums.xO (BinNums.xI (BinNums.xO BinNums.xH))))))))) ->
+   UnstakingManagerEquivalence.stakingVault_deposit_success_spec vault_addr
+     (UnstakingManager.UnstakingManager.lock_at sim lockId)
+     .(UnstakingManager.UnstakingManager.Lock.amount)
+     (UnstakingManager.UnstakingManager.lock_at sim lockId)
+     .(UnstakingManager.UnstakingManager.Lock.user)) ->
   (exists
      (w0 w1 : RocqOfSolidity.U256.t) (rest : list RocqOfSolidity.U256.t),
      memory = (w0 :: w1 :: rest)%list) ->

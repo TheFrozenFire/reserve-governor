@@ -5459,3 +5459,209 @@ template).  R040 / R048 / R082 / R083 / R093 (the framework
 primitives consumed inside the modifier sub-axioms when those
 are eventually discharged in turn).
 
+## R102: UnstakingManager Phase B — T-VAULT axiom surfaced; deeper discharge deferred
+
+**Task #307 (R099 follow-up; R098 Phase B partial, 2026-06-01).**
+This entry executes the *first* of the three R099-listed Phase B
+forward-work items: surface the T-VAULT trust obligation for
+cancelLock's direct StakingVault.deposit call.  The other two
+Phase B items (per-Yul-wrapper absorbing Lemmas + the three inner-
+body walker discharges) remain forward work, with the structural
+barrier re-confirmed and the LOC budget unchanged.
+
+### What landed
+
+  - **`stakingVault_deposit_T_VAULT` Axiom added.**  Peer obligation
+    to the T-TOKEN family.  The deployment-fact axiom witnesses that
+    the registered StakingVault (immutable slot 13) is well-behaved
+    per its ERC4626 contract: `deposit(assets, receiver)` accepts
+    the call, returns a non-zero share count, does not revert.
+    Declared above the inner-body Axioms (the Parameter declaration
+    was moved up from its R099 location so the cancelLock inner-body
+    Axiom can carry an explicit T-VAULT precondition).
+
+  - **`run_fun_cancelLock_212_inner_at_proj_sim` precondition
+    extended with T-VAULT witness.**  Mirrors the existing T-TOKEN
+    precondition pattern: `forall vault_addr, ... stakingVault_deposit_success_spec
+    vault_addr (lock_at sim lockId).(amount) (lock_at sim lockId).(user)`.
+    The audit obligation now appears explicitly at the inner-body
+    sub-axiom layer rather than being hidden inside an opaque
+    walker discharge.
+
+  - **`run_fun_cancelLock_212_at_proj_sim` outer Lemma threads the
+    T-VAULT axiom.**  One extra `apply stakingVault_deposit_T_VAULT`
+    bullet in the proof; the milestone Theorem
+    `run_cancelLock_make_state` is unchanged.
+
+### Print Assumptions delta per milestone Theorem
+
+```
+Before (e9b0ce1, post-R099):                After (this commit):
+  - run_fun_cancelLock_212_inner_at_proj_sim   (unchanged, with
+                                                additional T-VAULT
+                                                precondition surfaced)
+                                              + stakingVault_deposit_T_VAULT (NEW)
+                                              + stakingVault_deposit_success_spec
+                                                (NEW — was Parameter, now
+                                                surfaces because the inner-
+                                                body Axiom's precondition
+                                                references it)
+  - forceApprove_T_TOKEN                       (unchanged)
+  - forceApprove_success_spec                  (unchanged)
+  - run_fun_createLock_144_inner_at_proj_sim   (unchanged)
+  - run_fun_claimLock_270_inner_at_proj_sim    (unchanged)
+```
+
+NET (cancelLock milestone): +2 assumptions surfaced (T-VAULT Axiom +
+spec Parameter).  createLock + claimLock unchanged in axiom set;
+only their source-line numbers shifted by 24.  The two new
+assumptions are AUDIT-VISIBLE T-VAULT obligations that previously
+were buried in the inner-body Axiom — sharper-shape per the R094
+trust-redistribution methodology.
+
+### Why this is the right partial step
+
+R099's Phase B forward-work plan listed three items:
+
+  1. Per-Yul-wrapper absorbing Lemmas (~200-400 LOC).
+  2. Inner-body walker discharge per mutator (~2500-3300 LOC total).
+  3. T-VAULT Axiom + observation bridge for cancelLock.
+
+Item 3 is *independent* of items 1-2 — it can be surfaced now,
+without committing to the per-wrapper primitive build or the body
+walker assembly.  Surfacing it now means:
+
+  - The audit shape is correct *today*: `Print Assumptions
+    run_cancelLock_make_state` lists T-VAULT alongside T-TOKEN,
+    making the per-deployment trust shape explicit at the
+    milestone-theorem layer.
+  - The full inner-body discharge (items 1 + 2) does not need to
+    re-thread T-VAULT through the walker scaffolding — the
+    precondition is already in place.
+  - A future R103+ task that walks the cancelLock Yul body can
+    consume `stakingVault_deposit_T_VAULT` as a callee-success
+    witness via the same R093 `call_make_state_bridge_absorbing`
+    primitive used for the SafeERC20 wrappers.
+
+### Why the full inner-body discharge is deferred
+
+The R098 + R099 LOC budget (2820-3920 LOC across 3 follow-up tasks)
+is unchanged.  The actual mechanical walker assembly per mutator
+requires:
+
+  - Per-Yul-wrapper Lemmas (7 wrapper names, 30-60 LOC each):
+    `run_mapping_index_access_t_mapping_t_uint256_struct_Lock_22_storage_of_t_uint256_absorbing`,
+    `run_read_from_storage_split_offset_0_t_uint256_absorbing`,
+    `run_read_from_storage_split_offset_0_t_address_absorbing`,
+    `run_update_storage_value_offset_0_t_uint256_to_t_uint256_absorbing`,
+    `run_update_storage_value_offset_0_t_address_to_t_address_absorbing`,
+    `run_storage_set_to_zero_t_struct_Lock_22_storage_absorbing`,
+    `run_clear_struct_storage_t_struct_Lock_22_storage_absorbing`.
+    The wrapper Definitions in UnstakingManager_shallow.v have
+    UNIQUE Yul names per contract but byte-identical bodies to
+    ProposalLib / VersionRegistry siblings — each requires a
+    reflexive per-name wrapper Lemma that forwards to the shared
+    AbiEncoding / framework primitive.
+
+  - Per-body walker LOC (R098 estimate):
+    - `cancelLock_212` inner: 1200-1500 LOC (the largest body —
+      direct call to StakingVault.deposit + forceApprove + storage
+      clear + log1).
+    - `createLock_144` inner: 800-1100 LOC (safeTransferFrom +
+      sload-increment-sstore at slot 0 + mapping_index_access +
+      3 update_storage_value calls + log4).
+    - `claimLock_270` inner: 500-700 LOC (the simplest — single
+      safeTransfer + 1 storage update + 2 storage reads + log1).
+
+  - R100-style "trivial outer-wrapper" narrowing (the technique
+    StakingVaultExchange used to retire its two inner-body Axioms)
+    does NOT apply here: UnstakingManager's `fun_<X>` bodies are
+    NOT thin modifier wrappers — they are 100-line direct bodies
+    with no convenient single-named intermediate function call.
+    A trivial outer-`M.pure tt`-shaving narrowing would give zero
+    trust delta (the existing inner-body Axiom already captures
+    the body; the sub-axiom would capture the same body minus the
+    outer monadic ceremony).  Not worth shipping.
+
+Total deferred work: 2820-3920 LOC across 3 follow-up tasks.
+
+### What this means for the audit story
+
+After R094 → R099 → R102, the audit obligations for the three
+UnstakingManager milestone Theorems are:
+
+  - **`run_createLock_make_state`**:
+    - `run_fun_createLock_144_inner_at_proj_sim` (inner-body Axiom)
+    - `safeTransferFrom_success_spec` (T-TOKEN spec)
+    - `safeTransferFrom_T_TOKEN` (T-TOKEN axiom)
+
+  - **`run_cancelLock_make_state`**:
+    - `run_fun_cancelLock_212_inner_at_proj_sim` (inner-body Axiom,
+      now carrying T-VAULT precondition)
+    - `forceApprove_success_spec` (T-TOKEN spec)
+    - `forceApprove_T_TOKEN` (T-TOKEN axiom)
+    - `stakingVault_deposit_success_spec` (T-VAULT spec — NEW)
+    - `stakingVault_deposit_T_VAULT` (T-VAULT axiom — NEW)
+
+  - **`run_claimLock_make_state`**:
+    - `run_fun_claimLock_270_inner_at_proj_sim` (inner-body Axiom)
+    - `safeTransfer_success_spec` (T-TOKEN spec)
+    - `safeTransfer_T_TOKEN` (T-TOKEN axiom)
+
+The T-VAULT obligation is now AS VISIBLE as the T-TOKEN obligations
+in `Print Assumptions` of `run_cancelLock_make_state`.  This is the
+sharper-shape audit trail the R094 / R086 methodology prescribes:
+auditors can read the assumption list and see exactly which
+external-contract trust boundaries the milestone depends on.
+
+### Methodology finding — narrowing limits
+
+The R100 modifier-wrapper narrowing template applied to
+StakingVaultExchange because the `fun__deposit_630` / `fun__withdraw_736`
+bodies were 2-3 lines (`let~ '(_, tt) := do~ modifier ... in M.pure tt`).
+The narrowing isolated the modifier call as a single intermediate
+axiom, then walked the trivial outer wrapper.
+
+UnstakingManager's `fun_createLock_144` / `fun_cancelLock_212` /
+`fun_claimLock_270` do NOT have this convenient shape — their
+bodies are 100-line direct let-bind chains with NO single
+intermediate named function call to factor out.  The "narrowing"
+that *could* be applied (shave the outermost `M.pure tt`) gives a
+sub-axiom whose body is the entire body minus one trivial step —
+no real trust delta.  This means:
+
+  - The R100 template's "narrow then walk the trivial outer wrapper"
+    pattern is NOT universal — it depends on the body shape.
+  - For solc-emitted bodies WITHOUT a clear single-named inner
+    helper, the only meaningful discharge is the full body walk
+    via the framework primitives (R083 / R040 / R048 / R093).
+  - The R099 Parameter→Definition refactor remains the canonical
+    unblocker for this shape — it removes the Skolem-mismatch
+    barrier, leaving only the mechanical walker assembly.
+
+### Validation
+
+  - Build: green (`rocq-build` exits 0; all 3 milestone Theorems
+    Qed against the updated inner-body Axiom shape and the new
+    T-VAULT Axiom).
+  - `Print Assumptions` cancelLock milestone: 2 new T-VAULT
+    assumptions surfaced (spec Parameter + Axiom); the inner-body
+    Axiom signature shows the new T-VAULT precondition.
+  - Snapshot baseline refreshed
+    (`print_assumptions_snapshot/baseline/UnstakingManager__*`).
+  - File delta: ~25 / -25 LOC in UnstakingManager.v (move
+    Parameter declaration + 14 LOC new T-VAULT precondition +
+    13 LOC new Axiom + outer Lemma's extra apply bullet).
+
+### See also
+
+R094 (the trust redistribution this entry follows up on — surfaces
+the T-VAULT spec parallel to its T-TOKEN siblings).  R098 (the
+structural diagnosis identifying T-VAULT as a needed obligation).
+R099 (Phase A — Parameter→Definition refactor; this entry executes
+the third Phase B forward-work item: T-VAULT Axiom + observation
+bridge).  R100 (StakingVaultExchange narrowing — methodology
+contrast).  R093 (framework primitive `call_make_state_bridge_absorbing`
+that a future R103+ walker discharge would consume to close
+cancelLock's StakingVault.deposit call).
+
