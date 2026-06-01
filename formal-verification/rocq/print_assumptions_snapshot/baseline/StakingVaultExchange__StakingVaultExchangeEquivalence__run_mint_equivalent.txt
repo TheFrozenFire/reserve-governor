@@ -1,5 +1,5 @@
 # Theorem: StakingVaultExchangeEquivalence.run_mint_equivalent
-# Source:  StakingVaultExchange.v:2368
+# Source:  StakingVaultExchange.v:2569
 # Module:  StakingVaultExchangeEquivalence
 #
 Axioms:
@@ -93,12 +93,6 @@ StakingVaultExchangeEquivalence.run_fun_maxMint_4173_returns :
     (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun_maxMint_4173
        receiver)
     (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-StakingVaultExchangeEquivalence.proj_post_mint_4356_observes :
-  forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
-    (caller shares receiver now_ : RocqOfSolidity.U256.t),
-  StakingVaultExchangeEquivalence.eq_at_roles
-    (StakingVaultExchangeEquivalence.proj_post_mint_4356 storage_base caller
-       shares receiver now_) storage_base
 StakingVaultExchangeEquivalence.proj_post_mint_4356_eq_deposit :
   forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (caller shares receiver now_ : RocqOfSolidity.U256.t),
@@ -107,18 +101,6 @@ StakingVaultExchangeEquivalence.proj_post_mint_4356_eq_deposit :
   StakingVaultExchangeEquivalence.proj_post_deposit_4312 storage_base caller
     (StakingVaultExchangeEquivalence.preview_mint_value storage_base shares)
     receiver now_
-StakingVaultExchangeEquivalence.proj_post_mint_4356 :
-  RocqOfSolidity.SimulatedStorage.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
-StakingVaultExchangeEquivalence.proj_post_deposit_4312 :
-  RocqOfSolidity.SimulatedStorage.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
 StakingVaultExchangeEquivalence.preview_mint_value_valid :
   forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (shares : RocqOfSolidity.U256.t),

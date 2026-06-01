@@ -1,5 +1,5 @@
 # Theorem: StakingVaultExchangeEquivalence.run_withdraw_equivalent
-# Source:  StakingVaultExchange.v:2421
+# Source:  StakingVaultExchange.v:2622
 # Module:  StakingVaultExchangeEquivalence
 #
 Axioms:
@@ -83,19 +83,6 @@ StakingVaultExchangeEquivalence.run_fun_maxWithdraw_4191_returns :
     (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun_maxWithdraw_4191
        owner)
     (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-StakingVaultExchangeEquivalence.proj_post_withdraw_4403_observes :
-  forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
-    (caller assets receiver owner now_ : RocqOfSolidity.U256.t),
-  StakingVaultExchangeEquivalence.eq_at_roles
-    (StakingVaultExchangeEquivalence.proj_post_withdraw_4403 storage_base
-       caller assets receiver owner now_) storage_base
-StakingVaultExchangeEquivalence.proj_post_withdraw_4403 :
-  RocqOfSolidity.SimulatedStorage.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
 StakingVaultExchangeEquivalence.preview_withdraw_value_nn :
   forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (assets : RocqOfSolidity.U256.t),

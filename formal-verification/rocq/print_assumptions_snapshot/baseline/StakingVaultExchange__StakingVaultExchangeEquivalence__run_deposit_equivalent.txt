@@ -1,5 +1,5 @@
 # Theorem: StakingVaultExchangeEquivalence.run_deposit_equivalent
-# Source:  StakingVaultExchange.v:2314
+# Source:  StakingVaultExchange.v:2515
 # Module:  StakingVaultExchangeEquivalence
 #
 Axioms:
@@ -93,18 +93,6 @@ StakingVaultExchangeEquivalence.run_fun_maxDeposit_4158_returns :
     (StakingVault_shallow.StakingVault_1721.StakingVault_1721_deployed.fun_maxDeposit_4158
        receiver)
     (Some (RocqOfSolidity.make_state env state_base memory storage_base))
-StakingVaultExchangeEquivalence.proj_post_deposit_4312_observes :
-  forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
-    (caller assets receiver now_ : RocqOfSolidity.U256.t),
-  StakingVaultExchangeEquivalence.eq_at_roles
-    (StakingVaultExchangeEquivalence.proj_post_deposit_4312 storage_base
-       caller assets receiver now_) storage_base
-StakingVaultExchangeEquivalence.proj_post_deposit_4312 :
-  RocqOfSolidity.SimulatedStorage.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t ->
-  RocqOfSolidity.U256.t -> RocqOfSolidity.SimulatedStorage.t
 StakingVaultExchangeEquivalence.preview_deposit_value_nn :
   forall (storage_base : RocqOfSolidity.SimulatedStorage.t)
     (assets : RocqOfSolidity.U256.t),

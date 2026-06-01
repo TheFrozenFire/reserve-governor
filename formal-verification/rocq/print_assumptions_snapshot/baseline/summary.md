@@ -44,10 +44,10 @@ Counts:
 | StakingVaultDelegation_methodology.v | `run_delegateOptimistic_equivalent_methodology` | StakingVaultDelegationMethodology | 1 | 1 | OK |
 | StakingVaultDelegation_methodology.v | `run_delegateBySig_equivalent_methodology` | StakingVaultDelegationMethodology | 4 | 4 | OK |
 | StakingVaultDelegation_methodology.v | `run_delegateOptimisticBySig_equivalent_methodology` | StakingVaultDelegationMethodology | 4 | 4 | OK |
-| StakingVaultExchange.v | `run_deposit_equivalent` | StakingVaultExchangeEquivalence | 20 | 8 | OK |
-| StakingVaultExchange.v | `run_mint_equivalent` | StakingVaultExchangeEquivalence | 23 | 11 | OK |
-| StakingVaultExchange.v | `run_withdraw_equivalent` | StakingVaultExchangeEquivalence | 21 | 9 | OK |
-| StakingVaultExchange.v | `run_redeem_equivalent` | StakingVaultExchangeEquivalence | 24 | 12 | OK |
+| StakingVaultExchange.v | `run_deposit_equivalent` | StakingVaultExchangeEquivalence | 18 | 6 | OK |
+| StakingVaultExchange.v | `run_mint_equivalent` | StakingVaultExchangeEquivalence | 20 | 8 | OK |
+| StakingVaultExchange.v | `run_withdraw_equivalent` | StakingVaultExchangeEquivalence | 19 | 7 | OK |
+| StakingVaultExchange.v | `run_redeem_equivalent` | StakingVaultExchangeEquivalence | 21 | 9 | OK |
 | StakingVaultRewards.v | `run_setRewardRatio_equivalent_make_state` | StakingVaultRewardsEquivalence | 18 | 6 | OK |
 | StakingVaultRewards.v | `run_poke_equivalent_make_state` | StakingVaultRewardsEquivalence | 18 | 6 | OK |
 | StakingVaultRewards.v | `run_claimRewards_equivalent_make_state` | StakingVaultRewardsEquivalence | 19 | 7 | OK |

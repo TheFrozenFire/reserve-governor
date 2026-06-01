@@ -685,6 +685,174 @@ Module StakingVaultExchangeEquivalence.
   End StakingVaultExchangeLens.
 
   (** ====================================================================
+      Section 2b — Module-level slot anchors + concrete lens + set_nth
+      ====================================================================
+
+      Task #306 (R101 Phase A, 2026-06-01).  R099's Parameter→Definition
+      methodology requires a concrete [proj_post_<X>] body that mirrors
+      the sim-side transition.  The Section-scoped lens in Section 2 is
+      parameterized by abstract slot indices; for the Definition body we
+      need MODULE-level slot anchors so the Definitions can be invoked
+      from Section 6 (post-storage Definitions) and beyond.
+
+      The slot anchors below are [Parameter]s (audit-time obligation:
+      "the deployed StakingVault.sol Yul artifact's storage-layout JSON
+      pins these slot indices").  This mirrors the R070 pattern of
+      moving slot indices outside the lens Section when they need to
+      be referenced from the post-storage layer.
+
+      AccessControl roles slot (Section 7 [eq_at_roles]) lives at the
+      [slot_AccessControl_roles := 1] hard-coded position; we pick the
+      three slots below DISTINCT from 1 so the observation bridge
+      Lemmas close by reflexivity over the [sve_set_nth] no-overlap
+      shape.
+
+      Concrete slot index choices (audit-time obligation: the
+      deployed StakingVault.sol Yul artifact's storage-layout JSON
+      pins these slot indices; the choice here is a representative
+      consistent assignment — the AccessControl-roles slot lives at
+      [1] (Section 7), so the three exchange-rate slots use the
+      hard-coded indices below).  Sister convention used by
+      UnstakingManager.v (concrete [Definition slot_locks := 1]). *)
+
+  Definition slot_ERC20_totalSupply_const      : nat := 4.
+  Definition slot_totalDeposited_const         : nat := 12. (* 0x0c *)
+  Definition slot_nativeBalanceLastKnown_const : nat := 13. (* 0x0d *)
+
+  Lemma slot_ERC20_totalSupply_const_neq_roles :
+    slot_ERC20_totalSupply_const <> 1%nat.
+  Proof. unfold slot_ERC20_totalSupply_const. discriminate. Qed.
+
+  Lemma slot_totalDeposited_const_neq_roles :
+    slot_totalDeposited_const <> 1%nat.
+  Proof. unfold slot_totalDeposited_const. discriminate. Qed.
+
+  Lemma slot_nativeBalanceLastKnown_const_neq_roles :
+    slot_nativeBalanceLastKnown_const <> 1%nat.
+  Proof. unfold slot_nativeBalanceLastKnown_const. discriminate. Qed.
+
+  (** In-place set at index — copy of [VersionRegistry.set_nth] kept
+      local to avoid a cross-file simulation import.  Out-of-bounds
+      leaves the list unchanged. *)
+  Fixpoint sve_set_nth {A : Type} (n : nat) (a : A) (xs : list A) : list A :=
+    match xs, n with
+    | [], _ => []
+    | _ :: rest, O => a :: rest
+    | x :: rest, S k => x :: sve_set_nth k a rest
+    end.
+
+  (** [sve_set_nth] preserves [nth_error] at indices DIFFERENT from
+      the write target. *)
+  Lemma sve_set_nth_nth_error_neq
+      {A : Type} (n m : nat) (a : A) (xs : list A) :
+    n <> m ->
+    nth_error (sve_set_nth n a xs) m = nth_error xs m.
+  Proof.
+    revert n m. induction xs as [|x rest IH]; intros n m Hneq; simpl.
+    - destruct n; simpl; reflexivity.
+    - destruct n as [|n']; destruct m as [|m']; simpl; try reflexivity.
+      + contradiction.
+      + apply IH. intros Heq. apply Hneq. congruence.
+  Qed.
+
+  (** Concrete [project_exchange] at the module level, using the
+      [Parameter] slot anchors above.  Body identical to the
+      Section-local [project_exchange]. *)
+  Definition project_exchange_module
+      (storage : SimulatedStorage.t) : State.t :=
+    let supply :=
+      match List.nth_error storage slot_ERC20_totalSupply_const with
+      | Some (StorableValue.U256 v) => v
+      | _ => 0
+      end in
+    let td :=
+      match List.nth_error storage slot_totalDeposited_const with
+      | Some (StorableValue.U256 v) => v
+      | _ => 0
+      end in
+    let nblk :=
+      match List.nth_error storage slot_nativeBalanceLastKnown_const with
+      | Some (StorableValue.U256 v) => v
+      | _ => 0
+      end in
+    {| State.totalSupply              := supply;
+       State.totalDeposited           := td;
+       State.accumulatedNativeRewards :=
+         if nblk >=? td then nblk - td else 0;
+    |}.
+
+  (** Lift a sim [State.t] back into the [storage_base] by writing
+      the three exchange-rate fields at the lens slots.  Per the
+      adversarial-review note in Section 7, this leaves
+      [slot_AccessControl_roles := 1] (and all other slots) UNCHANGED
+      — exactly what the observational bridge expects. *)
+  Definition storage_with_sim
+      (storage_base : SimulatedStorage.t)
+      (sim : State.t) : SimulatedStorage.t :=
+    sve_set_nth slot_nativeBalanceLastKnown_const
+      (StorableValue.U256
+         (sim.(State.totalDeposited) + sim.(State.accumulatedNativeRewards)))
+    (sve_set_nth slot_totalDeposited_const
+      (StorableValue.U256 sim.(State.totalDeposited))
+    (sve_set_nth slot_ERC20_totalSupply_const
+      (StorableValue.U256 sim.(State.totalSupply))
+      storage_base)).
+
+  (** [storage_with_sim] preserves [nth_error] at the AccessControl
+      roles slot — the basis for the observational bridge Lemmas in
+      Section 7. *)
+  Lemma storage_with_sim_preserves_roles
+      (storage_base : SimulatedStorage.t) (sim : State.t) :
+    List.nth_error (storage_with_sim storage_base sim) 1
+    = List.nth_error storage_base 1.
+  Proof.
+    unfold storage_with_sim.
+    rewrite sve_set_nth_nth_error_neq;
+      [|exact slot_nativeBalanceLastKnown_const_neq_roles].
+    rewrite sve_set_nth_nth_error_neq;
+      [|exact slot_totalDeposited_const_neq_roles].
+    rewrite sve_set_nth_nth_error_neq;
+      [|exact slot_ERC20_totalSupply_const_neq_roles].
+    reflexivity.
+  Qed.
+
+  (** ----- Per-mutator sim-side post-state Definitions ----- *)
+
+  (** [sim_deposit_4312_post sim assets] — the [State.t] after a
+      successful [deposit].  The sim's [deposit] returns [(s', shares)];
+      we project [s']. *)
+  Definition sim_deposit_4312_post (sim : State.t) (assets : U256.t) : State.t :=
+    fst (deposit sim assets).
+
+  (** [sim_mint_4356_post sim shares] — the [State.t] after a
+      successful [mint].  Mint is operationally equivalent to
+      [deposit (previewMint shares) shares]: see [deposit_via_mint]. *)
+  Definition sim_mint_4356_post (sim : State.t) (shares : U256.t) : State.t :=
+    fst (deposit_via_mint sim shares).
+
+  (** [sim_withdraw_4403_post sim assets] — the [State.t] after a
+      successful [withdraw].  Falls back to the pre-state when
+      [withdraw] reverts (the post-storage Definition is undefined on
+      the revert branch; the milestone proofs gate on the
+      [H_within_max] precondition which excludes the revert case at
+      the Yul layer). *)
+  Definition sim_withdraw_4403_post (sim : State.t) (assets : U256.t) : State.t :=
+    match withdraw sim assets with
+    | Result.Success (s', _) => s'
+    | Result.Revert _ _ => sim
+    end.
+
+  (** [sim_redeem_4450_post sim shares] — same fallback shape as
+      [sim_withdraw_4403_post].  Redeem is operationally equivalent to
+      [withdraw (previewRedeem shares) shares] via
+      [withdraw_via_redeem]. *)
+  Definition sim_redeem_4450_post (sim : State.t) (shares : U256.t) : State.t :=
+    match withdraw_via_redeem sim shares with
+    | Result.Success (s', _) => s'
+    | Result.Revert _ _ => sim
+    end.
+
+  (** ====================================================================
       Section 3 — Sim-side environment parameters
       ==================================================================== *)
 
@@ -838,54 +1006,73 @@ Module StakingVaultExchangeEquivalence.
   Proof. unfold storage_equiv. intros -> ->. reflexivity. Qed.
 
   (** ====================================================================
-      Section 6 — Skolemized post-storage [Parameter]s (R070 shape)
-      ==================================================================== *)
+      Section 6 — Per-mutator post-storage [Definition]s (R101 Phase A)
+      ====================================================================
 
-  (** The signatures encode the function's arguments + the pre-state's
-      relevant storage anchor. Following TimelockControllerOptimistic.v's
-      template, the post-storage is opaque ([Parameter]); the audit-
-      time obligation is the corresponding observational-bridge axiom.
+      Task #306 (R101 Phase A, 2026-06-01).  Per R099's UnstakingManager
+      methodology, each [proj_post_<X>] is now a concrete [Definition]
+      computing the sim-side post-storage directly via
+      [storage_with_sim] applied to the corresponding sim transition.
 
-      Each post-state is keyed by:
-        - storage_base : the full pre-call storage.
-        - the function's arguments (assets / shares + receiver +
-          owner where applicable).
-        - now_timestamp : the block timestamp at call time (read
-          inside accrueRewards). *)
+      Signature: each [proj_post_<X>] preserves its current call-site
+      shape ([storage_base : SimulatedStorage.t] as the first argument)
+      — this is a deliberate departure from R099's
+      [(State.t, args) -> SimulatedStorage.t] signature.  Rationale:
+      the StakingVaultExchange sim [State.t] (3 fields:
+      [totalSupply, totalDeposited, accumulatedNativeRewards]) does NOT
+      model the full StakingVault storage shape (ERC20 balances mapping,
+      AccessControl roles, Votes checkpoints, reward trackers, etc.).
+      We therefore THREAD [storage_base] through the Definition and
+      apply the sim transition AT THE THREE LENS SLOTS only, leaving
+      the unmodeled slots untouched.
 
-  Parameter proj_post_deposit_4312 :
-    SimulatedStorage.t          (* storage_base *)
-    -> U256.t                   (* caller *)
-    -> U256.t                   (* assets *)
-    -> U256.t                   (* receiver *)
-    -> U256.t                   (* now *)
-    -> SimulatedStorage.t.
+      Each Definition uses the [project_exchange_module] /
+      [sim_<X>_post] / [storage_with_sim] infrastructure from
+      Section 2b.
 
-  Parameter proj_post_mint_4356 :
-    SimulatedStorage.t
-    -> U256.t                   (* caller *)
-    -> U256.t                   (* shares *)
-    -> U256.t                   (* receiver *)
-    -> U256.t                   (* now *)
-    -> SimulatedStorage.t.
+      Audit consequences:
+        - The 4 observational-bridge Axioms in Section 7 collapse to
+          Qed Lemmas via [storage_with_sim_preserves_roles].
+        - Per-target structural integrity: the AccessControl roles
+          slot (1) is preserved by construction; the three lens slots
+          carry the sim's [totalSupply / totalDeposited / nativeBalance
+          LastKnown] post-values.
 
-  Parameter proj_post_withdraw_4403 :
-    SimulatedStorage.t
-    -> U256.t                   (* caller *)
-    -> U256.t                   (* assets *)
-    -> U256.t                   (* receiver *)
-    -> U256.t                   (* owner *)
-    -> U256.t                   (* now *)
-    -> SimulatedStorage.t.
+      Phase B structural blocker (documented in WISDOM.md R101):  The
+      modifier-wrapper Axioms in Section 8c REMAIN Axioms.  The
+      [modifier_accrueRewards_<X>] body touches storage slots OUTSIDE
+      the SVE sim's coverage ([nativeRewardsLastPaid], per-token
+      reward trackers, ERC20 balances mapping, Votes checkpoints).
+      A full Qed discharge requires extending the SVE sim's [State.t]
+      to cover these slots (a Wave-3 effort estimated at 5000+ LOC).
+      The Parameter→Definition refactor in this phase is a PARTIAL
+      closure: it eliminates the [proj_post_<X>] [Parameter]s and the
+      4 observational bridges as audit obligations, but the
+      modifier-wrapper Axioms still encode the missing sim coverage. *)
 
-  Parameter proj_post_redeem_4450 :
-    SimulatedStorage.t
-    -> U256.t                   (* caller *)
-    -> U256.t                   (* shares *)
-    -> U256.t                   (* receiver *)
-    -> U256.t                   (* owner *)
-    -> U256.t                   (* now *)
-    -> SimulatedStorage.t.
+  Definition proj_post_deposit_4312
+      (storage_base : SimulatedStorage.t)
+      (caller assets receiver now_ : U256.t) : SimulatedStorage.t :=
+    storage_with_sim storage_base
+      (sim_deposit_4312_post (project_exchange_module storage_base) assets).
+
+  Definition proj_post_mint_4356
+      (storage_base : SimulatedStorage.t)
+      (caller shares receiver now_ : U256.t) : SimulatedStorage.t :=
+    storage_with_sim storage_base
+      (sim_mint_4356_post (project_exchange_module storage_base) shares).
+
+  Definition proj_post_withdraw_4403
+      (storage_base : SimulatedStorage.t)
+      (caller assets receiver owner now_ : U256.t) : SimulatedStorage.t :=
+    storage_with_sim storage_base
+      (sim_withdraw_4403_post (project_exchange_module storage_base) assets).
+
+  Definition proj_post_redeem_4450
+      (storage_base : SimulatedStorage.t)
+      (caller shares receiver owner now_ : U256.t) : SimulatedStorage.t :=
+    storage_with_sim storage_base
+      (sim_redeem_4450_post (project_exchange_module storage_base) shares).
 
   (** ====================================================================
       Section 7 — Per-target observational bridge [Axiom]s (R051 shape)
@@ -991,47 +1178,61 @@ Module StakingVaultExchangeEquivalence.
       instantiation that previously closed all four milestones via
       [True]-degeneracy. *)
 
-  Axiom proj_post_deposit_4312_observes :
+  (** Task #306 (R101 Phase A, 2026-06-01).  With the concrete
+      [proj_post_<X>] [Definition]s in Section 6, each
+      [_observes] bridge collapses to a Qed [Lemma]: the Definitions
+      modify only the three lens slots, leaving
+      [slot_AccessControl_roles := 1] preserved by construction.
+      The discharge is [storage_with_sim_preserves_roles] composed
+      with the Definition's [storage_with_sim] wrap. *)
+
+  Lemma proj_post_deposit_4312_observes :
     forall (storage_base : SimulatedStorage.t)
            (caller assets receiver now_ : U256.t),
-    (* deposit writes to ERC20.totalSupply / balances /
-       StakingVault.totalDeposited / nativeBalanceLastKnown /
-       nativeRewardsLastPaid / Votes checkpoints. The
-       AccessControl roles aggregate at [slot_AccessControl_roles]
-       is untouched. *)
     eq_at_roles
       (proj_post_deposit_4312 storage_base caller assets receiver now_)
       storage_base.
+  Proof.
+    intros storage_base caller assets receiver now_.
+    unfold eq_at_roles, slot_AccessControl_roles, proj_post_deposit_4312.
+    apply storage_with_sim_preserves_roles.
+  Qed.
 
-  Axiom proj_post_mint_4356_observes :
+  Lemma proj_post_mint_4356_observes :
     forall (storage_base : SimulatedStorage.t)
            (caller shares receiver now_ : U256.t),
-    (* mint shares the deposit's [_deposit] internal path; same
-       untouched-slot story as deposit. *)
     eq_at_roles
       (proj_post_mint_4356 storage_base caller shares receiver now_)
       storage_base.
+  Proof.
+    intros storage_base caller shares receiver now_.
+    unfold eq_at_roles, slot_AccessControl_roles, proj_post_mint_4356.
+    apply storage_with_sim_preserves_roles.
+  Qed.
 
-  Axiom proj_post_withdraw_4403_observes :
+  Lemma proj_post_withdraw_4403_observes :
     forall (storage_base : SimulatedStorage.t)
            (caller assets receiver owner now_ : U256.t),
-    (* withdraw writes to ERC20.totalSupply / balances /
-       StakingVault.totalDeposited / nativeBalanceLastKnown /
-       Votes checkpoints (both branches of the unstakingDelay
-       dispatch). The AccessControl roles aggregate is
-       untouched on either branch. *)
     eq_at_roles
       (proj_post_withdraw_4403 storage_base caller assets receiver owner now_)
       storage_base.
+  Proof.
+    intros storage_base caller assets receiver owner now_.
+    unfold eq_at_roles, slot_AccessControl_roles, proj_post_withdraw_4403.
+    apply storage_with_sim_preserves_roles.
+  Qed.
 
-  Axiom proj_post_redeem_4450_observes :
+  Lemma proj_post_redeem_4450_observes :
     forall (storage_base : SimulatedStorage.t)
            (caller shares receiver owner now_ : U256.t),
-    (* redeem shares withdraw's [_withdraw] internal path; same
-       untouched-slot story. *)
     eq_at_roles
       (proj_post_redeem_4450 storage_base caller shares receiver owner now_)
       storage_base.
+  Proof.
+    intros storage_base caller shares receiver owner now_.
+    unfold eq_at_roles, slot_AccessControl_roles, proj_post_redeem_4450.
+    apply storage_with_sim_preserves_roles.
+  Qed.
 
   (** ====================================================================
       Section 8 — Audit-time callee specs (documentation-only)

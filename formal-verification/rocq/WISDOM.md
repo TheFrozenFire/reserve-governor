@@ -5664,4 +5664,221 @@ bridge).  R100 (StakingVaultExchange narrowing — methodology
 contrast).  R093 (framework primitive `call_make_state_bridge_absorbing`
 that a future R103+ walker discharge would consume to close
 cancelLock's StakingVault.deposit call).
+## R101: StakingVaultExchange Parameter→Definition partial closure — sub-storage barrier
+
+**Task #306 (R100 follow-up phase A, 2026-06-01).**  Applies R099's
+Parameter→Definition refactor methodology to StakingVaultExchange's
+four `proj_post_<X>` Parameters (deposit_4312, mint_4356,
+withdraw_4403, redeem_4450).  The refactor partially succeeds:
+the four observation Axioms collapse to Qed Lemmas, but the two
+R100 modifier-wrapper Axioms (`run_modifier_accrueRewards_610_at_
+storage_base` and `_647_at_storage_base`) cannot collapse to Qed
+Lemmas without extending the sim-side `State.t` to cover the
+ERC20 / Votes / reward-tracker substates the modifier writes.
+
+### What landed (Phase A)
+
+  - **4 `Parameter proj_post_<X>` → `Definition proj_post_<X>`.**
+    Each Definition uses the new module-level `storage_with_sim`
+    helper, which writes the three exchange-rate sim fields
+    (`totalSupply`, `totalDeposited`, `nativeBalanceLastKnown`)
+    into `storage_base` at the lens slots (4, 12, 13) and leaves
+    all other slots — including the AccessControl roles aggregate
+    at slot 1 — UNCHANGED by construction.
+
+  - **4 `Axiom proj_post_<X>_observes` → Qed `Lemma`s.**  Each was
+    asserting `eq_at_roles (proj_post_<X> ...) storage_base`.  With
+    the concrete `Definition`, this reduces to
+    `storage_with_sim_preserves_roles` — a generic Qed Lemma about
+    `sve_set_nth` preserving `nth_error` at indices distinct from
+    the three lens slots.
+
+  - **2 `Axiom proj_post_mint_4356_eq_deposit` and `_redeem_4450_eq_
+    withdraw`.** These bridge axioms (R100 / R094 carryover) still
+    appear in `Print Assumptions` for `run_mint_equivalent` and
+    `run_redeem_equivalent`.  Future work could promote them to Qed
+    Lemmas now that the underlying `proj_post_<X>` are concrete:
+    expanding both sides reduces to a sim-side identity about
+    `deposit s (previewMint s shares) = fst (deposit_via_mint s
+    shares)` (resp. for redeem/withdraw).
+
+### Departure from R099's signature shape
+
+R099 changed UnstakingManager's `proj_post_<X>` signatures from
+`(SimulatedStorage.t, args) -> SimulatedStorage.t` to `(State.t,
+args) -> SimulatedStorage.t`.  R101 PRESERVES the original
+`(SimulatedStorage.t, args) -> SimulatedStorage.t` shape.
+
+Rationale: UnstakingManager's `State.t` (2 fields: `nextLockId`,
+`locks` mapping) IS the full storage shape — `proj_sim` is total.
+The R099 lift threads `sim` through and the Definition is
+straightforward.  StakingVaultExchange's `State.t` (3 fields:
+`totalSupply`, `totalDeposited`, `accumulatedNativeRewards`) is a
+STRICT SUB-STATE of the full StakingVault storage (which also
+covers ERC20 balances mapping, allowances, Nonces, AccessControl
+roles, Versioned, ReentrancyGuard, ERC20Votes checkpoints + voting
+units, reward trackers per token, optimistic delegate ckpts).
+Threading sim alone through `proj_post_<X>` would lose all the
+unmodeled slots in `storage_base`; threading both sim AND
+storage_base is no better than the current shape because the
+storage_base IS the carry of the unmodeled state.
+
+The R101 Definition therefore reads the sim out of `storage_base`
+(`project_exchange_module`), applies the sim transition
+(`sim_<X>_post`), and writes the 3 lens slots back via
+`storage_with_sim`.
+
+### Structural blocker: modifier-wrapper sub-axiom collapse blocked
+
+The two R100 modifier-wrapper Axioms (`run_modifier_accrueRewards_
+610` / `_647`) assert that walking the modifier body yields a
+post-state equal to `proj_post_<X> storage_base ...`.  Walking
+the modifier body produces a CONCRETE chain of `sstore_post_
+storage` / `call_post_memory` Skolems on the following slots:
+
+  - `nativeRewardsLastPaid` (slot 14 / 0x0e in solc layout) —
+    written by `fun__accrueRewards_1192`.
+  - Per-token reward tracker mapping (slot 16 / 0x10) —
+    incremented for each registered reward token.
+  - `totalDeposited` (slot 12 / 0x0c) — sstore in
+    `fun__deposit_630_inner`.
+  - `nativeBalanceLastKnown` (slot 13 / 0x0d) — sstore in
+    `fun__deposit_630_inner`.
+  - ERC20 balances mapping (slot 0 / ERC20Storage anchor) —
+    `_mint` updates `balances[receiver] += shares`.
+  - ERC20 totalSupply (slot ~4 / ERC20Storage) — `_mint` updates
+    `totalSupply += shares`.
+  - ERC20Votes delegate checkpoint mapping — `_update` runs
+    `Votes.transferVotingUnits` at receiver.
+  - Optimistic delegate checkpoint mapping (slot 22 / 0x16) —
+    `_moveOptimisticDelegateVotes` at receiver.
+  - log3 event emission.
+
+The R101 Definition `proj_post_deposit_4312` only writes 3 slots
+(`slot_ERC20_totalSupply_const = 4`, `slot_totalDeposited_const =
+12`, `slot_nativeBalanceLastKnown_const = 13`).  The walker
+produces a chain of `sstore_post_storage` Skolems on the FULL set
+of slots above — which is strictly LARGER than the Definition's
+3-slot update.  Reflexivity fails: the two post-states differ on
+the unmodeled slots.
+
+R099's UnstakingManager Phase B path was identical in shape but
+that sim's `State.t` IS the full storage; the walker's chain is
+exactly the 2-slot Definition.  For SVE, closing Phase B
+mechanically requires EXTENDING `simulations/StakingVaultExchange.
+v`'s `State.t` to carry the ERC20 balances / allowances / Votes
+ckpts / reward trackers / nativeRewardsLastPaid substates, plus
+extending `deposit` / `withdraw` to mutate those substates.
+
+### Net axiom delta per milestone Theorem
+
+```
+Before R101 (R100 baseline):                    After R101 (this commit):
+  - proj_post_<X> (Parameter)                     (gone — Definition)
+  - proj_post_<X>_observes (Axiom)                (gone — Qed Lemma)
+  - run_modifier_accrueRewards_<id> (Axiom)       (unchanged — Phase B blocked)
+  - proj_post_mint_4356_eq_deposit (Axiom)        (unchanged — mint/redeem only)
+  - proj_post_redeem_4450_eq_withdraw (Axiom)     (unchanged — redeem only)
+```
+
+Net axiom-equivalent assumptions removed per milestone (1
+Parameter + 1 Axiom = 2):
+  - run_deposit_equivalent:  20 → 18 total (-2);  8 → 6 load-bearing.
+  - run_mint_equivalent:     23 → 20 total (-3);  11 → 8 load-bearing.
+  - run_withdraw_equivalent: 21 → 19 total (-2);  9 → 7 load-bearing.
+  - run_redeem_equivalent:   24 → 21 total (-3);  12 → 9 load-bearing.
+
+(Mint / redeem drop an extra entry because their `Print
+Assumptions` previously listed the SISTER mutator's `proj_post_
+<X>` Parameter, which is also a Definition now.)
+
+NET: **10 axiom-equivalent assumptions retired across 4 milestones**.
+
+### Phase B forward work (NOT closed by this commit)
+
+The 2 modifier-wrapper Axioms (`run_modifier_accrueRewards_
+610_at_storage_base`, `run_modifier_accrueRewards_647_at_storage_
+base`) REMAIN Axioms.  Full Qed discharge requires:
+
+  - **Extending `simulations/StakingVaultExchange.v`'s `State.t`**
+    to model the ERC20 balances mapping, allowances, Nonces,
+    ERC20Votes delegate ckpts + voting units, optimistic delegate
+    ckpts, reward trackers per token, nativeRewardsLastPaid, and
+    nativeBalanceLastKnown (the last is already a derived field
+    of `accumulatedNativeRewards + totalDeposited` in the
+    current sim — extension may flip this to a primary field).
+
+  - **Extending `deposit` / `withdraw`** to mutate the new
+    substates (balances += shares at receiver; totalSupply +=
+    shares; Votes ckpts pushed; reward trackers updated; etc.).
+
+  - **Per-Yul-wrapper absorbing Lemmas for StakingVaultExchange.**
+    The wrapper Definitions generated by solc differ from
+    ProposalLib / VersionRegistry siblings in argument shape
+    (4 / 5 args for `_deposit_630` / `_withdraw_736`); R093
+    SafeERC20 framework primitives cover the external call paths.
+
+  - **Inner-body walker discharge per mutator.**  Per-body LOC
+    estimate (R100): _deposit ~120, _withdraw ~190.  Plus the
+    `fun__accrueRewards_1192` body (~350 LOC of reward-token
+    iteration + per-token sstore chain) which is shared between
+    both modifier wrappers.  Cumulative discharge: ~5000-8000 LOC.
+
+Estimated forward work: **5000-8000 LOC across 2-3 follow-up
+tasks** (one per modifier wrapper, sharing the sim-state
+extension).  This is a Wave-3 effort.
+
+### Methodology finding: sub-storage sim invalidates R099's lift
+
+R085's "Parameter→Definition promotion pattern is broadly
+applicable" methodology finding (T3.3 swap-and-pop) generalises
+under one condition: **the sim's `State.t` is a faithful model of
+the full storage shape the mutator touches**.  R099's
+UnstakingManager satisfies this (State.t = 2 fields = full
+storage; sim = total isomorphism).  T3.3 swap-and-pop satisfies
+this (sim = full storage).  ProposalLib R092 satisfies this (sim
+= full storage).
+
+R101's StakingVaultExchange does NOT satisfy this: the sim is a
+strict sub-state of the storage.  Under sub-storage, the
+Parameter→Definition refactor reduces to a **partial closure**:
+
+  1. The 4 observation Axioms collapse to Qed Lemmas — the
+     Definition CAN preserve the AccessControl roles slot by
+     construction (we leave it unchanged).
+  2. The Parameter-removal eliminates 4 audit obligations.
+  3. The inner-body Axioms do NOT collapse — the Definition only
+     models the sim's 3 fields, but the modifier writes to many
+     more slots; the walker's chain is strictly larger than the
+     Definition's update.
+
+Phase B closure requires sim-state extension — a fundamentally
+different (and larger) workstream than R099's UnstakingManager
+case.  This finding generalises: any "partial sim" target
+(StakingVaultRewards, StakingVaultAdmin, StakingVaultDelegation,
+ReserveOptimisticGovernor's role-gated mutators) faces the same
+structural blocker.  The Parameter→Definition refactor remains
+USEFUL for the partial-closure benefits (observation Axiom
+collapse + Parameter elimination) but is not a complete
+discharge path on its own.
+
+### Validation
+
+  - Build: green (`rocq-build` exits 0).
+  - `Print Assumptions` per milestone Theorem: net -2 / -3 axiom-
+    equivalent assumptions per milestone (verified by comparing
+    pre/post snapshots; baseline refreshed in this commit).
+  - 4 R097 outer walker Lemmas re-Qed against the new Definitions
+    without any signature change (sig: `storage_base` first arg
+    preserved).  4 milestone Theorems re-Qed identically.
+
+### See also
+
+R099 (UnstakingManager Phase A — the sister entry whose
+methodology this entry partially applies; differs on the sub-
+storage barrier).  R100 (this entry's direct prerequisite — the
+modifier-wrapper Axioms R101 leaves un-collapsed).  R085 / R092
+(the broader Parameter→Definition pattern across all
+equivalence-tier files).  R098 (the original Option A /
+Option B analysis).
 
